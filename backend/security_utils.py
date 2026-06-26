@@ -8,17 +8,6 @@ _SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _ALLOWED_DOWNLOAD_HOSTS = {"huggingface.co", "civitai.com", "www.civitai.com"}
 
 
-def safe_child_file(root: Path, filename: str) -> Path:
-    name = filename.strip()
-    if not name or PurePath(name).name != name or "/" in name or "\\" in name or not _SAFE_FILENAME_RE.fullmatch(name):
-        raise ValueError("Invalid filename")
-    root_resolved = root.resolve()
-    path = (root_resolved / name).resolve()
-    if path.parent != root_resolved:
-        raise ValueError("Invalid filename")
-    return path
-
-
 def normalize_lora_import_url(raw_url: str) -> str:
     parsed = urlparse(raw_url.strip())
     host = (parsed.hostname or "").lower()

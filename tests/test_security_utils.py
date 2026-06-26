@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,16 +14,6 @@ import security_utils  # noqa: E402
 
 
 class SecurityUtilsTests(unittest.TestCase):
-    def test_safe_output_path_rejects_traversal(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            with self.assertRaises(ValueError):
-                security_utils.safe_child_file(root, "../secret.txt")
-            with self.assertRaises(ValueError):
-                security_utils.safe_child_file(root, "nested/secret.txt")
-
-            self.assertEqual(security_utils.safe_child_file(root, "image-1.png").parent, root.resolve())
-
     def test_normalize_lora_url_rejects_untrusted_hosts(self) -> None:
         with self.assertRaises(ValueError):
             security_utils.normalize_lora_import_url("https://example.com/model.safetensors")

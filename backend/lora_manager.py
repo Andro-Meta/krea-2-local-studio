@@ -259,9 +259,10 @@ def inspect_lora(path, model=None) -> dict:
                     matched += 1
                 else:
                     bad_shape += 1
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
+        logger.exception("LoRA inspection failed")
         return {"format": "unknown", "total": 0, "matched": 0,
-                "compatible": False, "reason": f"unreadable file: {e}"}
+                "compatible": False, "reason": "unreadable or invalid safetensors file"}
 
     frac = (matched / total) if total else 0.0
     compatible = total > 0 and frac >= _COMPAT_THRESHOLD

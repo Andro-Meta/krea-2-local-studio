@@ -51,7 +51,7 @@ from schemas import (
     LoraImportRequest,
     UpscaleRequest,
 )
-from settings import BASE_DIR, DIST_DIR, LOGS_DIR, LORAS_DIR, MODELS_DIR, settings
+from settings import BASE_DIR, DIST_DIR, LOGS_DIR, LORAS_DIR, MODELS_DIR, OUTPUTS_DIR, settings
 from share_auth import (
     add_user,
     create_session_token,
@@ -67,13 +67,14 @@ from share_auth import (
 )
 from support_models import download_support_models, support_model_status
 from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, start_funnel, stop_funnel, tailscale_status, tailscale_up
-from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_child_file, safe_lora_filename
+from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_lora_filename
 from system_check import get_system_report
 
 logger = logging.getLogger(__name__)
 setup_logging(LOGS_DIR)
 
 app = FastAPI(title="Krea 2 Studio", version="1.0.0")
+app.mount("/api/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 
 app.add_middleware(
     CORSMiddleware,
@@ -543,18 +544,6 @@ async def delete_gallery_item(gallery_id: int):
     return {"ok": True, "filename": filename}
 
 
-@app.get("/api/outputs/{filename}")
-async def serve_output(filename: str):
-    from settings import OUTPUTS_DIR
-    try:
-        p = safe_child_file(OUTPUTS_DIR, filename)
-    except ValueError:
-        raise HTTPException(400, "Invalid filename")
-    if not p.exists():
-        raise HTTPException(404)
-    return FileResponse(str(p))
-
-
 # ---------------------------------------------------------------------------
 # LoRAs
 # ---------------------------------------------------------------------------
@@ -602,15 +591,11 @@ async def import_lora_url(req: LoraImportRequest):
 
     try:
         url = normalize_lora_import_url(req.url)
-        filename = safe_lora_filename(req.filename, url)
-        dest = safe_child_file(LORAS_DIR, filename)
+        safe_lora_filename(req.filename, url)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-
-    if dest.exists():
-        v = inspect_lora(dest)
-        return {"ok": True, "path": str(dest), "filename": filename, "skipped": True,
-                "compatible": v["compatible"], "match_info": v["reason"]}
+    filename = f"imported_{uuid.uuid4().hex}.safetensors"
+    dest = LORAS_DIR / filename
 
     headers = {"User-Agent": "krea2-studio/1.0"}
     if is_civitai_url(url):
