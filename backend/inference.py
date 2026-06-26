@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import gc
+import hashlib
 import io
 import logging
 import os
@@ -15,6 +16,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -151,12 +153,15 @@ def _build_bbox_prompt(prompt: str, bboxes: list) -> str:
 # ---------------------------------------------------------------------------
 
 class Krea2Pipeline:
+    CONDITIONING_CACHE_MAX = 8
+
     def __init__(self):
         self.mmdit = None
         self.ae = None
         self.encoder = None
         self._loaded_checkpoint: Optional[str] = None
         self._loaded_quant: Optional[str] = None
+        self._conditioning_cache: OrderedDict[tuple, tuple[torch.Tensor, torch.Tensor | None]] = OrderedDict()
         self._lock = threading.Lock()
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
         self._dtype = torch.bfloat16
@@ -168,6 +173,7 @@ class Krea2Pipeline:
         self.mmdit = None
         self.ae = None
         self.encoder = None
+        self._conditioning_cache.clear()
         self._loaded_checkpoint = None
         self._loaded_quant = None
         if not hasattr(self, "_last_load_error"):
@@ -297,6 +303,42 @@ class Krea2Pipeline:
             self._last_load_error = None
             logger.info(f"Model ready. {mem_snapshot()}")
 
+    def _get_conditioning_cache(self, key: tuple) -> tuple[torch.Tensor, torch.Tensor | None] | None:
+        hit = self._conditioning_cache.get(key)
+        if hit is None:
+            return None
+        self._conditioning_cache.move_to_end(key)
+        txt, txtmask = hit
+        return txt.clone(), txtmask.clone() if txtmask is not None else None
+
+    def _put_conditioning_cache(
+        self,
+        key: tuple,
+        txt: torch.Tensor,
+        txtmask: torch.Tensor | None,
+    ) -> None:
+        self._conditioning_cache[key] = (
+            txt.detach().cpu().clone(),
+            txtmask.detach().cpu().clone() if txtmask is not None else None,
+        )
+        self._conditioning_cache.move_to_end(key)
+        while len(self._conditioning_cache) > self.CONDITIONING_CACHE_MAX:
+            self._conditioning_cache.popitem(last=False)
+
+    def _conditioning_to_device(
+        self,
+        cached: tuple[torch.Tensor, torch.Tensor | None],
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        txt, txtmask = cached
+        return (
+            txt.to(device=self._device, dtype=self._dtype),
+            txtmask.to(device=self._device) if txtmask is not None else None,
+        )
+
+    @staticmethod
+    def _hash_ref_images(ref_b64s: list[str]) -> tuple[str, ...]:
+        return tuple(hashlib.sha256(ref.encode("utf-8")).hexdigest() for ref in ref_b64s)
+
     def generate(
         self,
         request,
@@ -327,42 +369,81 @@ class Krea2Pipeline:
             from moods import apply_mood
             prompt, negative_prompt = apply_mood(prompt, negative_prompt, mood_id)
 
-        # Encode text (encoder to GPU)
-        self.encoder.to(self._device)
-        try:
-            # Reference images = custom moodboard board + the 3 ref slots.
-            ref_images = []
+        # Encode text. Conditioning is cheap to reuse; moving the 4B Qwen encoder
+        # CPU→GPU is not, so cache final CPU tensors by prompt/reference settings.
+        ref_b64s = [
+            b64
             for b64 in list(getattr(req, "moodboard_images", []) or []) + [
                 req.ref_image1_b64, req.ref_image2_b64, req.ref_image3_b64
-            ]:
-                if b64:
-                    ref_images.append(_b64_to_pil(b64).convert("RGB"))
+            ]
+            if b64
+        ]
+        ref_hashes = self._hash_ref_images(ref_b64s)
+        weights = parse_weights(req.rebalance_weights) if req.use_rebalance else None
+        mult = req.rebalance_multiplier
+        if req.use_rebalance and (mood_id or ref_b64s):
+            mult = mult * (0.5 + float(getattr(req, "moodboard_strength", 0.5)))
 
-            if ref_images:
-                txt, txtmask = self.encoder.forward_with_images(
-                    [prompt] * req.num_images, images=ref_images
-                )
-            else:
-                txt, txtmask = self.encoder([prompt] * req.num_images)
+        positive_key = (
+            "positive",
+            prompt,
+            req.num_images,
+            ref_hashes,
+            bool(req.use_rebalance),
+            req.rebalance_weights,
+            float(mult),
+        )
+        negative_key = (
+            "negative",
+            negative_prompt,
+            req.num_images,
+        ) if req.cfg > 0 else None
 
-            if req.use_rebalance:
-                weights = parse_weights(req.rebalance_weights)
-                # Moodboard strength scales overall style push (0.5 = neutral ×1.0).
-                mult = req.rebalance_multiplier
-                if mood_id or ref_images:
-                    mult = mult * (0.5 + float(getattr(req, "moodboard_strength", 0.5)))
-                txt = rebalance(txt, multiplier=mult, layer_weights=weights)
+        cached_positive = self._get_conditioning_cache(positive_key)
+        cached_negative = self._get_conditioning_cache(negative_key) if negative_key else None
+        txt = txtmask = neg_txt = neg_txtmask = None
 
-            neg_txt = neg_txtmask = None
-            if req.cfg > 0:
-                neg_txt, neg_txtmask = self.encoder([negative_prompt] * req.num_images)
+        need_encoder = cached_positive is None or (negative_key is not None and cached_negative is None)
+        if need_encoder:
+            self.encoder.to(self._device)
+            try:
+                if cached_positive is None:
+                    if ref_b64s:
+                        ref_images = [_b64_to_pil(b64).convert("RGB") for b64 in ref_b64s]
+                        txt, txtmask = self.encoder.forward_with_images(
+                            [prompt] * req.num_images, images=ref_images
+                        )
+                    else:
+                        txt, txtmask = self.encoder([prompt] * req.num_images)
 
-        finally:
-            # Offload encoder to CPU before DiT forward pass
-            self.encoder.cpu()
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                    if req.use_rebalance and weights is not None:
+                        txt = rebalance(txt, multiplier=mult, layer_weights=weights)
+                    self._put_conditioning_cache(positive_key, txt, txtmask)
+
+                if negative_key is not None and cached_negative is None:
+                    neg_txt, neg_txtmask = self.encoder([negative_prompt] * req.num_images)
+                    self._put_conditioning_cache(negative_key, neg_txt, neg_txtmask)
+            finally:
+                # Offload encoder to CPU before DiT forward pass.
+                self.encoder.cpu()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        if cached_positive is not None:
+            txt, txtmask = self._conditioning_to_device(cached_positive)
+        if negative_key is not None and cached_negative is not None:
+            neg_txt, neg_txtmask = self._conditioning_to_device(cached_negative)
+        if txt is None or txtmask is None:
+            cached_positive = self._get_conditioning_cache(positive_key)
+            if cached_positive is None:
+                raise RuntimeError("Conditioning cache failed to store positive prompt.")
+            txt, txtmask = self._conditioning_to_device(cached_positive)
+        if negative_key is not None and neg_txt is None:
+            cached_negative = self._get_conditioning_cache(negative_key)
+            if cached_negative is None:
+                raise RuntimeError("Conditioning cache failed to store negative prompt.")
+            neg_txt, neg_txtmask = self._conditioning_to_device(cached_negative)
 
         logger.info(f"Encoded. {mem_snapshot()}")
 
