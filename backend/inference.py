@@ -280,9 +280,7 @@ class Krea2Pipeline:
                 # Drop partially-loaded locals first — they hold GPU tensors not yet
                 # assigned to self, so empty_cache() can't free them otherwise.
                 # (del locals()[name] is a no-op on real function locals in CPython.)
-                mmdit = None
-                ae = None
-                encoder = None
+                del mmdit, ae, encoder
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

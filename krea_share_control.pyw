@@ -14,7 +14,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -486,8 +485,8 @@ class App:
             if proc:
                 try:
                     proc.terminate()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.log(f"could not stop process: {e}")
         self.funnel = self.server = None
         self.url = None
         self.s_srv.config(text="• Krea server: stopped", foreground="#888")
