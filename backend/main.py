@@ -8,7 +8,9 @@ import io
 import json
 import logging
 import os
+import secrets
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -54,15 +56,12 @@ from schemas import (
 from settings import BASE_DIR, DIST_DIR, LOGS_DIR, LORAS_DIR, MODELS_DIR, OUTPUTS_DIR, settings
 from share_auth import (
     add_user,
-    create_session_token,
     get_user_role,
     is_admin,
     is_valid_username,
     list_user_records,
-    make_secret,
     remove_user,
     set_user_role,
-    verify_session_token,
     verify_user,
 )
 from support_models import download_support_models, support_model_status
@@ -93,9 +92,10 @@ PUBLIC_BASE_PATH = "/" + os.environ.get("KREA_PUBLIC_BASE_PATH", "/").strip("/")
 if PUBLIC_BASE_PATH == "/.":
     PUBLIC_BASE_PATH = "/"
 SHARE_AUTH_FILE = Path(os.environ.get("KREA_SHARE_AUTH_FILE", str(BASE_DIR / "share_auth.json")))
-SHARE_AUTH_SECRET = os.environ.get("KREA_SHARE_SECRET") or make_secret()
 SHARE_COOKIE = "krea_share_session"
 SHARE_COOKIE_SECURE = os.environ.get("KREA_SHARE_COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
+SHARE_SESSION_TTL_SECONDS = 12 * 60 * 60
+_share_sessions: dict[str, tuple[str, float]] = {}
 
 
 def _strip_public_base_path(scope: dict) -> None:
@@ -121,7 +121,19 @@ def _is_auth_exempt(path: str, method: str = "GET") -> bool:
 
 
 def _auth_username_from_cookie(cookie: str | None) -> str | None:
-    return verify_session_token(cookie, SHARE_AUTH_SECRET, SHARE_AUTH_FILE)
+    if not cookie:
+        return None
+    record = _share_sessions.get(cookie)
+    if record is None:
+        return None
+    username, expires_at = record
+    if expires_at < time.time():
+        _share_sessions.pop(cookie, None)
+        return None
+    if not is_valid_username(username) or get_user_role(SHARE_AUTH_FILE, username) is None:
+        _share_sessions.pop(cookie, None)
+        return None
+    return username
 
 
 def _requires_admin(path: str, method: str) -> bool:
@@ -216,14 +228,15 @@ async def share_login(req: ShareLoginRequest, response: Response):
     username = req.username.strip()
     if not is_valid_username(username) or not verify_user(SHARE_AUTH_FILE, username, req.password):
         raise HTTPException(401, "Invalid username or password")
-    token = create_session_token(username, SHARE_AUTH_SECRET)
+    token = secrets.token_urlsafe(32)
+    _share_sessions[token] = (username, time.time() + SHARE_SESSION_TTL_SECONDS)
     response.set_cookie(
         SHARE_COOKIE,
         token,
         httponly=True,
         secure=SHARE_COOKIE_SECURE,
         samesite="lax",
-        max_age=12 * 60 * 60,
+        max_age=SHARE_SESSION_TTL_SECONDS,
         path=PUBLIC_BASE_PATH if PUBLIC_BASE_PATH != "/" else "/",
     )
     return {"ok": True, "username": username, "role": get_user_role(SHARE_AUTH_FILE, username)}
@@ -231,6 +244,7 @@ async def share_login(req: ShareLoginRequest, response: Response):
 
 @app.post("/api/auth/logout")
 async def share_logout(response: Response):
+    # Delete the current browser cookie. The in-memory server session expires on its own.
     response.delete_cookie(SHARE_COOKIE, path=PUBLIC_BASE_PATH if PUBLIC_BASE_PATH != "/" else "/")
     return {"ok": True}
 
