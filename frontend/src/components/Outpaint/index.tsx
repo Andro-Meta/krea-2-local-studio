@@ -35,7 +35,7 @@ function imageSize(b64: string): Promise<{ width: number; height: number }> {
 }
 
 export default function OutpaintPanel() {
-  const { params, setParam, setParams } = useStore()
+  const { params, setParams } = useStore()
   const [sourceB64, setSourceB64] = useState(params.init_image_b64)
   const [directions, setDirections] = useState<Direction[]>(['all'])
   const [targetFrame, setTargetFrame] = useState<TargetFrame>('16:9')

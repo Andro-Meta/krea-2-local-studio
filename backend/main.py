@@ -46,7 +46,6 @@ from schemas import (
     ShareUserCreateRequest,
     ShareUserPasswordRequest,
     ShareUserRoleRequest,
-    SystemInfoResponse,
     LoraImportRequest,
     UpscaleRequest,
 )

@@ -1,5 +1,5 @@
-import { useEffect, useRef, type ChangeEvent } from 'react'
-import { Box, Button, Slider, Stack, Typography } from '@mui/material'
+import { useEffect, type ChangeEvent } from 'react'
+import { Box, Button, Stack, Typography } from '@mui/material'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import { useStore } from '../../store'
 import MaskCanvas from './MaskCanvas'

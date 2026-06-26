@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
-import { Box, Button, Chip, IconButton, Stack, TextField, Tooltip, Typography } from '@mui/material'
+import { Box, Button, Chip, IconButton, Stack, TextField, Typography } from '@mui/material'
 import DeleteIcon from '@mui/icons-material/Delete'
 import GridOnIcon from '@mui/icons-material/GridOn'
 import { useStore } from '../../store'

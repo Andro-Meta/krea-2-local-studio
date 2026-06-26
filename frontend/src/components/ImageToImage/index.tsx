@@ -1,8 +1,7 @@
 import { useCallback, useEffect, type ChangeEvent } from 'react'
-import { Box, Button, Slider, Stack, Typography } from '@mui/material'
+import { Box, Slider, Stack, Typography } from '@mui/material'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import { useStore } from '../../store'
-import GeneratePanel from '../GeneratePanel'
 
 function ImageUploader({ label, value, onChange }: { label: string; value: string; onChange: (b64: string) => void }) {
   const handleFile = useCallback((e: ChangeEvent<HTMLInputElement>) => {
