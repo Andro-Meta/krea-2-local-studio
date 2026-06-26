@@ -30,6 +30,8 @@ export interface GenerationRequest {
   num_images?: number
   seed?: number
   denoise?: number
+  edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
+  quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   loras?: Array<{ name: string; filename?: string; strength?: number; enabled?: boolean }>
   use_rebalance?: boolean
   rebalance_multiplier?: number
@@ -58,6 +60,7 @@ export interface RealtimePreviewRequest {
   height: number
   preview_steps?: number
   moodboard_strength?: number
+  seed?: number
 }
 
 export interface RealtimePreviewJob {
@@ -114,7 +117,7 @@ export interface SystemReport {
   disk_free_gb?: number
   gpu_processes: string[]
   model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null }
-  support_models?: Array<{ id: string; label: string; repo_id: string; purpose: string; installed: boolean; cache_dir: string }>
+  support_models?: Array<{ id: string; label: string; repo_id: string; purpose: string; installed: boolean; optional?: boolean; cache_dir: string }>
   variants: Array<{ id: string; label: string; vram_gb: number; ram_gb: number; blockers: string[]; warnings: string[]; ok: boolean }>
 }
 

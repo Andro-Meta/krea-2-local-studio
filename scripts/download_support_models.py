@@ -18,8 +18,9 @@ def print_status() -> bool:
     print("Krea support models:")
     for item in statuses:
         installed = bool(item["installed"])
-        ok = ok and installed
-        mark = "OK" if installed else "MISSING"
+        required = not bool(item.get("optional"))
+        ok = ok and (installed or not required)
+        mark = "OK" if installed else ("OPTIONAL" if not required else "MISSING")
         print(f"  [{mark}] {item['label']} ({item['repo_id']})")
         print(f"       {item['purpose']}")
     return ok

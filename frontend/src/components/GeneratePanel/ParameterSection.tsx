@@ -148,9 +148,9 @@ export default function ParameterSection() {
             <Stack spacing={2}>
               <LabeledSlider
                 label="μ — flow shift (ModelSamplingFlux)"
-                value={params.mu}
+                value={params.mu ?? 0}
                 min={0} max={2.0} step={0.05}
-                onChange={v => setParam('mu', v)}
+                onChange={v => setParam('mu', v <= 0 ? null : v)}
                 tip="ModelSamplingFlux shift: shifts timestep density toward high-noise steps. Higher = better for large images (>1024px). Turbo default 1.15. Set 0 to auto-calculate from resolution."
                 helperText="0 = auto · Turbo: 1.15 · higher = better for large images"
               />

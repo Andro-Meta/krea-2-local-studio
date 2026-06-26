@@ -64,6 +64,18 @@ def list_loras() -> list[dict]:
     return results
 
 
+def official_lora_download_kwargs(name: str, *, token: str | None = None) -> dict:
+    if name not in OFFICIAL_LORAS:
+        raise KeyError(name)
+    return {
+        "repo_id": OFFICIAL_LORA_HF_IDS.get(name, "Comfy-Org/Krea-2"),
+        "filename": f"{name}.safetensors",
+        "subfolder": "loras",
+        "local_dir": str(LORAS_DIR),
+        "token": token or None,
+    }
+
+
 def build_trigger_prompt(prompt: str, loras: list[dict]) -> str:
     words: list[str] = []
     for lora in loras:

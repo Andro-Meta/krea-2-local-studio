@@ -57,6 +57,8 @@ export default function GeneratePanel() {
         num_images: params.num_images,
         seed: params.seed,
         denoise: params.denoise,
+        edit_provider: params.edit_provider,
+        quality_preset: params.quality_preset,
         use_rebalance: params.use_rebalance,
         rebalance_multiplier: params.rebalance_multiplier,
         rebalance_weights: params.rebalance_weights,
@@ -87,6 +89,8 @@ export default function GeneratePanel() {
           if (warns.length) {
             setError('LoRA not applied — ' + warns
               .map((w: any) => `${w.name}: ${w.reason ?? 'incompatible'}`).join('; '))
+          } else if (data.provider_warning) {
+            setError(data.provider_warning)
           }
         }
         if (data.type === 'error') {

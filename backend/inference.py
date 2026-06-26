@@ -14,8 +14,6 @@ import logging
 import os
 import sys
 import threading
-import time
-import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Optional
@@ -30,6 +28,7 @@ from PIL import Image
 
 from conditioning import parse_weights, rebalance
 from lora_manager import apply_loras, build_trigger_prompt
+from output_saver import encode_images
 from settings import OUTPUTS_DIR, settings
 from support_models import support_model_path
 from system_check import get_ram_gb, mem_snapshot
@@ -147,6 +146,16 @@ def _mask_to_tensor(mask_img: Image.Image, width: int, height: int, mode: str, d
         np.array(mask).astype("float32") / 255.0
     ).unsqueeze(0).unsqueeze(0).to(device=device, dtype=dtype)
     return mask_arr
+
+
+def _prepare_native_edit_mask(mask_img: Image.Image, size: tuple[int, int], mode: str) -> Image.Image:
+    from PIL import ImageFilter
+
+    mask = mask_img.convert("L").resize(size, Image.BILINEAR)
+    if mode == "outpaint":
+        return mask.filter(ImageFilter.GaussianBlur(radius=2))
+    mask = mask.filter(ImageFilter.MaxFilter(11))
+    return mask.filter(ImageFilter.GaussianBlur(radius=8))
 
 
 def _outpaint_stitch(images: list[Image.Image], init_img: Image.Image, mask_img: Image.Image) -> list[Image.Image]:
@@ -386,6 +395,8 @@ class Krea2Pipeline:
         self,
         request,
         progress_cb: Optional[Callable[[int, int], None]] = None,
+        *,
+        save_outputs: bool = True,
     ) -> list[str]:
         """Generate images. Returns list of base64-encoded PNGs."""
         if not self.is_loaded():
@@ -398,9 +409,9 @@ class Krea2Pipeline:
         from krea2 import sampling
 
         with self._lock:
-            return self._generate_locked(request, progress_cb, sampling)
+            return self._generate_locked(request, progress_cb, sampling, save_outputs=save_outputs)
 
-    def _generate_locked(self, req, progress_cb, sampling) -> list[str]:
+    def _generate_locked(self, req, progress_cb, sampling, *, save_outputs: bool = True) -> list[str]:
         # Build prompt (inject bbox JSON + LoRA trigger words)
         prompt = _build_bbox_prompt(req.prompt, req.bboxes)
         prompt = build_trigger_prompt(prompt, req.loras or [])
@@ -513,8 +524,9 @@ class Krea2Pipeline:
             raw_mask_img = _b64_to_pil(req.mask_b64)
             if req.mode == "outpaint":
                 mask_img_for_stitch = raw_mask_img.copy()
+            edit_mask_img = _prepare_native_edit_mask(raw_mask_img, (gen_w, gen_h), req.mode)
             mask_tensor = _mask_to_tensor(
-                raw_mask_img,
+                edit_mask_img,
                 gen_w,
                 gen_h,
                 req.mode,
@@ -673,17 +685,9 @@ class Krea2Pipeline:
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Refine pass skipped ({e})")
 
-        # Save + return base64 + filenames
-        results: list[str] = []
-        filenames: list[str] = []
-        for img in images:
-            fname = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.png"
-            img.save(str(OUTPUTS_DIR / fname))
-            filenames.append(fname)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            results.append(base64.b64encode(buf.getvalue()).decode())
-
+        # Save + return base64 + filenames. Realtime previews pass
+        # save_outputs=False so they never spam the Gallery output directory.
+        results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs)
         return results, seed, filenames, lora_reports
 
 

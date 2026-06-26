@@ -13,8 +13,15 @@ import OpenInFullIcon from '@mui/icons-material/OpenInFull'
 import PaletteIcon from '@mui/icons-material/Palette'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import { useStore } from '../../store'
+import { apiFetch, type LoraInfo } from '../../api'
 import MaskCanvas from '../Inpaint/MaskCanvas'
 import { buildOutpaintImage } from '../../lib/outpaint'
+import {
+  loraToGeneration,
+  presetFor,
+  type RedrawQualityMode,
+  type RedrawTaskKind,
+} from './qualityPresets'
 
 type StudioTaskId = 'recreate' | 'insert' | 'extend' | 'sketch' | 'style' | 'moodboard' | 'preserve'
 type ReferenceRole = 'scene' | 'person' | 'object' | 'sketch' | 'style' | 'mood'
@@ -212,14 +219,21 @@ function roleInstruction(slot: ReferenceSlot, pictureNumber: number) {
   return `Picture ${pictureNumber} is the ${roleCopy[slot.role]}.${note ? ` ${note}` : ''}`
 }
 
-function buildRolePrompt(slots: ReferenceSlot[], instruction: string, task: StudioTask) {
+function buildRolePrompt(slots: ReferenceSlot[], instruction: string, task: StudioTask, presetHint = '') {
   const active = slots.filter(slot => slot.image)
   const roleLines = active.map((slot, idx) => roleInstruction(slot, idx + 1)).join('\n')
   return [
     roleLines,
     task.defaultInstruction,
+    presetHint,
     instruction.trim() || 'Generate the final image from these references.',
   ].filter(Boolean).join('\n\n')
+}
+
+function presetTaskFor(task: StudioTask, extendMode: ExtendMode, preserveMode: PreserveMode): RedrawTaskKind {
+  if (task.id === 'extend') return extendMode === 'preserve' ? 'extend_preserve' : 'extend_redraw'
+  if (task.id === 'preserve') return preserveMode === 'masked' ? 'preserve_masked' : 'preserve_whole'
+  return task.id
 }
 
 function slotsForTask(task: StudioTask, seedImage = ''): ReferenceSlot[] {
@@ -329,16 +343,35 @@ export default function RedrawStudio() {
   const [preserveMode, setPreserveMode] = useState<PreserveMode>('whole')
   const [outpaintOverlap, setOutpaintOverlap] = useState(128)
   const [denoise, setDenoise] = useState(0.72)
+  const [qualityMode, setQualityMode] = useState<RedrawQualityMode>('balanced')
+  const [selectedStyleLora, setSelectedStyleLora] = useState('')
+  const [loras, setLoras] = useState<LoraInfo[]>([])
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [readyMessage, setReadyMessage] = useState<string | null>(null)
 
   const task = tasks.find(item => item.id === taskId) ?? initialTask
+  const preset = useMemo(
+    () => presetFor(presetTaskFor(task, extendMode, preserveMode), qualityMode),
+    [task, extendMode, preserveMode, qualityMode],
+  )
+  const styleLoras = useMemo(() => loras.filter(lora => lora.is_official), [loras])
+  const selectedLoraInfo = useMemo(
+    () => styleLoras.find(lora => lora.name === selectedStyleLora) ?? null,
+    [styleLoras, selectedStyleLora],
+  )
   const activeImages = useMemo(() => slots.filter(slot => slot.image), [slots])
-  const promptPreview = useMemo(() => buildRolePrompt(slots, instruction, task), [slots, instruction, task])
+  const promptPreview = useMemo(
+    () => buildRolePrompt(slots, instruction, task, preset.promptHint),
+    [slots, instruction, task, preset.promptHint],
+  )
   const sourceImage = slots[0]?.image ?? ''
 
   useEffect(() => {
     setParams({ mode: params.mode === 'txt2img' ? 'redraw' : params.mode })
+  }, [])
+
+  useEffect(() => {
+    apiFetch.loras().then(setLoras).catch(() => setLoras([]))
   }, [])
 
   const selectTask = (nextTaskId: StudioTaskId) => {
@@ -366,8 +399,17 @@ export default function RedrawStudio() {
       ref_image2_b64: '',
       ref_image3_b64: '',
       moodboard_images: activeImages.map(slot => slot.image),
-      moodboard_strength: task.id === 'moodboard' ? 0.85 : 0.75,
-      denoise: 1.0,
+      moodboard_strength: preset.moodboardStrength,
+      denoise: preset.denoise,
+      checkpoint: preset.checkpoint,
+      quantization: preset.quantization,
+      steps: preset.steps,
+      cfg: preset.cfg,
+      mu: preset.mu,
+      edit_provider: preset.editProvider,
+      quality_preset: preset.qualityMode,
+      use_prompt_expander: preset.usePromptExpander,
+      loras: loraToGeneration(selectedLoraInfo),
       width: dimensions?.width ?? params.width,
       height: dimensions?.height ?? params.height,
       use_rebalance: true,
@@ -384,7 +426,17 @@ export default function RedrawStudio() {
       init_image_b64: sourceImage,
       mask_b64: preserveMode === 'masked' ? params.mask_b64 : '',
       moodboard_images: activeImages.slice(1).map(slot => slot.image),
+      moodboard_strength: preset.moodboardStrength,
       denoise,
+      checkpoint: preset.checkpoint,
+      quantization: preset.quantization,
+      steps: preset.steps,
+      cfg: preset.cfg,
+      mu: preset.mu,
+      edit_provider: preset.editProvider,
+      quality_preset: preset.qualityMode,
+      use_prompt_expander: preset.usePromptExpander,
+      loras: loraToGeneration(selectedLoraInfo),
       use_rebalance: true,
     })
     setReadyMessage(preserveMode === 'masked'
@@ -418,9 +470,19 @@ export default function RedrawStudio() {
       init_image_b64: result.init_image_b64,
       mask_b64: result.mask_b64,
       moodboard_images: activeImages.slice(1).map(slot => slot.image),
+      moodboard_strength: preset.moodboardStrength,
       width: result.width,
       height: result.height,
-      denoise: 1.0,
+      denoise: preset.denoise,
+      checkpoint: preset.checkpoint,
+      quantization: preset.quantization,
+      steps: preset.steps,
+      cfg: preset.cfg,
+      mu: preset.mu,
+      edit_provider: preset.editProvider,
+      quality_preset: preset.qualityMode,
+      use_prompt_expander: preset.usePromptExpander,
+      loras: loraToGeneration(selectedLoraInfo),
       use_rebalance: true,
     })
     setReadyMessage('Preserve-source extension is ready. Use Generate below.')
@@ -523,6 +585,46 @@ export default function RedrawStudio() {
               )}
 
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+                <FormControl size="small" sx={{ minWidth: 240 }}>
+                  <InputLabel>Quality mode</InputLabel>
+                  <Select label="Quality mode" value={qualityMode} onChange={e => setQualityMode(e.target.value as RedrawQualityMode)}>
+                    <MenuItem value="fast">Fast preview</MenuItem>
+                    <MenuItem value="balanced">Balanced</MenuItem>
+                    <MenuItem value="best">Best quality</MenuItem>
+                    <MenuItem value="raw_benchmark">Experimental RAW benchmark</MenuItem>
+                  </Select>
+                </FormControl>
+                {(task.id === 'style' || task.id === 'moodboard') && (
+                  <FormControl size="small" sx={{ minWidth: 260 }}>
+                    <InputLabel>Krea style LoRA</InputLabel>
+                    <Select label="Krea style LoRA" value={selectedStyleLora} onChange={e => setSelectedStyleLora(e.target.value)}>
+                      <MenuItem value="">None / image references only</MenuItem>
+                      {styleLoras.map(lora => (
+                        <MenuItem key={lora.name} value={lora.name}>
+                          {lora.display_name}{lora.installed ? '' : ' (download first)'}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                )}
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                    Preset: {preset.steps} steps, CFG {preset.cfg}, moodboard {preset.moodboardStrength.toFixed(2)}, provider {preset.editProvider.replace('_', ' ')}.
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                    {preset.promptHint}
+                  </Typography>
+                </Box>
+              </Stack>
+
+              {preset.warning && <Alert severity="warning">{preset.warning}</Alert>}
+              {selectedLoraInfo && !selectedLoraInfo.installed && (
+                <Alert severity="info">
+                  This LoRA is not installed yet. Download it from the LoRA section before generating, or Krea will fall back to image references.
+                </Alert>
+              )}
+
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
                 {slots.map(slot => (
                   <Box key={slot.id} sx={{ flex: 1, minWidth: 0 }}>
                     <ReferenceCard
@@ -602,7 +704,7 @@ export default function RedrawStudio() {
               </Stack>
 
               <Alert severity="info">
-                Reference redraw is not face-swap compositing. Use fewer references for stronger fidelity, and choose Preserve Pixels when exact source pixels matter.
+                Creative redraw makes one new coherent image from references; it is not exact compositing or face swap. Preserve Pixels is for exact-ish edits, and strict inpaint/outpaint quality is best when the optional FLUX Fill provider is installed. Style Transfer is strongest with an official Krea style LoRA selected.
               </Alert>
             </Stack>
           </CardContent>

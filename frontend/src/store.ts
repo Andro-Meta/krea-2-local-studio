@@ -17,7 +17,7 @@ export interface GenerateParams {
   quantization: 'bf16' | 'fp8'
   steps: number
   cfg: number
-  mu: number
+  mu: number | null
   y1: number
   y2: number
   width: number
@@ -25,6 +25,8 @@ export interface GenerateParams {
   num_images: number
   seed: number
   denoise: number
+  edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
+  quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   use_rebalance: boolean
   rebalance_multiplier: number
   rebalance_weights: string
@@ -76,6 +78,8 @@ export interface RealtimeSettings {
   previewSteps: number
   finalSteps: number
   canvasInfluence: number
+  seed: number
+  lockSeed: boolean
   autoPreview: boolean
 }
 
@@ -113,6 +117,8 @@ const defaultParams: GenerateParams = {
   num_images: 1,
   seed: -1,
   denoise: 0.75,
+  edit_provider: 'auto',
+  quality_preset: 'balanced',
   use_rebalance: true,
   rebalance_multiplier: 4.0,
   rebalance_weights: '1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0',
@@ -159,6 +165,8 @@ const defaultRealtime: RealtimeState = {
     previewSteps: 5,
     finalSteps: 8,
     canvasInfluence: 0.6,
+    seed: -1,
+    lockSeed: false,
     autoPreview: true,
   },
 }

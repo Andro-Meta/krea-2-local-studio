@@ -76,6 +76,7 @@ export default function RealtimeStudio() {
         width: realtime.document.width,
         height: realtime.document.height,
         num_images: 1,
+        seed: realtime.settings.lockSeed ? realtime.settings.seed : -1,
         denoise: 1,
         moodboard_strength: realtime.settings.canvasInfluence,
         moodboard_images: [canvasB64],
@@ -276,10 +277,51 @@ export default function RealtimeStudio() {
                         Lower values redraw sketches into realism. Higher values preserve uploaded references and layout more tightly.
                       </Typography>
                     </Box>
+                    <Box>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                        <Typography variant="body2">Seed</Typography>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                          {realtime.settings.lockSeed ? realtime.settings.seed : 'random'}
+                        </Typography>
+                      </Stack>
+                      <Slider
+                        value={Math.max(0, realtime.settings.seed)}
+                        min={0}
+                        max={999999}
+                        step={1}
+                        disabled={!realtime.settings.lockSeed}
+                        onChange={(_, value) => setRealtimeSettings({ seed: value as number })}
+                        valueLabelDisplay="auto"
+                      />
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                        <TextField
+                          size="small"
+                          label="Seed value"
+                          type="number"
+                          value={Math.max(0, realtime.settings.seed)}
+                          disabled={!realtime.settings.lockSeed}
+                          onChange={e => setRealtimeSettings({ seed: Math.max(0, Number(e.target.value) || 0) })}
+                          fullWidth
+                        />
+                        <Button
+                          variant="outlined"
+                          onClick={() => setRealtimeSettings({ seed: Math.floor(Math.random() * 1000000), lockSeed: true })}
+                        >
+                          Random seed
+                        </Button>
+                      </Stack>
+                      <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                        Lock the seed while tweaking prompts or canvas influence; unlock it when you want fresh variations.
+                      </Typography>
+                    </Box>
                     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
                       <FormControlLabel
                         control={<Switch checked={realtime.settings.autoPreview} onChange={e => setRealtimeSettings({ autoPreview: e.target.checked })} />}
                         label="Auto-preview"
+                      />
+                      <FormControlLabel
+                        control={<Switch checked={realtime.settings.lockSeed} onChange={e => setRealtimeSettings({ lockSeed: e.target.checked, seed: realtime.settings.seed < 0 ? Math.floor(Math.random() * 1000000) : realtime.settings.seed })} />}
+                        label="Lock seed"
                       />
                       <FormControlLabel
                         control={<Switch checked={realtime.preview.paused} onChange={e => setRealtimePreview({ paused: e.target.checked })} />}

@@ -15,6 +15,7 @@ SUPPORT_MODELS = [
         "purpose": "Krea moodboard reference-image conditioning tensors",
         "required": ["config.json", "model.safetensors.index.json"],
         "allow_patterns": None,
+        "optional": False,
     },
     {
         "id": "qwen_image_vae",
@@ -24,6 +25,23 @@ SUPPORT_MODELS = [
         "purpose": "Krea image encode/decode for img2img, inpaint, and outpaint",
         "required": ["vae/config.json"],
         "allow_patterns": ["vae/*"],
+        "optional": False,
+    },
+    {
+        "id": "flux_fill",
+        "label": "FLUX.1 Fill precision inpaint/outpaint",
+        "repo_id": "black-forest-labs/FLUX.1-Fill-dev",
+        "local_dir": LOCAL_AI_DIR / "flux1_fill_dev",
+        "purpose": "Optional strict masked inpaint/outpaint provider for preserve-pixel edits",
+        "required": ["flux1-fill-dev.safetensors", "ae.safetensors", "clip_l.safetensors"],
+        "allow_patterns": [
+            "flux1-fill-dev.safetensors",
+            "ae.safetensors",
+            "clip_l.safetensors",
+            "t5xxl_fp8_e4m3fn.safetensors",
+            "t5xxl_fp16.safetensors",
+        ],
+        "optional": True,
     },
 ]
 
@@ -79,6 +97,7 @@ def support_model_status() -> list[dict[str, Any]]:
             "repo_id": model["repo_id"],
             "purpose": model["purpose"],
             "installed": installed,
+            "optional": bool(model.get("optional", False)),
             "path": str(local_dir),
             "cache_dir": str(_repo_cache_dir(model["repo_id"])),
             "legacy_cache_installed": _has_required(model["repo_id"], model["required"]),
@@ -92,6 +111,8 @@ def download_support_models() -> list[dict[str, Any]]:
     token = settings.hf_token or os.environ.get("HF_TOKEN") or None
     results: list[dict[str, Any]] = []
     for model in SUPPORT_MODELS:
+        if model.get("optional"):
+            continue
         path = snapshot_download(
             repo_id=model["repo_id"],
             cache_dir=HF_HOME,

@@ -474,7 +474,7 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
             width=width,
             height=height,
             num_images=1,
-            seed=-1,
+            seed=int(req.seed),
             denoise=1.0,
             use_prompt_expander=False,
             refine=False,
@@ -482,13 +482,8 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
             moodboard_images=[req.canvas_image_b64],
         )
         results, seed, filenames, _ = await loop.run_in_executor(
-            None, lambda: pipeline.generate(preview_req, progress_cb=progress_cb)
+            None, lambda: pipeline.generate(preview_req, progress_cb=progress_cb, save_outputs=False)
         )
-        for filename in filenames:
-            try:
-                (OUTPUTS_DIR / filename).unlink(missing_ok=True)
-            except Exception:
-                logger.debug("Could not delete realtime preview file %s", filename, exc_info=True)
         image = results[0] if results else ""
         realtime_previews.complete(job_id, image_b64=image, seed=seed)
     except Exception as e:
@@ -513,6 +508,20 @@ async def _run_generation(job_id: str, req: GenerationRequest):
         )
 
     try:
+        from edit_providers import resolve_edit_provider
+        from support_models import support_model_status
+
+        flux_installed = any(
+            item["id"] == "flux_fill" and item["installed"]
+            for item in support_model_status()
+        )
+        provider = resolve_edit_provider(req.edit_provider, req.mode, flux_fill_installed=flux_installed)
+        job["edit_provider"] = provider.name
+        job["provider_warning"] = (
+            provider.reason
+            if req.edit_provider in {"auto", "flux_fill"} and provider.name != "flux_fill" and req.mode in {"inpaint", "outpaint"}
+            else None
+        )
         results, seed, filenames, lora_reports = await loop.run_in_executor(
             None, lambda: pipeline.generate(req, progress_cb=progress_cb)
         )
@@ -547,6 +556,8 @@ async def _run_generation(job_id: str, req: GenerationRequest):
         await ws_manager.broadcast(job_id, {
             "type": "done", "images": results, "seed": seed,
             "lora_warnings": lora_warnings,
+            "edit_provider": job.get("edit_provider"),
+            "provider_warning": job.get("provider_warning"),
         })
 
     except Exception as e:
@@ -651,21 +662,16 @@ async def get_loras():
 
 @app.post("/api/loras/{lora_name}/download")
 async def download_lora(lora_name: str):
-    from lora_manager import OFFICIAL_LORAS, OFFICIAL_LORA_HF_IDS
+    from lora_manager import OFFICIAL_LORAS, official_lora_download_kwargs
     from huggingface_hub import hf_hub_download
     if lora_name not in OFFICIAL_LORAS:
         raise HTTPException(404, f"Unknown LoRA: {lora_name}")
-    repo_id = OFFICIAL_LORA_HF_IDS.get(lora_name, "Comfy-Org/Krea-2")
-    filename = f"{lora_name}.safetensors"
     loop = asyncio.get_event_loop()
     try:
         dest = await loop.run_in_executor(
             None,
             lambda: hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=str(LORAS_DIR),
-                token=settings.hf_token or None,
+                **official_lora_download_kwargs(lora_name, token=settings.hf_token),
             ),
         )
         return {"ok": True, "path": dest}

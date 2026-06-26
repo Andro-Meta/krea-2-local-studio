@@ -86,6 +86,7 @@ export function useRealtimePreview() {
         height: Math.round(settings.previewSize * (document.height / document.width)),
         preview_steps: settings.previewSteps,
         moodboard_strength: settings.canvasInfluence,
+        seed: settings.lockSeed ? settings.seed : -1,
       })
       latestJobRef.current = job.job_id
       setRealtimePreview({
@@ -102,7 +103,7 @@ export function useRealtimePreview() {
         lastUpdated: Date.now(),
       })
     }
-  }, [document, negativePrompt, paused, pollJob, prompt, sessionId, setRealtimePreview, settings.canvasInfluence, settings.previewSize, settings.previewSteps])
+  }, [document, negativePrompt, paused, pollJob, prompt, sessionId, setRealtimePreview, settings.canvasInfluence, settings.lockSeed, settings.previewSize, settings.previewSteps, settings.seed])
 
   const cancelPreview = useCallback(async () => {
     clearPoll()
@@ -132,9 +133,28 @@ export function useRealtimePreview() {
     settings.previewSize,
     settings.previewSteps,
     settings.canvasInfluence,
+    settings.lockSeed,
+    settings.seed,
     paused,
     previewNow,
   ])
+
+  useEffect(() => {
+    if (!paused) {
+      if (settings.autoPreview && document.layers.length > 0) {
+        if (debounceTimer.current !== null) window.clearTimeout(debounceTimer.current)
+        debounceTimer.current = window.setTimeout(() => previewNow(), settings.debounceMs)
+      }
+      return
+    }
+    clearPoll()
+    if (debounceTimer.current !== null) window.clearTimeout(debounceTimer.current)
+    debounceTimer.current = null
+    const jobId = latestJobRef.current
+    latestJobRef.current = null
+    if (jobId) apiFetch.cancelRealtimePreview(jobId).catch(() => undefined)
+    setRealtimePreview({ status: 'idle', jobId: null, error: null, progress: 0 })
+  }, [paused])
 
   useEffect(() => () => {
     clearPoll()

@@ -25,6 +25,8 @@ class GenerationRequest(BaseModel):
     num_images: int = 1
     seed: int = -1
     denoise: float = 1.0
+    edit_provider: str = "auto"       # auto | krea_native | flux_fill
+    quality_preset: str = "balanced"  # fast | balanced | best | raw_benchmark
     loras: List[dict] = []
     use_rebalance: bool = True
     rebalance_multiplier: float = 4.0
@@ -55,6 +57,7 @@ class RealtimePreviewRequest(BaseModel):
     height: int = 512
     preview_steps: int = 5
     moodboard_strength: float = 0.75
+    seed: int = -1
 
 
 class GalleryItem(BaseModel):
