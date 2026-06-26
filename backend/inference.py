@@ -251,10 +251,18 @@ class Krea2Pipeline:
                 "krea2/mmdit.py not found. Run install.bat to download it."
             )
 
-        from safetensors.torch import load_file
+        from safetensors.torch import load_file, load_model
 
         if not Path(checkpoint_path).exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        checkpoint_size_gb = Path(checkpoint_path).stat().st_size / (1024 ** 3)
+        total_ram_gb, _ = get_ram_gb()
+        if quantization == "bf16" and checkpoint_size_gb > 20 and total_ram_gb is not None and total_ram_gb < 48:
+            raise RuntimeError(
+                f"{Path(checkpoint_path).name} is a {checkpoint_size_gb:.1f}GB single-file BF16 checkpoint. "
+                "This loader needs at least 48GB system RAM for BF16/RAW variants. "
+                "Use Turbo FP8 here, or run BF16/RAW on a higher-RAM machine/offloaded loader."
+            )
 
         self._loading = True
         with self._lock:
@@ -275,13 +283,11 @@ class Krea2Pipeline:
                             layers=28, patch=2, channels=16,
                             txtlayers=12,
                         ))
-                    sd = load_file(checkpoint_path, device="cpu")
+                    sd = load_file(checkpoint_path, device="cpu") if quantization == "fp8" else None
                     # Detect pre-quantized fp8 checkpoint (krea2_turbo_fp8_scaled).
                     # Must scan ALL tensors: the file's first key is a float32
                     # weight_scale, so checking only sd[0] gives a false negative.
-                    checkpoint_is_fp8 = any(
-                        "float8" in str(v.dtype) for v in sd.values()
-                    )
+                    checkpoint_is_fp8 = bool(sd) and any("float8" in str(v.dtype) for v in sd.values())
 
                     if checkpoint_is_fp8:
                         # Extract per-tensor scales before load (strict=True would reject them)
@@ -299,6 +305,8 @@ class Krea2Pipeline:
                     elif quantization == "fp8":
                         # bf16 weights + fp8 requested: quantize on CPU FIRST to avoid
                         # 24GB bf16 spike in VRAM on 24GB cards
+                        if sd is None:
+                            sd = load_file(checkpoint_path, device="cpu")
                         mmdit.load_state_dict(sd, strict=True, assign=True)
                         del sd
                         mmdit = mmdit.to(dtype=torch.bfloat16)
@@ -314,8 +322,10 @@ class Krea2Pipeline:
                         mmdit = mmdit.to(device=self._device).eval()
                         logger.info(f"DiT loaded (fp8). {mem_snapshot()}")
                     else:
-                        mmdit.load_state_dict(sd, strict=True, assign=True)
-                        del sd
+                        mmdit = mmdit.to_empty(device="cpu")
+                        missing, unexpected = load_model(mmdit, checkpoint_path, strict=True, device="cpu")
+                        if missing or unexpected:
+                            raise RuntimeError(f"Checkpoint load mismatch: missing={missing}, unexpected={unexpected}")
                         mmdit = mmdit.to(device=self._device, dtype=self._dtype).eval()
                         logger.info(f"DiT loaded. {mem_snapshot()}")
 

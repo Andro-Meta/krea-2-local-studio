@@ -83,6 +83,24 @@ export interface Mood {
   avoids: string
 }
 
+export interface MoodboardItem {
+  id: number
+  url: string
+  slug: string
+  uuid: string
+  title: string
+  taste_profile: string
+  keywords: string[]
+  primary_image_url: string
+  image_urls: string[]
+  related_urls: string[]
+  favorite: boolean
+  first_seen_at: string
+  last_seen_at: string
+  updated_at: string
+  sync_error: string
+}
+
 export interface GalleryItem {
   id: number
   filename: string
@@ -159,8 +177,22 @@ export interface AppSettings {
   prompt_expander_backend: 'local' | 'openrouter' | 'ideogram-json'
   openrouter_model: string
   openrouter_free_only: boolean
+  has_hf_token: boolean
+  has_civitai_token: boolean
   has_ideogram_api_key: boolean
   has_openrouter_api_key: boolean
+}
+
+export interface QualityAsset {
+  id: string
+  repo_id: string
+  filename?: string | null
+  local_path: string
+  purpose: string
+  installed: boolean
+  needs_token: boolean
+  gated: boolean
+  setup_url: string
 }
 
 export const apiFetch = {
@@ -197,6 +229,29 @@ export const apiFetch = {
 
   moods: () => api.get<Mood[]>('/api/moods').then(r => r.data),
 
+  moodboards: (opts?: { q?: string; page?: number; pageSize?: number; favorites?: boolean }) => {
+    const params = new URLSearchParams()
+    if (opts?.q) params.set('q', opts.q)
+    params.set('page', String(opts?.page ?? 1))
+    params.set('page_size', String(opts?.pageSize ?? 50))
+    params.set('favorites', String(opts?.favorites ?? false))
+    return api.get<{ items: MoodboardItem[]; total: number }>(`/api/moodboards?${params.toString()}`).then(r => r.data)
+  },
+
+  moodboard: (id: number) =>
+    api.get<MoodboardItem>(`/api/moodboards/${id}`).then(r => r.data),
+
+  setMoodboardFavorite: (id: number, favorite: boolean) =>
+    api.put(`/api/moodboards/${id}/favorite`, { favorite }).then(r => r.data),
+
+  importMoodboards: (urls: string[] = [], maxPages = 200) =>
+    api.post<{ imported: number; ids: number[] }>('/api/moodboards/import', { urls, max_pages: maxPages }, { timeout: 180000 })
+      .then(r => r.data),
+
+  moodboardImage: (url: string) =>
+    api.post<{ image_b64: string }>('/api/moodboards/image', { url }, { timeout: 120000 })
+      .then(r => r.data.image_b64),
+
   upscale: (image_b64: string, method: string, opts?: { scale?: number; denoise?: number; prompt?: string; tile_size?: number; seam_fix?: boolean }) =>
     api.post<{ image_b64: string }>('/api/upscale', {
       image_b64, method,
@@ -221,8 +276,15 @@ export const apiFetch = {
     api.post<{ ok: boolean; status: SystemReport['support_models'] }>('/api/support-models/download', {}, { timeout: 3600000 })
       .then(r => r.data),
 
+  qualityAssets: () =>
+    api.get<{ has_hf_token: boolean; items: QualityAsset[] }>('/api/quality-assets').then(r => r.data),
+
+  downloadQualityAsset: (assetId: string) =>
+    api.post<{ ok: boolean; path: string; item: QualityAsset }>(`/api/quality-assets/${assetId}/download`, {}, { timeout: 7200000 })
+      .then(r => r.data),
+
   settings: () => api.get<AppSettings>('/api/settings').then(r => r.data),
-  updateSettings: (data: Partial<AppSettings> & { ideogram_api_key?: string; openrouter_api_key?: string }) =>
+  updateSettings: (data: Partial<AppSettings> & { hf_token?: string; ideogram_api_key?: string; openrouter_api_key?: string }) =>
     api.put('/api/settings', data).then(r => r.data),
 
   expandPrompt: (prompt: string) =>

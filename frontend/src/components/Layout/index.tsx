@@ -2,12 +2,14 @@ import React from 'react'
 import { BottomNavigation, BottomNavigationAction, Box, Drawer, List, ListItemButton, ListItemIcon, ListItemText, Toolbar, useMediaQuery, useTheme } from '@mui/material'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import CollectionsIcon from '@mui/icons-material/Collections'
+import StyleIcon from '@mui/icons-material/Style'
 import MonitorIcon from '@mui/icons-material/Monitor'
 import { useStore } from '../../store'
 
 const TABS = [
   { label: 'Create', icon: <AutoAwesomeIcon /> },
   { label: 'Gallery', icon: <CollectionsIcon /> },
+  { label: 'Moodboards', icon: <StyleIcon /> },
   { label: 'System', icon: <MonitorIcon /> },
 ]
 

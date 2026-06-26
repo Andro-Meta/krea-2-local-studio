@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import Layout from './components/Layout'
 import GeneratePanel from './components/GeneratePanel'
 import GalleryPanel from './components/Gallery'
+import MoodboardsPanel from './components/Moodboards'
 import SystemStatus from './components/SystemStatus'
 import RedrawStudio from './components/RedrawStudio'
 import RealtimeStudio from './components/RealtimeStudio'
@@ -52,7 +53,8 @@ export default function App() {
     <Layout>
       {tab === 0 && renderCreate()}
       {tab === 1 && <GalleryPanel />}
-      {tab === 2 && <SystemStatus />}
+      {tab === 2 && <MoodboardsPanel />}
+      {tab === 3 && <SystemStatus />}
       {lightbox && <Lightbox />}
     </Layout>
   )

@@ -179,6 +179,47 @@ class FavoriteRequest(BaseModel):
     favorite: bool
 
 
+class MoodboardItem(BaseModel):
+    id: int
+    url: str
+    slug: str
+    uuid: str = ""
+    title: str
+    taste_profile: str = ""
+    keywords: List[str] = []
+    primary_image_url: str = ""
+    image_urls: List[str] = []
+    related_urls: List[str] = []
+    favorite: bool = False
+    first_seen_at: str
+    last_seen_at: str
+    updated_at: str
+    sync_error: str = ""
+
+
+class MoodboardListResponse(BaseModel):
+    items: List[MoodboardItem]
+    total: int
+
+
+class MoodboardImportRequest(BaseModel):
+    urls: List[str] = []
+    max_pages: int = 200
+
+
+class MoodboardImportResponse(BaseModel):
+    imported: int
+    ids: List[int]
+
+
+class MoodboardImageRequest(BaseModel):
+    url: str
+
+
+class MoodboardImageResponse(BaseModel):
+    image_b64: str
+
+
 class SettingsUpdate(BaseModel):
     hf_token: Optional[str] = None
     civitai_token: Optional[str] = None

@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -67,6 +68,48 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(kwargs["repo_id"], "Comfy-Org/Krea-2")
         self.assertEqual(kwargs["filename"], "krea2_darkbrush.safetensors")
         self.assertEqual(kwargs["subfolder"], "loras")
+
+    def test_flux_fill_call_uses_documented_defaults(self) -> None:
+        import flux_fill_provider
+
+        kwargs = flux_fill_provider.flux_fill_call_kwargs(
+            prompt="add a lantern",
+            image=Image.new("RGB", (512, 512), "white"),
+            mask=Image.new("L", (512, 512), 255),
+            width=512,
+            height=512,
+            seed=42,
+            steps=8,
+        )
+
+        self.assertEqual(kwargs["guidance_scale"], 30.0)
+        self.assertEqual(kwargs["num_inference_steps"], 50)
+        self.assertEqual(kwargs["max_sequence_length"], 512)
+        self.assertEqual(kwargs["height"], 512)
+        self.assertEqual(kwargs["width"], 512)
+
+    def test_quality_asset_download_specs_use_official_paths(self) -> None:
+        import quality_assets
+
+        specs = {spec.id: spec for spec in quality_assets.asset_specs()}
+
+        self.assertEqual(specs["krea2_turbo_bf16"].repo_id, "Comfy-Org/Krea-2")
+        self.assertEqual(specs["krea2_turbo_bf16"].filename, "diffusion_models/krea2_turbo_bf16.safetensors")
+        self.assertEqual(specs["krea2_raw_bf16"].filename, "diffusion_models/krea2_raw_bf16.safetensors")
+        self.assertEqual(specs["flux_fill"].repo_id, "black-forest-labs/FLUX.1-Fill-dev")
+
+    def test_flux_asset_status_guides_token_setup(self) -> None:
+        import quality_assets
+
+        spec = quality_assets.asset_by_id("flux_fill")
+        with patch.object(quality_assets, "asset_installed", return_value=False):
+            status = quality_assets.asset_status(spec, has_hf_token=False)
+            self.assertTrue(status["gated"])
+            self.assertTrue(status["needs_token"])
+            self.assertEqual(status["setup_url"], "https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev")
+
+            with_token = quality_assets.asset_status(spec, has_hf_token=True)
+            self.assertFalse(with_token["needs_token"])
 
 
 if __name__ == "__main__":

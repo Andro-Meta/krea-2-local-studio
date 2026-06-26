@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
 import GpuIcon from '@mui/icons-material/Memory'
-import { apiFetch, type AppSettings, type AuthSession, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
+import { apiFetch, type AppSettings, type AuthSession, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
 import { useStore } from '../../store'
 
 function GBBar({ label, used, total }: { label: string; used?: number; total?: number }) {
@@ -35,6 +35,7 @@ export default function SystemStatus() {
   const [settingsDraft, setSettingsDraft] = useState({
     prompt_expander_backend: 'local' as 'local' | 'openrouter' | 'ideogram-json',
     ideogram_api_key: '',
+    hf_token: '',
     openrouter_api_key: '',
     openrouter_model: 'google/gemma-4-31b-it:free',
     openrouter_free_only: true,
@@ -48,6 +49,9 @@ export default function SystemStatus() {
   const [sharingMessage, setSharingMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
   const [userMessage, setUserMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'admin' | 'user' })
+  const [qualityAssets, setQualityAssets] = useState<{ has_hf_token: boolean; items: QualityAsset[] } | null>(null)
+  const [qualityBusy, setQualityBusy] = useState<string | null>(null)
+  const [qualityMessage, setQualityMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
   const { setSystemReport } = useStore()
   const isAdmin = auth?.role === 'admin'
 
@@ -88,6 +92,7 @@ export default function SystemStatus() {
       setSettingsDraft({
         prompt_expander_backend: s.prompt_expander_backend,
         ideogram_api_key: '',
+        hf_token: '',
         openrouter_api_key: '',
         openrouter_model: s.openrouter_model,
         openrouter_free_only: s.openrouter_free_only,
@@ -113,15 +118,57 @@ export default function SystemStatus() {
     }
   }
 
+  const loadQualityAssets = async () => {
+    try {
+      setQualityAssets(await apiFetch.qualityAssets())
+    } catch {
+      setQualityMessage({ severity: 'error', text: 'Could not load precision editing asset status.' })
+    }
+  }
+
   useEffect(() => {
     loadAuth().then(session => {
       if (session?.role === 'admin') {
         loadSettings()
         loadUsers()
         loadSharing()
+        loadQualityAssets()
       }
     })
   }, [])
+
+  const saveHfToken = async () => {
+    const token = settingsDraft.hf_token.trim()
+    if (!token) return
+    setSavingSettings(true)
+    setQualityMessage(null)
+    try {
+      await apiFetch.updateSettings({ hf_token: token })
+      setSettingsDraft(d => ({ ...d, hf_token: '' }))
+      await loadSettings()
+      await loadQualityAssets()
+      setQualityMessage({ severity: 'success', text: 'Hugging Face token saved for this server session. You can now download gated assets.' })
+    } catch (e: any) {
+      setQualityMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not save Hugging Face token.' })
+    } finally {
+      setSavingSettings(false)
+    }
+  }
+
+  const downloadQualityAsset = async (assetId: string) => {
+    setQualityBusy(assetId)
+    setQualityMessage(null)
+    try {
+      await apiFetch.downloadQualityAsset(assetId)
+      await loadQualityAssets()
+      await refresh()
+      setQualityMessage({ severity: 'success', text: 'Precision editing asset is ready.' })
+    } catch (e: any) {
+      setQualityMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Quality asset download failed.' })
+    } finally {
+      setQualityBusy(null)
+    }
+  }
 
   const saveMagicWandSettings = async () => {
     setSavingSettings(true)
@@ -359,8 +406,8 @@ export default function SystemStatus() {
               <Typography variant="h6">Krea Moodboard Conditioning</Typography>
               <Chip
                 size="small"
-                label={report?.support_models?.every(m => m.installed) ? 'Ready' : 'Needs download'}
-                color={report?.support_models?.every(m => m.installed) ? 'success' : 'warning'}
+                label={report?.support_models?.filter(m => !m.optional).every(m => m.installed) ? 'Ready' : 'Needs download'}
+                color={report?.support_models?.filter(m => !m.optional).every(m => m.installed) ? 'success' : 'warning'}
               />
             </Stack>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
@@ -368,7 +415,7 @@ export default function SystemStatus() {
               This does not call Krea's servers. These assets are large and are normally downloaded during install or first model load.
             </Typography>
             <Stack spacing={1}>
-              {(report?.support_models ?? []).map(model => (
+              {(report?.support_models?.filter(model => !model.optional) ?? []).map(model => (
                 <Box key={model.id}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1}>
                     <Box>
@@ -395,6 +442,83 @@ export default function SystemStatus() {
             </Button>
           </Stack>
         </Paper>
+
+        {/* Precision editing assets */}
+        {isAdmin && <Paper sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="h6">Precision Editing / FLUX Fill</Typography>
+              <Chip
+                size="small"
+                label={qualityAssets?.items.find(asset => asset.id === 'flux_fill')?.installed ? 'Ready' : 'Setup needed'}
+                color={qualityAssets?.items.find(asset => asset.id === 'flux_fill')?.installed ? 'success' : 'warning'}
+              />
+            </Stack>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              Strict inpaint and preserve-source outpaint use FLUX Fill when installed. This model is gated on Hugging Face:
+              open the model page, accept access, paste a Hugging Face token here, then download the asset.
+            </Typography>
+            <Alert severity="info" sx={{ py: 0 }}>
+              Browser login is not enough for local Python downloads. The server needs a Hugging Face access token with permission for black-forest-labs/FLUX.1-Fill-dev.
+            </Alert>
+            <Stack spacing={1}>
+              {(qualityAssets?.items.filter(asset => asset.id === 'flux_fill') ?? []).map(asset => (
+                <Box key={asset.id}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1}>
+                    <Box>
+                      <Typography variant="body2">{asset.purpose}</Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', wordBreak: 'break-all' }}>
+                        {asset.repo_id} · {asset.local_path}
+                      </Typography>
+                    </Box>
+                    <Chip size="small" label={asset.installed ? 'Installed' : asset.needs_token ? 'Needs HF token' : 'Missing'} color={asset.installed ? 'success' : 'warning'} />
+                  </Stack>
+                  {!asset.installed && (
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
+                      <Button size="small" variant="outlined" href={asset.setup_url} target="_blank" rel="noreferrer">
+                        Open HF model page
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        onClick={() => downloadQualityAsset(asset.id)}
+                        disabled={qualityBusy === asset.id || asset.needs_token}
+                        startIcon={qualityBusy === asset.id ? <CircularProgress size={14} color="inherit" /> : undefined}
+                      >
+                        {qualityBusy === asset.id ? 'Downloading...' : 'Download FLUX Fill'}
+                      </Button>
+                    </Stack>
+                  )}
+                </Box>
+              ))}
+            </Stack>
+            <TextField
+              label="Hugging Face access token"
+              value={settingsDraft.hf_token}
+              onChange={e => setSettingsDraft(d => ({ ...d, hf_token: e.target.value }))}
+              size="small"
+              fullWidth
+              type="password"
+              placeholder={settings?.has_hf_token || qualityAssets?.has_hf_token ? 'Token saved for this server session. Paste a new token to replace it.' : 'hf_...'}
+              helperText="Use a token from Hugging Face Settings > Access Tokens after accepting the FLUX Fill model access terms."
+            />
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={saveHfToken}
+                disabled={savingSettings || !settingsDraft.hf_token.trim()}
+                startIcon={savingSettings ? <CircularProgress size={14} color="inherit" /> : undefined}
+              >
+                Save HF Token
+              </Button>
+              <Button variant="text" size="small" onClick={loadQualityAssets}>
+                Refresh status
+              </Button>
+            </Stack>
+            {qualityMessage && <Alert severity={qualityMessage.severity} sx={{ py: 0 }}>{qualityMessage.text}</Alert>}
+          </Stack>
+        </Paper>}
 
         {/* Magic wand settings */}
         {isAdmin && <Paper sx={{ p: 2 }}>

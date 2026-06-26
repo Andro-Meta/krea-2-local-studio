@@ -611,6 +611,11 @@ export default function RedrawStudio() {
                   <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
                     Preset: {preset.steps} steps, CFG {preset.cfg}, moodboard {preset.moodboardStrength.toFixed(2)}, provider {preset.editProvider.replace('_', ' ')}.
                   </Typography>
+                  {(preset.editProvider === 'auto' || preset.editProvider === 'flux_fill') && (task.id === 'preserve' || (task.id === 'extend' && extendMode === 'preserve')) && (
+                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                      If FLUX Fill is installed, strict edits use its documented fill defaults: 50 steps, guidance 30, max sequence 512.
+                    </Typography>
+                  )}
                   <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
                     {preset.promptHint}
                   </Typography>

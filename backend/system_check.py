@@ -13,16 +13,16 @@ logger = logging.getLogger(__name__)
 
 VARIANT_REQS: dict[str, dict[str, Any]] = {
     "turbo_bf16": {
-        "vram_gb": 20.0, "ram_gb": 16.0,
-        "label": "Krea 2 Turbo bf16 (needs ~20 GB VRAM with encoder offload)",
+        "vram_gb": 20.0, "ram_gb": 48.0,
+        "label": "Krea 2 Turbo bf16 (needs ~20 GB VRAM and ~48 GB RAM with this single-file loader)",
     },
     "turbo_fp8": {
         "vram_gb": 13.0, "ram_gb": 12.0,
         "label": "Krea 2 Turbo fp8 (needs ~13 GB VRAM)",
     },
     "raw_bf16": {
-        "vram_gb": 20.0, "ram_gb": 16.0,
-        "label": "Krea 2 RAW bf16 (needs ~20 GB VRAM with encoder offload)",
+        "vram_gb": 20.0, "ram_gb": 48.0,
+        "label": "Krea 2 RAW bf16 (needs ~20 GB VRAM and ~48 GB RAM with this single-file loader)",
     },
 }
 

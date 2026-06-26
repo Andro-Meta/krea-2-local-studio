@@ -122,6 +122,47 @@ def apply_variant(payload: dict, config: dict) -> dict:
     return tuned
 
 
+FAILED_TASKS = {
+    "sketch_to_realistic",
+    "style_transfer",
+    "extend_preserve_outpaint",
+    "preserve_masked_inpaint",
+}
+
+
+def apply_quality_upgrade(task: str, payload: dict, *, style_lora: str) -> dict:
+    tuned = dict(payload)
+    tuned["quality_preset"] = "best"
+    if task == "sketch_to_realistic":
+        tuned["moodboard_strength"] = 0.42
+        tuned["use_prompt_expander"] = True
+        tuned["prompt"] = (
+            "Picture 1 is only the sketch layout and silhouette. Replace all sketch texture "
+            "with realistic materials, coherent lighting, shadows, and photographic detail. "
+            "Do not leave line-art outlines.\n\n"
+            + tuned["prompt"]
+        )
+    elif task == "style_transfer":
+        tuned["moodboard_strength"] = 0.42
+        tuned["use_prompt_expander"] = True
+        tuned["moodboard_images"] = tuned.get("moodboard_images", [])[:1]
+        tuned["loras"] = [{"name": style_lora, "filename": f"{style_lora}.safetensors", "strength": 1.0, "enabled": True}]
+        tuned["prompt"] = (
+            "Use the selected official Krea style LoRA for style. Use Picture 1 only for subject "
+            "and composition; do not create a split-screen collage.\n\n"
+            + tuned["prompt"]
+        )
+    elif task in {"extend_preserve_outpaint", "preserve_masked_inpaint"}:
+        tuned["edit_provider"] = "auto"
+        tuned["use_prompt_expander"] = True
+        tuned["prompt"] = (
+            "Strict preserve-pixel edit. Preserve unmasked/source pixels and fill only the masked "
+            "or extended region with matched perspective, lighting, texture, and scale.\n\n"
+            + tuned["prompt"]
+        )
+    return tuned
+
+
 def run_payload(base: str, label: str, payload: dict) -> dict:
     start = time.perf_counter()
     job = request_json(base, "/api/generate", method="POST", payload=payload)
@@ -179,13 +220,20 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark Redraw Studio quality across Krea model variants.")
     parser.add_argument("--variants", default="turbo-fp8,turbo-bf16,raw-bf16")
     parser.add_argument("--tasks", default="all")
+    parser.add_argument("--quality-upgrade", action="store_true", help="Apply LoRA/FLUX/prompt upgrades for failed workflows.")
+    parser.add_argument("--style-lora", default="krea2_rainywindow", help="Official Krea LoRA to use for style_transfer when --quality-upgrade is set.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     requested_variants = [v.strip() for v in args.variants.split(",") if v.strip()]
-    requested_tasks = None if args.tasks == "all" else {t.strip() for t in args.tasks.split(",") if t.strip()}
+    if args.tasks == "all":
+        requested_tasks = None
+    elif args.tasks == "failed":
+        requested_tasks = FAILED_TASKS
+    else:
+        requested_tasks = {t.strip() for t in args.tasks.split(",") if t.strip()}
     base = find_base()
     refs = references()
     for name, image_b64 in refs.items():
@@ -207,7 +255,10 @@ def main() -> None:
                 continue
             label = f"{variant}_{task}"
             print(f"BENCHMARK {label}", flush=True)
-            summary["variants"][variant][task] = run_payload(base, label, apply_variant(payload, config))
+            tuned = apply_variant(payload, config)
+            if args.quality_upgrade:
+                tuned = apply_quality_upgrade(task, tuned, style_lora=args.style_lora)
+            summary["variants"][variant][task] = run_payload(base, label, tuned)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     summary["contact_sheet"] = write_report(summary)

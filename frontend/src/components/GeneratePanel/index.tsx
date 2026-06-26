@@ -117,7 +117,7 @@ export default function GeneratePanel() {
             severity="warning"
             icon={<WarningAmberIcon />}
             action={
-              <Button color="inherit" size="small" onClick={() => setTab(2)}>
+              <Button color="inherit" size="small" onClick={() => setTab(3)}>
                 Load model
               </Button>
             }

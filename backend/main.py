@@ -30,6 +30,16 @@ from gallery import delete_image, get_gallery, init_db, save_image, set_favorite
 from inference import pipeline
 from log_setup import setup_logging
 from lora_manager import inspect_lora, list_loras
+from moodboards_catalog import (
+    KREA_MOODBOARD_GALLERY_URL,
+    fetch_krea_image_b64,
+    get_moodboard,
+    import_moodboard_urls,
+    init_moodboard_db,
+    list_moodboards,
+    set_moodboard_favorite,
+    should_sync_moodboards,
+)
 from prompt_expander import describe_image_local, describe_image_openrouter, expand_prompt_result, openrouter_error_hint
 from schemas import (
     AutoMaskRequest,
@@ -40,6 +50,12 @@ from schemas import (
     FavoriteRequest,
     GenerationRequest,
     LoadModelRequest,
+    MoodboardImportRequest,
+    MoodboardImportResponse,
+    MoodboardImageRequest,
+    MoodboardImageResponse,
+    MoodboardListResponse,
+    MoodboardItem,
     RealtimePreviewRequest,
     SettingsUpdate,
     ShareLoginRequest,
@@ -141,6 +157,8 @@ def _requires_admin(path: str, method: str) -> bool:
     if path == "/api/loras/import":
         return True
     if path.startswith("/api/gallery/") and method == "DELETE":
+        return True
+    if path == "/api/moodboards/import":
         return True
     return False
 
@@ -372,7 +390,11 @@ realtime_previews = RealtimePreviewRegistry(max_jobs=64)
 @app.on_event("startup")
 async def startup():
     await init_db()
+    await init_moodboard_db()
     logger.info("Krea 2 Studio ready on port 8200")
+    if await should_sync_moodboards(mark=True):
+        asyncio.create_task(_sync_krea_moodboards())
+    asyncio.create_task(_moodboard_sync_loop())
     # Auto-load model if configured
     cp = settings.krea2_auto_checkpoint or settings.krea2_turbo_path
     if cp and Path(cp).exists():
@@ -389,6 +411,20 @@ async def _auto_load_model(checkpoint_path: str, quantization: str):
         logger.info("Auto-load complete.")
     except Exception as e:
         logger.warning(f"Auto-load failed: {e}")
+
+
+async def _sync_krea_moodboards(max_pages: int = 200) -> None:
+    try:
+        await import_moodboard_urls([KREA_MOODBOARD_GALLERY_URL], max_pages=max_pages, use_browser_discovery=True)
+    except Exception:
+        logger.exception("Krea moodboard sync failed")
+
+
+async def _moodboard_sync_loop() -> None:
+    while True:
+        await asyncio.sleep(60 * 60)
+        if await should_sync_moodboards(mark=True):
+            await _sync_krea_moodboards()
 
 
 # ---------------------------------------------------------------------------
@@ -509,12 +545,9 @@ async def _run_generation(job_id: str, req: GenerationRequest):
 
     try:
         from edit_providers import resolve_edit_provider
-        from support_models import support_model_status
+        from flux_fill_provider import flux_fill_installed, generate_flux_fill
 
-        flux_installed = any(
-            item["id"] == "flux_fill" and item["installed"]
-            for item in support_model_status()
-        )
+        flux_installed = flux_fill_installed()
         provider = resolve_edit_provider(req.edit_provider, req.mode, flux_fill_installed=flux_installed)
         job["edit_provider"] = provider.name
         job["provider_warning"] = (
@@ -522,9 +555,19 @@ async def _run_generation(job_id: str, req: GenerationRequest):
             if req.edit_provider in {"auto", "flux_fill"} and provider.name != "flux_fill" and req.mode in {"inpaint", "outpaint"}
             else None
         )
-        results, seed, filenames, lora_reports = await loop.run_in_executor(
-            None, lambda: pipeline.generate(req, progress_cb=progress_cb)
-        )
+        if provider.name == "flux_fill":
+            pipeline.unload()
+            if req.steps < 50:
+                req.steps = 50
+            if req.cfg < 30:
+                req.cfg = 30
+            results, seed, filenames, lora_reports = await loop.run_in_executor(
+                None, lambda: generate_flux_fill(req, progress_cb=progress_cb)
+            )
+        else:
+            results, seed, filenames, lora_reports = await loop.run_in_executor(
+                None, lambda: pipeline.generate(req, progress_cb=progress_cb)
+            )
         job["images"] = results
         job["seed"] = seed
         job["status"] = "done"
@@ -609,6 +652,8 @@ async def load_model(req: LoadModelRequest):
         )
     except Exception as exc:
         logger.exception("Model load failed")
+        if isinstance(exc, (RuntimeError, FileNotFoundError)):
+            raise HTTPException(400, str(exc))
         raise HTTPException(500, "Model load failed. Check the server logs for details.")
     return {"status": "loaded", "checkpoint": req.checkpoint_path}
 
@@ -643,6 +688,51 @@ async def delete_gallery_item(gallery_id: int):
     if filename is None:
         raise HTTPException(404, "Not found")
     return {"ok": True, "filename": filename}
+
+
+# ---------------------------------------------------------------------------
+# Moodboard catalog
+# ---------------------------------------------------------------------------
+
+@app.get("/api/moodboards", response_model=MoodboardListResponse)
+async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False):
+    return await list_moodboards(query=q, page=page, page_size=page_size, favorites_only=favorites)
+
+
+@app.get("/api/moodboards/{moodboard_id}", response_model=MoodboardItem)
+async def moodboard_detail(moodboard_id: int):
+    item = await get_moodboard(moodboard_id)
+    if item is None:
+        raise HTTPException(404, "Not found")
+    return item
+
+
+@app.put("/api/moodboards/{moodboard_id}/favorite")
+async def favorite_moodboard(moodboard_id: int, req: FavoriteRequest):
+    await set_moodboard_favorite(moodboard_id, req.favorite)
+    return {"ok": True}
+
+
+@app.post("/api/moodboards/import", response_model=MoodboardImportResponse)
+async def import_moodboards(req: MoodboardImportRequest):
+    urls = req.urls or [KREA_MOODBOARD_GALLERY_URL]
+    try:
+        return await import_moodboard_urls(urls, max_pages=req.max_pages, use_browser_discovery=not req.urls)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/moodboards/image", response_model=MoodboardImageResponse)
+async def moodboard_image(req: MoodboardImageRequest):
+    loop = asyncio.get_event_loop()
+    try:
+        image_b64 = await loop.run_in_executor(None, lambda: fetch_krea_image_b64(req.url))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        logger.exception("Krea moodboard image fetch failed")
+        raise HTTPException(502, "Could not load Krea moodboard image")
+    return {"image_b64": image_b64}
 
 
 # ---------------------------------------------------------------------------
@@ -843,6 +933,58 @@ async def download_support_models_endpoint():
         logger.exception("Support model download failed")
         raise HTTPException(502, "Support model download failed. Check the server logs for details.")
     return {"ok": True, "items": results, "status": support_model_status()}
+
+
+@app.get("/api/quality-assets")
+async def quality_assets_status():
+    from quality_assets import asset_specs, asset_status
+
+    has_token = bool(settings.hf_token or os.environ.get("HF_TOKEN"))
+    return {
+        "has_hf_token": has_token,
+        "items": [asset_status(spec, has_hf_token=has_token) for spec in asset_specs()],
+    }
+
+
+@app.post("/api/quality-assets/{asset_id}/download")
+async def download_quality_asset_endpoint(asset_id: str):
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
+    from quality_assets import asset_by_id, asset_status, download_asset
+
+    try:
+        spec = asset_by_id(asset_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown quality asset: {asset_id}")
+
+    token = settings.hf_token or os.environ.get("HF_TOKEN") or None
+    if spec.id == "flux_fill" and not token:
+        raise HTTPException(
+            401,
+            "FLUX Fill is gated on Hugging Face. Open System > Precision Editing, paste an HF token that has accepted access to black-forest-labs/FLUX.1-Fill-dev, then retry.",
+        )
+
+    loop = asyncio.get_event_loop()
+    try:
+        path = await loop.run_in_executor(None, lambda: download_asset(spec, token=token))
+    except GatedRepoError:
+        raise HTTPException(
+            401,
+            "Your Hugging Face token does not have access to black-forest-labs/FLUX.1-Fill-dev yet. Open the model page, accept the license/access terms, then retry.",
+        )
+    except HfHubHTTPError as exc:
+        if getattr(exc.response, "status_code", None) in {401, 403}:
+            raise HTTPException(
+                401,
+                "Hugging Face rejected the FLUX Fill download. Confirm the token is valid and has access to the gated model, then retry.",
+            )
+        logger.exception("Quality asset download failed")
+        raise HTTPException(502, "Quality asset download failed. Check connection and server logs.")
+    except Exception:
+        logger.exception("Quality asset download failed")
+        raise HTTPException(502, "Quality asset download failed. Check connection and server logs.")
+
+    has_token = bool(settings.hf_token or os.environ.get("HF_TOKEN"))
+    return {"ok": True, "path": str(path), "item": asset_status(spec, has_hf_token=has_token)}
 
 
 # ---------------------------------------------------------------------------
