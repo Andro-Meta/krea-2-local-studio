@@ -5,7 +5,6 @@ import datetime as dt
 import io
 import json
 import os
-import sys
 import time
 import urllib.request
 from pathlib import Path
