@@ -68,6 +68,29 @@ def timesteps(seq_len, steps, x1, x2, y1=0.5, y2=1.15, sigma=1.0, mu=None):
     return ts.tolist()
 
 
+def _differential_mask_for_timestep(
+    denoise_mask: torch.Tensor,
+    *,
+    tcurr: float,
+    t_start: float,
+    strength: float = 1.0,
+) -> torch.Tensor:
+    """Convert soft mask values into a per-step active denoise mask.
+
+    This ports ComfyUI Differential Diffusion's core idea to Krea's flow
+    schedule: white mask values regenerate for the full trajectory, while gray
+    values join later and therefore receive less total denoise.
+    """
+    if t_start <= 0:
+        threshold = 0.0
+    else:
+        threshold = max(0.0, min(1.0, float(tcurr) / float(t_start)))
+    binary_mask = (denoise_mask >= threshold).to(denoise_mask.dtype)
+    if 0.0 <= strength < 1.0:
+        return strength * binary_mask + (1.0 - strength) * denoise_mask
+    return binary_mask
+
+
 @torch.no_grad()
 def sample(
     model: torch.nn.Module,
@@ -100,6 +123,8 @@ def sample(
     # inpaint (latent-space composite after generation)
     mask: Optional[torch.Tensor] = None,
     init_latent_clean: Optional[torch.Tensor] = None,
+    differential_mask: bool = False,
+    differential_strength: float = 1.0,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> list[Image.Image]:
     align = COMPRESSION * PATCH
@@ -190,6 +215,7 @@ def sample(
 
     # --- Euler ODE integration (with per-step inpaint keep-region compositing) ---
     n_steps = len(ts) - 1
+    t_start = ts[0] if ts else 1.0
     for step_idx, (tcurr, tprev) in enumerate(zip(ts[:-1], ts[1:])):
         if progress_cb is not None:
             progress_cb(step_idx, n_steps)
@@ -197,7 +223,17 @@ def sample(
         # BEFORE the model call, so the DiT always sees coherent surrounding context
         # (ComfyUI SetLatentNoiseMask / scale_latent_inpaint equivalent for flow).
         if mask_tok is not None:
-            img = mask_tok * img + (1.0 - mask_tok) * _traj(tcurr)
+            active_mask = (
+                _differential_mask_for_timestep(
+                    mask_tok,
+                    tcurr=tcurr,
+                    t_start=t_start,
+                    strength=differential_strength,
+                )
+                if differential_mask
+                else mask_tok
+            )
+            img = active_mask * img + (1.0 - active_mask) * _traj(tcurr)
         t = torch.full((len(img),), tcurr, dtype=img.dtype, device=img.device)
         cond = model(img=img, context=txt, t=t, pos=pos, mask=seq_mask)
         if cfg:

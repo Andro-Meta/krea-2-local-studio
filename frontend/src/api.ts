@@ -16,7 +16,7 @@ const api = axios.create({ baseURL: publicBasePath() })
 export interface GenerationRequest {
   prompt: string
   negative_prompt?: string
-  mode?: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint'
+  mode?: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   checkpoint?: 'turbo' | 'raw'
   checkpoint_path?: string
   quantization?: 'bf16' | 'fp8'

@@ -17,6 +17,7 @@ export default function GeneratePanel() {
   const { params, generating, progress, results, lastSeed, generationError,
           setGenerating, setJobId, setProgress, setResults, setError,
           modelLoaded, setModelLoaded, setTab } = useStore()
+  const inRedrawStudio = params.mode !== 'txt2img'
 
   const wsRef = useRef<WebSocket | null>(null)
   const [modelLoading, setModelLoading] = useState(false)
@@ -124,9 +125,9 @@ export default function GeneratePanel() {
         <PromptSection />
         <ModelSection />
         <DimensionSection />
-        <MoodboardSection />
+        {!inRedrawStudio && <MoodboardSection />}
         <LoraSection />
-        <CanvasControl />
+        {!inRedrawStudio && <CanvasControl />}
         <ParameterSection />
 
         {generationError && <Alert severity="error" onClose={() => setError(null)}>{generationError}</Alert>}

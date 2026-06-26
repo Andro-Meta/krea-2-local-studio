@@ -75,14 +75,18 @@ export default function ParameterSection() {
           helperText={isTurbo ? 'Turbo: keep at 0 (guidance built-in)' : 'RAW default: 3.5'}
         />
 
-        {params.mode === 'inpaint' && (
+        {(params.mode === 'inpaint' || params.mode === 'outpaint') && (
           <LabeledSlider
             label="Denoise strength"
             value={params.denoise}
             min={0.01} max={1.0} step={0.01}
             onChange={v => setParam('denoise', v)}
-            tip="How much to change the input image. 1.0 = ignore original (same as txt2img). 0.5 = half old / half new. 0.3 = subtle edits only."
-            helperText="0.75 = balanced · 0.3–0.5 = preserve original · 1.0 = full regen"
+            tip={params.mode === 'outpaint'
+              ? 'How strongly Krea may redraw the expanded area. 1.0 gives the new area full freedom; the differential mask controls the blend into the source.'
+              : 'How much to change the input image. 1.0 = ignore original (same as txt2img). 0.5 = half old / half new. 0.3 = subtle edits only.'}
+            helperText={params.mode === 'outpaint'
+              ? 'Outpaint default: 1.0 · lower = preserve more init canvas · Creative redraw ignores this'
+              : '0.75 = balanced · 0.3–0.5 = preserve original · 1.0 = full regen'}
           />
         )}
 

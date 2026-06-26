@@ -11,7 +11,7 @@ class BoundingBox(BaseModel):
 class GenerationRequest(BaseModel):
     prompt: str
     negative_prompt: str = ""
-    mode: str = "txt2img"           # txt2img | img2img | inpaint | outpaint
+    mode: str = "txt2img"           # txt2img | redraw | img2img | inpaint | outpaint
     checkpoint: str = "turbo"       # turbo | raw | custom
     checkpoint_path: str = ""       # custom path override
     quantization: str = "bf16"      # bf16 | fp8

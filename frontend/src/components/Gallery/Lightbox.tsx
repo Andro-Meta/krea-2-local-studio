@@ -127,10 +127,15 @@ export default function Lightbox() {
     await action(b64)
   }
 
-  const loadTo = async (mode: 'img2img' | 'inpaint' | 'outpaint') => {
+  const loadTo = async (mode: 'redraw' | 'img2img' | 'inpaint' | 'outpaint') => {
     setBusy('Loading image')
     try {
-      await withImage(b64 => setParams({ mode, init_image_b64: b64, mask_b64: '' }))
+      await withImage(b64 => setParams({
+        mode,
+        init_image_b64: b64,
+        mask_b64: '',
+        moodboard_images: mode === 'redraw' ? [b64] : params.moodboard_images,
+      }))
       setTab(0)
       closeLightbox()
     } catch (e: any) {
@@ -183,7 +188,8 @@ export default function Lightbox() {
     window.dispatchEvent(new CustomEvent('krea-gallery-item-deleted', { detail: { id: item.id } }))
   }
 
-  const actionSx = { bgcolor: 'rgba(0,0,0,0.55)', minWidth: 44, minHeight: 44 }
+  const actionSx = { bgcolor: 'rgba(0,0,0,0.55)', minWidth: 44, minHeight: 44, zIndex: 3 }
+  const stopControlPointer = (e: React.PointerEvent) => e.stopPropagation()
 
   return (
     <Modal open onClose={closeLightbox}>
@@ -219,17 +225,32 @@ export default function Lightbox() {
         />
         {hasMany && (
           <>
-            <IconButton sx={{ position: 'fixed', left: { xs: 8, sm: 18 }, top: '50%', ...actionSx }} onClick={previousLightbox}>
+            <IconButton
+              sx={{ position: 'fixed', left: { xs: 8, sm: 18 }, top: '50%', ...actionSx }}
+              onPointerDown={stopControlPointer}
+              onPointerUp={stopControlPointer}
+              onClick={previousLightbox}
+            >
               <ChevronLeftIcon />
             </IconButton>
-            <IconButton sx={{ position: 'fixed', right: { xs: 8, sm: 18 }, top: '50%', ...actionSx }} onClick={nextLightbox}>
+            <IconButton
+              sx={{ position: 'fixed', right: { xs: 8, sm: 18 }, top: '50%', ...actionSx }}
+              onPointerDown={stopControlPointer}
+              onPointerUp={stopControlPointer}
+              onClick={nextLightbox}
+            >
               <ChevronRightIcon />
             </IconButton>
           </>
         )}
         <IconButton
           sx={{ position: 'fixed', top: 16, right: 16, ...actionSx }}
-          onClick={closeLightbox}
+          onPointerDown={stopControlPointer}
+          onPointerUp={stopControlPointer}
+          onClick={(e) => {
+            e.stopPropagation()
+            closeLightbox()
+          }}
         >
           <CloseIcon />
         </IconButton>
@@ -275,13 +296,13 @@ export default function Lightbox() {
           <Tooltip title="Create prompt from image">
             <IconButton sx={actionSx} onClick={describe}><AutoAwesomeIcon /></IconButton>
           </Tooltip>
-          <Tooltip title="Load to image to image">
-            <IconButton sx={actionSx} onClick={() => loadTo('img2img')}><ImageSearchIcon /></IconButton>
+          <Tooltip title="Load to Redraw Studio">
+            <IconButton sx={actionSx} onClick={() => loadTo('redraw')}><ImageSearchIcon /></IconButton>
           </Tooltip>
-          <Tooltip title="Load to inpaint">
+          <Tooltip title="Load to preserve masked edit">
             <IconButton sx={actionSx} onClick={() => loadTo('inpaint')}><BrushIcon /></IconButton>
           </Tooltip>
-          <Tooltip title="Load to outpaint">
+          <Tooltip title="Load to extend image">
             <IconButton sx={actionSx} onClick={() => loadTo('outpaint')}><OpenInFullIcon /></IconButton>
           </Tooltip>
         </Box>

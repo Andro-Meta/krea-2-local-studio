@@ -6,7 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import torch
+try:
+    import torch
+except ModuleNotFoundError as exc:
+    raise unittest.SkipTest("torch is not installed in the lightweight CI environment") from exc
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"

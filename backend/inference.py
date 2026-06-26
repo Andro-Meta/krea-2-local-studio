@@ -138,6 +138,49 @@ def _pil_to_tensor(img: Image.Image, device: str, dtype: torch.dtype) -> torch.T
     return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
 
 
+def _mask_to_tensor(mask_img: Image.Image, width: int, height: int, mode: str, device: str, dtype: torch.dtype) -> torch.Tensor:
+    import numpy as np
+
+    resample = Image.BILINEAR if mode == "outpaint" else Image.NEAREST
+    mask = mask_img.convert("L").resize((width // 8, height // 8), resample)
+    mask_arr = torch.from_numpy(
+        np.array(mask).astype("float32") / 255.0
+    ).unsqueeze(0).unsqueeze(0).to(device=device, dtype=dtype)
+    return mask_arr
+
+
+def _outpaint_stitch(images: list[Image.Image], init_img: Image.Image, mask_img: Image.Image) -> list[Image.Image]:
+    """Composite generated outpaint regions back over the prepared canvas.
+
+    ComfyUI-style outpaint flows preserve unmasked pixels and blend only through
+    the mask edge. This keeps the source image stable and hides seam drift from
+    VAE decode/re-encode.
+    """
+    from PIL import ImageFilter
+
+    base = init_img.convert("RGB")
+    alpha = mask_img.convert("L").resize(base.size, Image.BILINEAR)
+    alpha = alpha.filter(ImageFilter.GaussianBlur(radius=2))
+    return [
+        Image.composite(img.convert("RGB").resize(base.size, Image.LANCZOS), base, alpha)
+        for img in images
+    ]
+
+
+def _outpaint_seam_mask(mask_img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Build a seam-only mask from the feather band of an outpaint mask."""
+    import numpy as np
+    from PIL import ImageFilter
+
+    mask = mask_img.convert("L").resize(size, Image.BILINEAR)
+    arr = np.array(mask)
+    band = ((arr > 8) & (arr < 247)).astype("uint8") * 255
+    seam = Image.fromarray(band, mode="L")
+    seam = seam.filter(ImageFilter.MaxFilter(15))
+    seam = seam.filter(ImageFilter.GaussianBlur(radius=6))
+    return seam
+
+
 def _build_bbox_prompt(prompt: str, bboxes: list) -> str:
     """Inject JSON bbox spec into prompt."""
     if not bboxes:
@@ -455,23 +498,29 @@ class Krea2Pipeline:
 
         # Encode init image if needed
         init_latent = init_latent_clean = mask_tensor = None
+        init_img_for_stitch = mask_img_for_stitch = None
         if req.mode in ("img2img", "inpaint", "outpaint") and req.init_image_b64:
             init_img = _b64_to_pil(req.init_image_b64).resize(
                 (gen_w, gen_h), Image.LANCZOS
             )
+            if req.mode == "outpaint":
+                init_img_for_stitch = init_img.copy()
             px = _pil_to_tensor(init_img, self._device, self._dtype)
             init_latent = self.ae.encode(px)
             init_latent_clean = init_latent.clone()
 
         if req.mode in ("inpaint", "outpaint") and req.mask_b64:
-            mask_img = _b64_to_pil(req.mask_b64).convert("L").resize(
-                (gen_w // 8, gen_h // 8), Image.NEAREST
+            raw_mask_img = _b64_to_pil(req.mask_b64)
+            if req.mode == "outpaint":
+                mask_img_for_stitch = raw_mask_img.copy()
+            mask_tensor = _mask_to_tensor(
+                raw_mask_img,
+                gen_w,
+                gen_h,
+                req.mode,
+                self._device,
+                self._dtype,
             )
-            import numpy as np
-            mask_arr = torch.from_numpy(
-                np.array(mask_img).astype("float32") / 255.0
-            ).unsqueeze(0).unsqueeze(0).to(device=self._device, dtype=self._dtype)
-            mask_tensor = mask_arr
 
         # Resolve seed
         seed = req.seed if req.seed >= 0 else int(torch.randint(0, 2**31, (1,)).item())
@@ -513,8 +562,92 @@ class Krea2Pipeline:
             denoise=req.denoise,
             mask=mask_tensor,
             init_latent_clean=init_latent_clean,
+            differential_mask=req.mode == "outpaint",
             progress_cb=progress_cb,
         )
+
+        if req.mode == "outpaint" and init_img_for_stitch is not None and mask_img_for_stitch is not None:
+            images = _outpaint_stitch(images, init_img_for_stitch, mask_img_for_stitch)
+            try:
+                seam_mask = _outpaint_seam_mask(mask_img_for_stitch, init_img_for_stitch.size)
+                if seam_mask.getbbox():
+                    px = torch.cat(
+                        [_pil_to_tensor(im, self._device, self._dtype) for im in images],
+                        dim=0,
+                    )
+                    seam_latent = self.ae.encode(px)
+                    seam_mask_tensor = _mask_to_tensor(
+                        seam_mask,
+                        gen_w,
+                        gen_h,
+                        "outpaint",
+                        self._device,
+                        self._dtype,
+                    )
+                    images = sampling.sample(
+                        model=self.mmdit,
+                        ae=self.ae,
+                        encoder=None,
+                        prompts=None,
+                        txt=txt,
+                        txtmask=txtmask,
+                        negative_txt=neg_txt,
+                        negative_txtmask=neg_txtmask,
+                        device=self._device,
+                        dtype=self._dtype,
+                        width=req.width,
+                        height=req.height,
+                        steps=max(4, min(6, int(req.steps))),
+                        guidance=req.cfg,
+                        seed=seed + 1,
+                        mu=mu,
+                        y1=req.y1,
+                        y2=req.y2,
+                        batch_size=len(images),
+                        init_latent=seam_latent,
+                        denoise=0.35,
+                        mask=seam_mask_tensor,
+                        differential_mask=True,
+                        progress_cb=None,
+                    )
+                    images = _outpaint_stitch(images, init_img_for_stitch, mask_img_for_stitch)
+                    logger.info("Outpaint seam-fix pass done.")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Outpaint seam-fix skipped ({e})")
+
+            try:
+                px = torch.cat(
+                    [_pil_to_tensor(im, self._device, self._dtype) for im in images],
+                    dim=0,
+                )
+                harmonize_latent = self.ae.encode(px)
+                images = sampling.sample(
+                    model=self.mmdit,
+                    ae=self.ae,
+                    encoder=None,
+                    prompts=None,
+                    txt=txt,
+                    txtmask=txtmask,
+                    negative_txt=neg_txt,
+                    negative_txtmask=neg_txtmask,
+                    device=self._device,
+                    dtype=self._dtype,
+                    width=req.width,
+                    height=req.height,
+                    steps=max(4, min(6, int(req.steps))),
+                    guidance=req.cfg,
+                    seed=seed + 2,
+                    mu=mu,
+                    y1=req.y1,
+                    y2=req.y2,
+                    batch_size=len(images),
+                    init_latent=harmonize_latent,
+                    denoise=0.12,
+                    progress_cb=None,
+                )
+                logger.info("Outpaint harmonization pass done.")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Outpaint harmonization skipped ({e})")
 
         # Detail refiner: optional second low-denoise self-pass (skip for inpaint,
         # which must not re-touch the kept region). Re-encodes the batch and runs

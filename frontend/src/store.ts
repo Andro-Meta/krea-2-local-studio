@@ -11,7 +11,7 @@ export interface ActiveLora {
 export interface GenerateParams {
   prompt: string
   negative_prompt: string
-  mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint'
+  mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   checkpoint: 'turbo' | 'raw'
   quantization: 'bf16' | 'fp8'
   steps: number

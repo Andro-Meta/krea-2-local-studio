@@ -27,6 +27,59 @@ function align16(value: number): number {
   return Math.max(16, Math.ceil(value / 16) * 16)
 }
 
+function drawNeutralPad(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+) {
+  ctx.fillStyle = '#808080'
+  ctx.fillRect(0, 0, width, height)
+}
+
+function drawKijaiStyleOutpaintMask(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  pads: OutpaintPads,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  overlap: number,
+) {
+  const srcW = img.naturalWidth
+  const srcH = img.naturalHeight
+  const band = Math.max(0, Math.min(overlap, Math.floor(Math.min(srcW, srcH) / 4)))
+
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(0, 0, width, height)
+  ctx.fillStyle = '#000'
+  ctx.fillRect(left, top, srcW, srcH)
+
+  if (band <= 0) return
+
+  const imageData = ctx.getImageData(left, top, srcW, srcH)
+  const data = imageData.data
+  for (let y = 0; y < srcH; y += 1) {
+    for (let x = 0; x < srcW; x += 1) {
+      const distances = [
+        pads.left > 0 ? x : srcW,
+        pads.right > 0 ? srcW - 1 - x : srcW,
+        pads.top > 0 ? y : srcH,
+        pads.bottom > 0 ? srcH - 1 - y : srcH,
+      ]
+      const d = Math.min(...distances)
+      if (d >= band) continue
+      const v = Math.round(255 * ((band - d) / band) ** 2)
+      const i = (y * srcW + x) * 4
+      data[i] = v
+      data[i + 1] = v
+      data[i + 2] = v
+      data[i + 3] = 255
+    }
+  }
+  ctx.putImageData(imageData, left, top)
+}
+
 export async function buildOutpaintImage(
   sourceB64: string,
   pads: OutpaintPads,
@@ -44,8 +97,7 @@ export async function buildOutpaintImage(
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Canvas is unavailable')
 
-  ctx.fillStyle = '#111'
-  ctx.fillRect(0, 0, width, height)
+  drawNeutralPad(ctx, width, height)
   ctx.drawImage(img, left, top, img.naturalWidth, img.naturalHeight)
 
   const mask = document.createElement('canvas')
@@ -54,19 +106,7 @@ export async function buildOutpaintImage(
   const maskCtx = mask.getContext('2d')
   if (!maskCtx) throw new Error('Canvas is unavailable')
 
-  maskCtx.fillStyle = '#fff'
-  maskCtx.fillRect(0, 0, width, height)
-  maskCtx.fillStyle = '#000'
-  maskCtx.fillRect(left, top, img.naturalWidth, img.naturalHeight)
-
-  const band = Math.max(0, Math.min(overlap, Math.floor(Math.min(img.naturalWidth, img.naturalHeight) / 4)))
-  if (band > 0) {
-    maskCtx.fillStyle = '#fff'
-    if (pads.left > 0) maskCtx.fillRect(left, top, band, img.naturalHeight)
-    if (pads.right > 0) maskCtx.fillRect(left + img.naturalWidth - band, top, band, img.naturalHeight)
-    if (pads.top > 0) maskCtx.fillRect(left, top, img.naturalWidth, band)
-    if (pads.bottom > 0) maskCtx.fillRect(left, top + img.naturalHeight - band, img.naturalWidth, band)
-  }
+  drawKijaiStyleOutpaintMask(maskCtx, img, pads, left, top, width, height, overlap)
 
   return {
     init_image_b64: stripDataUrl(canvas.toDataURL('image/png')),

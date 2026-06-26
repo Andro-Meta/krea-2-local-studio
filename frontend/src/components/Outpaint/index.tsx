@@ -9,6 +9,12 @@ import { useStore } from '../../store'
 import { buildOutpaintImage, type OutpaintPads } from '../../lib/outpaint'
 
 type Direction = 'left' | 'right' | 'top' | 'bottom' | 'all'
+type TargetFrame = '16:9' | 'free'
+type OutpaintQuality = 'preserve' | 'redraw'
+
+function align16(value: number): number {
+  return Math.max(16, Math.ceil(value / 16) * 16)
+}
 
 function readFileB64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -32,8 +38,10 @@ export default function OutpaintPanel() {
   const { params, setParam, setParams } = useStore()
   const [sourceB64, setSourceB64] = useState(params.init_image_b64)
   const [directions, setDirections] = useState<Direction[]>(['all'])
+  const [targetFrame, setTargetFrame] = useState<TargetFrame>('16:9')
+  const [quality, setQuality] = useState<OutpaintQuality>('preserve')
   const [amount, setAmount] = useState(0.5)
-  const [overlap, setOverlap] = useState(32)
+  const [overlap, setOverlap] = useState(128)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
@@ -45,7 +53,10 @@ export default function OutpaintPanel() {
   }, [params.init_image_b64, params.mode])
 
   const helperPrompt = useMemo(() => (
-    'continue the existing lighting, perspective, color palette, texture, depth of field, and composition beyond the original frame'
+    'seamlessly continue the existing lighting, perspective, color palette, texture, depth of field, and composition beyond the original frame; extend the surrounding scene naturally with no visible border'
+  ), [])
+  const redrawPrompt = useMemo(() => (
+    'create a finished cohesive wide frame based on the reference image, preserving the subject and mood while redrawing the whole scene into one consistent seamless style'
   ), [])
 
   const handleFile = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -58,6 +69,29 @@ export default function OutpaintPanel() {
 
   const makePads = async (): Promise<OutpaintPads> => {
     const { width, height } = await imageSize(sourceB64)
+    if (targetFrame === '16:9') {
+      const targetRatio = 16 / 9
+      const currentRatio = width / height
+      if (currentRatio < targetRatio) {
+        const targetWidth = Math.round(height * targetRatio)
+        const horizontal = Math.max(0, targetWidth - width)
+        return {
+          left: Math.floor(horizontal / 2),
+          right: Math.ceil(horizontal / 2),
+          top: 0,
+          bottom: 0,
+        }
+      }
+      const targetHeight = Math.round(width / targetRatio)
+      const vertical = Math.max(0, targetHeight - height)
+      return {
+        left: 0,
+        right: 0,
+        top: Math.floor(vertical / 2),
+        bottom: Math.ceil(vertical / 2),
+      }
+    }
+
     const horizontal = Math.round(width * amount)
     const vertical = Math.round(height * amount)
     const all = directions.includes('all')
@@ -74,12 +108,37 @@ export default function OutpaintPanel() {
     setBusy(true)
     setMessage(null)
     try {
+      if (quality === 'redraw') {
+        const { width, height } = await imageSize(sourceB64)
+        const targetRatio = 16 / 9
+        const currentRatio = width / height
+        const resultWidth = targetFrame === '16:9' && currentRatio < targetRatio
+          ? align16(Math.round(height * targetRatio))
+          : align16(width)
+        const resultHeight = targetFrame === '16:9' && currentRatio >= targetRatio
+          ? align16(Math.round(width / targetRatio))
+          : align16(height)
+        setParams({
+          mode: 'outpaint',
+          init_image_b64: '',
+          mask_b64: '',
+          ref_image1_b64: sourceB64,
+          width: resultWidth,
+          height: resultHeight,
+          denoise: 1.0,
+          prompt: params.prompt.trim() ? params.prompt : redrawPrompt,
+        })
+        setMessage(`Prepared ${resultWidth} x ${resultHeight} creative redraw. Generate when ready.`)
+        return
+      }
+
       const pads = await makePads()
       const result = await buildOutpaintImage(sourceB64, pads, overlap)
       setParams({
         mode: 'outpaint',
         init_image_b64: result.init_image_b64,
         mask_b64: result.mask_b64,
+        ref_image1_b64: '',
         width: result.width,
         height: result.height,
         denoise: 1.0,
@@ -126,6 +185,42 @@ export default function OutpaintPanel() {
         </Paper>
 
         <Box>
+          <Typography variant="body2" sx={{ mb: 1 }}>Quality mode</Typography>
+          <ToggleButtonGroup
+            value={quality}
+            exclusive
+            onChange={(_, value: OutpaintQuality | null) => value && setQuality(value)}
+            size="small"
+            color="primary"
+            sx={{ flexWrap: 'wrap', gap: 0.75, '& .MuiToggleButtonGroup-grouped': { borderRadius: 99, border: 1 } }}
+          >
+            <ToggleButton value="preserve">Preserve source</ToggleButton>
+            <ToggleButton value="redraw">Creative redraw</ToggleButton>
+          </ToggleButtonGroup>
+          <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'text.secondary' }}>
+            Use Creative redraw when a flat or rough source needs one coherent final image instead of preserved pixels.
+          </Typography>
+        </Box>
+
+        <Box>
+          <Typography variant="body2" sx={{ mb: 1 }}>Target frame</Typography>
+          <ToggleButtonGroup
+            value={targetFrame}
+            exclusive
+            onChange={(_, value: TargetFrame | null) => value && setTargetFrame(value)}
+            size="small"
+            color="primary"
+            sx={{ flexWrap: 'wrap', gap: 0.75, '& .MuiToggleButtonGroup-grouped': { borderRadius: 99, border: 1 } }}
+          >
+            <ToggleButton value="16:9">16:9 wide</ToggleButton>
+            <ToggleButton value="free">Manual</ToggleButton>
+          </ToggleButtonGroup>
+          <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'text.secondary' }}>
+            16:9 is the tested path for turning square images into wide frames.
+          </Typography>
+        </Box>
+
+        <Box>
           <Typography variant="body2" sx={{ mb: 1 }}>Expand direction</Typography>
           <ToggleButtonGroup
             value={directionValue}
@@ -135,6 +230,7 @@ export default function OutpaintPanel() {
             }}
             size="small"
             color="primary"
+            disabled={targetFrame !== 'free'}
             sx={{ flexWrap: 'wrap', gap: 0.75, '& .MuiToggleButtonGroup-grouped': { borderRadius: 99, border: 1 } }}
           >
             <ToggleButton value="all">All sides</ToggleButton>
@@ -157,6 +253,7 @@ export default function OutpaintPanel() {
             step={0.25}
             marks={[0.25, 0.5, 1].map(v => ({ value: v, label: `${v * 100}%` }))}
             onChange={(_, value) => setAmount(value as number)}
+            disabled={targetFrame !== 'free'}
           />
         </Box>
 
@@ -165,9 +262,9 @@ export default function OutpaintPanel() {
             <Typography variant="body2">Blend overlap</Typography>
             <Chip label={`${overlap}px`} size="small" />
           </Stack>
-          <Slider value={overlap} min={0} max={96} step={8} onChange={(_, value) => setOverlap(value as number)} />
+          <Slider value={overlap} min={0} max={192} step={8} onChange={(_, value) => setOverlap(value as number)} />
           <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-            A small overlap gives Krea room to harmonize seams while preserving most of the original image.
+            Larger overlaps help wide outpaints blend into the original image. 128px is the tested default for 1:1 to 16:9.
           </Typography>
         </Box>
 
