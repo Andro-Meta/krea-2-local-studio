@@ -4,7 +4,8 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -15,8 +16,24 @@ if str(BACKEND) not in sys.path:
 
 os.environ.setdefault("KREA2_AUTO_CHECKPOINT", "__disabled_for_tests__")
 
+try:
+    import torch  # noqa: F401
+    inserted_torch_stub = False
+except ModuleNotFoundError:
+    torch_mock = MagicMock()
+    torch_mock.cuda.is_available.return_value = False
+    torch_mock.bfloat16 = "bfloat16"
+    torch_mock.float32 = "float32"
+    torch_mock.Tensor = object
+    torch_mock.nn = SimpleNamespace(Module=object, Linear=object)
+    sys.modules["torch"] = torch_mock
+    inserted_torch_stub = True
+
 from fastapi.testclient import TestClient  # noqa: E402
 from backend import main  # noqa: E402
+
+if inserted_torch_stub:
+    sys.modules.pop("torch", None)
 
 
 MOODBOARD_ITEM = {
