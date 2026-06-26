@@ -27,7 +27,6 @@ import torch
 from PIL import Image
 
 from conditioning import parse_weights, rebalance
-from log_setup import flush_all
 from lora_manager import apply_loras, build_trigger_prompt
 from settings import OUTPUTS_DIR, settings
 from support_models import support_model_path
