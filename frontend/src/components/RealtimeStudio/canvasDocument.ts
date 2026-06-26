@@ -54,7 +54,8 @@ export interface RealtimeDocument {
 }
 
 export function newLayerId(prefix = 'layer'): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`
+  return `${prefix}-${id}`
 }
 
 export function createDefaultDocument(): RealtimeDocument {

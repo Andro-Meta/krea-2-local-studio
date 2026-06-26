@@ -493,7 +493,7 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
         image = results[0] if results else ""
         realtime_previews.complete(job_id, image_b64=image, seed=seed)
     except Exception as e:
-        logger.exception("Realtime preview failed for job %s in session %s", job_id, session_id)
+        logger.exception("Realtime preview failed")
         realtime_previews.fail(job_id, str(e))
 
 

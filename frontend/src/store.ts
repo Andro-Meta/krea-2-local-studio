@@ -93,7 +93,8 @@ export interface RealtimeState {
 }
 
 function makeSessionId(): string {
-  return `rt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`
+  return `rt-${id}`
 }
 
 const defaultParams: GenerateParams = {
