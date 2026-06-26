@@ -57,6 +57,7 @@ from share_auth import (
     create_session_token,
     get_user_role,
     is_admin,
+    is_valid_username,
     list_user_records,
     make_secret,
     remove_user,
@@ -66,7 +67,7 @@ from share_auth import (
 )
 from support_models import download_support_models, support_model_status
 from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, start_funnel, stop_funnel, tailscale_status, tailscale_up
-from security_utils import append_query_param, normalize_lora_import_url, safe_child_file, safe_lora_filename
+from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_child_file, safe_lora_filename
 from system_check import get_system_report
 
 logger = logging.getLogger(__name__)
@@ -211,9 +212,10 @@ async def share_login_page():
 async def share_login(req: ShareLoginRequest, response: Response):
     if not SHARE_AUTH_ENABLED:
         return {"ok": True, "share_auth": False}
-    if not verify_user(SHARE_AUTH_FILE, req.username, req.password):
+    username = req.username.strip()
+    if not is_valid_username(username) or not verify_user(SHARE_AUTH_FILE, username, req.password):
         raise HTTPException(401, "Invalid username or password")
-    token = create_session_token(req.username, SHARE_AUTH_SECRET)
+    token = create_session_token(username, SHARE_AUTH_SECRET)
     response.set_cookie(
         SHARE_COOKIE,
         token,
@@ -223,7 +225,7 @@ async def share_login(req: ShareLoginRequest, response: Response):
         max_age=12 * 60 * 60,
         path=PUBLIC_BASE_PATH if PUBLIC_BASE_PATH != "/" else "/",
     )
-    return {"ok": True, "username": req.username, "role": get_user_role(SHARE_AUTH_FILE, req.username)}
+    return {"ok": True, "username": username, "role": get_user_role(SHARE_AUTH_FILE, username)}
 
 
 @app.post("/api/auth/logout")
@@ -505,7 +507,7 @@ async def load_model(req: LoadModelRequest):
         )
     except Exception as exc:
         logger.exception("Model load failed")
-        raise HTTPException(500, "Model load failed. Check the server logs for details.") from exc
+        raise HTTPException(500, "Model load failed. Check the server logs for details.")
     return {"status": "loaded", "checkpoint": req.checkpoint_path}
 
 
@@ -546,8 +548,8 @@ async def serve_output(filename: str):
     from settings import OUTPUTS_DIR
     try:
         p = safe_child_file(OUTPUTS_DIR, filename)
-    except ValueError as exc:
-        raise HTTPException(400, "Invalid filename") from exc
+    except ValueError:
+        raise HTTPException(400, "Invalid filename")
     if not p.exists():
         raise HTTPException(404)
     return FileResponse(str(p))
@@ -588,9 +590,9 @@ async def download_lora(lora_name: str):
             ),
         )
         return {"ok": True, "path": dest}
-    except Exception as exc:
-        logger.exception("Official LoRA download failed for %s", lora_name)
-        raise HTTPException(500, "LoRA download failed. Check the server logs for details.") from exc
+    except Exception:
+        logger.exception("Official LoRA download failed")
+        raise HTTPException(500, "LoRA download failed. Check the server logs for details.")
 
 
 @app.post("/api/loras/import")
@@ -603,7 +605,7 @@ async def import_lora_url(req: LoraImportRequest):
         filename = safe_lora_filename(req.filename, url)
         dest = safe_child_file(LORAS_DIR, filename)
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise HTTPException(400, str(exc))
 
     if dest.exists():
         v = inspect_lora(dest)
@@ -611,7 +613,7 @@ async def import_lora_url(req: LoraImportRequest):
                 "compatible": v["compatible"], "match_info": v["reason"]}
 
     headers = {"User-Agent": "krea2-studio/1.0"}
-    if "civitai.com" in url:
+    if is_civitai_url(url):
         token = req.civitai_token or settings.civitai_token
         if token:
             url = append_query_param(url, "token", token)
@@ -631,11 +633,11 @@ async def import_lora_url(req: LoraImportRequest):
                 "compatible": v["compatible"], "match_info": v["reason"]}
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
         if dest.exists():
             dest.unlink(missing_ok=True)
         logger.exception("Imported LoRA download failed from allowed host")
-        raise HTTPException(502, "LoRA import failed. Check the URL and server logs.") from exc
+        raise HTTPException(502, "LoRA import failed. Check the URL and server logs.")
 
 
 # ---------------------------------------------------------------------------
@@ -696,7 +698,7 @@ async def automask(req: AutoMaskRequest):
         img = _Image.open(_io.BytesIO(_b64.b64decode(req.image_b64)))
     except Exception as exc:  # noqa: BLE001
         logger.warning("Automask image decode failed: %s", exc)
-        raise HTTPException(400, "Bad image data.") from exc
+        raise HTTPException(400, "Bad image data.")
     loop = asyncio.get_event_loop()
     mask = await loop.run_in_executor(
         None, lambda: generate_mask(img, req.prompt, req.threshold)
@@ -723,7 +725,7 @@ async def describe_image(req: DescribeImageRequest):
         else:
             logger.exception("Local image description failed")
             detail = "Local image description failed. Use System > Krea Moodboard Conditioning / Local AI Assets to repair local models."
-        raise HTTPException(502, detail) from exc
+        raise HTTPException(502, detail)
     return DescribeImageResponse(**result)
 
 
@@ -756,9 +758,9 @@ async def download_support_models_endpoint():
     loop = asyncio.get_event_loop()
     try:
         results = await loop.run_in_executor(None, download_support_models)
-    except Exception as exc:
+    except Exception:
         logger.exception("Support model download failed")
-        raise HTTPException(502, "Support model download failed. Check the server logs for details.") from exc
+        raise HTTPException(502, "Support model download failed. Check the server logs for details.")
     return {"ok": True, "items": results, "status": support_model_status()}
 
 

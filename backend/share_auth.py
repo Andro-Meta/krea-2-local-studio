@@ -48,9 +48,13 @@ def _normalize_role(role: str) -> str:
     return "admin" if role == "admin" else "user"
 
 
+def is_valid_username(username: str) -> bool:
+    return bool(USERNAME_RE.fullmatch(username.strip()))
+
+
 def add_user(path: Path, username: str, password: str, role: str | None = None) -> None:
     username = username.strip()
-    if not USERNAME_RE.fullmatch(username):
+    if not is_valid_username(username):
         raise ValueError("username must be 1-64 characters: letters, numbers, dots, dashes, or underscores")
     if len(password) < 8:
         raise ValueError("password must be at least 8 characters")
@@ -103,6 +107,8 @@ def is_admin(path: Path, username: str | None) -> bool:
 
 
 def verify_user(path: Path, username: str, password: str) -> bool:
+    if not is_valid_username(username):
+        return False
     rec = load_users(path).get(username)
     if not rec:
         return False

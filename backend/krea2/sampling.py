@@ -120,10 +120,13 @@ def sample(
         assert encoder is not None
         neg = negative_prompts or [""] * txt.shape[0]
         negative_txt, negative_txtmask = encoder(neg)
+    neg_context = None
+    unpos = None
+    unmask = None
     if cfg:
         if negative_txt is None:
             raise ValueError("negative conditioning is required when guidance is enabled")
-        negative_txt = negative_txt.to(device=device, dtype=dtype)
+        neg_context = negative_txt.to(device=device, dtype=dtype)
         if negative_txtmask is not None:
             negative_txtmask = negative_txtmask.to(device=device)
 
@@ -153,7 +156,9 @@ def sample(
     # Patchify pure noise → tokens (also builds RoPE positions + attention mask).
     x_noise, pos, seq_mask = prepare(noise, txt.shape[1], PATCH, txtmask)
     if cfg:
-        _, unpos, unmask = prepare(noise, negative_txt.shape[1], PATCH, negative_txtmask)
+        if neg_context is None:
+            raise ValueError("negative conditioning is required when guidance is enabled")
+        _, unpos, unmask = prepare(noise, neg_context.shape[1], PATCH, negative_txtmask)
 
     # Clean original in token space (img2img/inpaint) + token-space inpaint mask.
     x0_tok = None
@@ -196,7 +201,9 @@ def sample(
         t = torch.full((len(img),), tcurr, dtype=img.dtype, device=img.device)
         cond = model(img=img, context=txt, t=t, pos=pos, mask=seq_mask)
         if cfg:
-            uncond = model(img=img, context=negative_txt, t=t, pos=unpos, mask=unmask)
+            if neg_context is None or unpos is None:
+                raise ValueError("negative conditioning is required when guidance is enabled")
+            uncond = model(img=img, context=neg_context, t=t, pos=unpos, mask=unmask)
             v = uncond + guidance * (cond - uncond)
         else:
             v = cond

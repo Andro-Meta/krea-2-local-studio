@@ -38,6 +38,10 @@ def normalize_lora_import_url(raw_url: str) -> str:
     return urlunparse(parsed)
 
 
+def is_civitai_url(url: str) -> bool:
+    return (urlparse(url).hostname or "").lower() in {"civitai.com", "www.civitai.com"}
+
+
 def safe_lora_filename(requested: str, source_url: str) -> str:
     name = requested.strip()
     if not name:
