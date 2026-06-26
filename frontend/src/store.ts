@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { LoraInfo, SystemReport } from './api'
+import { createDefaultDocument, type RealtimeDocument, type RealtimeTool } from './components/RealtimeStudio/canvasDocument'
 
 export interface ActiveLora {
   name: string
@@ -56,6 +57,45 @@ export interface LightboxState {
   index: number
 }
 
+export interface RealtimePreviewState {
+  status: 'idle' | 'queued' | 'running' | 'ready' | 'final-ready' | 'error'
+  sessionId: string
+  jobId: string | null
+  revision: number
+  progress: number
+  image: string
+  seed: number | null
+  error: string | null
+  lastUpdated: number | null
+  paused: boolean
+}
+
+export interface RealtimeSettings {
+  debounceMs: number
+  previewSize: number
+  previewSteps: number
+  finalSteps: number
+  canvasInfluence: number
+  autoPreview: boolean
+}
+
+export interface RealtimeState {
+  document: RealtimeDocument
+  selectedLayerId: string | null
+  tool: RealtimeTool
+  color: string
+  brushSize: number
+  shape: 'rectangle' | 'circle' | 'triangle'
+  prompt: string
+  negativePrompt: string
+  preview: RealtimePreviewState
+  settings: RealtimeSettings
+}
+
+function makeSessionId(): string {
+  return `rt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 const defaultParams: GenerateParams = {
   prompt: '',
   negative_prompt: '',
@@ -89,6 +129,37 @@ const defaultParams: GenerateParams = {
   mood: '',
   moodboard_strength: 0.5,
   moodboard_images: [],
+}
+
+const defaultRealtime: RealtimeState = {
+  document: createDefaultDocument(),
+  selectedLayerId: null,
+  tool: 'brush',
+  color: '#111111',
+  brushSize: 28,
+  shape: 'rectangle',
+  prompt: '4k product photography of a whimsical sculptural object in a natural landscape',
+  negativePrompt: 'low quality, blurry, text, watermark, deformed, pasted collage',
+  preview: {
+    status: 'idle',
+    sessionId: makeSessionId(),
+    jobId: null,
+    revision: 0,
+    progress: 0,
+    image: '',
+    seed: null,
+    error: null,
+    lastUpdated: null,
+    paused: false,
+  },
+  settings: {
+    debounceMs: 900,
+    previewSize: 512,
+    previewSteps: 5,
+    finalSteps: 8,
+    canvasInfluence: 0.6,
+    autoPreview: true,
+  },
 }
 
 interface AppState {
@@ -128,6 +199,12 @@ interface AppState {
   patchLightboxItem: (id: number, partial: Partial<LightboxItem>) => void
   removeLightboxItem: (id: number) => void
   setLightboxImage: (src: string | null) => void
+
+  realtime: RealtimeState
+  setRealtime: (partial: Partial<RealtimeState>) => void
+  setRealtimeDocument: (document: RealtimeDocument) => void
+  setRealtimePreview: (partial: Partial<RealtimePreviewState>) => void
+  setRealtimeSettings: (partial: Partial<RealtimeSettings>) => void
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -193,4 +270,14 @@ export const useStore = create<AppState>((set, get) => ({
   setLightboxImage: (src) => src
     ? set({ lightbox: { items: [{ src }], index: 0 }, lightboxImage: src })
     : set({ lightbox: null, lightboxImage: null }),
+
+  realtime: defaultRealtime,
+  setRealtime: (partial) => set(s => ({ realtime: { ...s.realtime, ...partial } })),
+  setRealtimeDocument: (document) => set(s => ({ realtime: { ...s.realtime, document } })),
+  setRealtimePreview: (partial) => set(s => ({
+    realtime: { ...s.realtime, preview: { ...s.realtime.preview, ...partial } },
+  })),
+  setRealtimeSettings: (partial) => set(s => ({
+    realtime: { ...s.realtime, settings: { ...s.realtime.settings, ...partial } },
+  })),
 }))

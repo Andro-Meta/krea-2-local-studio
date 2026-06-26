@@ -49,6 +49,28 @@ export interface GenerationRequest {
   moodboard_images?: string[]
 }
 
+export interface RealtimePreviewRequest {
+  session_id: string
+  prompt: string
+  negative_prompt?: string
+  canvas_image_b64: string
+  width: number
+  height: number
+  preview_steps?: number
+  moodboard_strength?: number
+}
+
+export interface RealtimePreviewJob {
+  job_id: string
+  session_id: string
+  revision: number
+  status: 'queued' | 'running' | 'done' | 'stale' | 'cancelled' | 'error'
+  progress: number
+  image_b64?: string
+  seed?: number | null
+  error?: string | null
+}
+
 export interface Mood {
   id: string
   name: string
@@ -144,6 +166,15 @@ export const apiFetch = {
 
   jobStatus: (jobId: string) =>
     api.get<{ job_id: string; status: string; progress: number; images: string[]; error?: string; seed?: number }>(`/api/generate/${jobId}`).then(r => r.data),
+
+  realtimePreview: (req: RealtimePreviewRequest) =>
+    api.post<RealtimePreviewJob>('/api/realtime/preview', req, { timeout: 120000 }).then(r => r.data),
+
+  realtimePreviewStatus: (jobId: string) =>
+    api.get<RealtimePreviewJob>(`/api/realtime/preview/${jobId}`).then(r => r.data),
+
+  cancelRealtimePreview: (jobId: string) =>
+    api.post<{ ok: boolean; job_id: string; status: string }>(`/api/realtime/cancel/${jobId}`).then(r => r.data),
 
   loadModel: (path: string, quant: string) =>
     api.post('/api/load-model', { checkpoint_path: path, quantization: quant }).then(r => r.data),

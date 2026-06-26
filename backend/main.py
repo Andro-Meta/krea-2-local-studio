@@ -40,6 +40,7 @@ from schemas import (
     FavoriteRequest,
     GenerationRequest,
     LoadModelRequest,
+    RealtimePreviewRequest,
     SettingsUpdate,
     ShareLoginRequest,
     ShareUserCreateRequest,
@@ -49,6 +50,7 @@ from schemas import (
     LoraImportRequest,
     UpscaleRequest,
 )
+from realtime_jobs import RealtimePreviewRegistry
 from settings import BASE_DIR, DIST_DIR, LOGS_DIR, LORAS_DIR, MODELS_DIR, OUTPUTS_DIR, settings
 from share_auth import (
     add_user,
@@ -362,6 +364,7 @@ class WSManager:
 
 
 ws_manager = WSManager()
+realtime_previews = RealtimePreviewRegistry(max_jobs=64)
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -412,6 +415,86 @@ async def generate(req: GenerationRequest):
     job_id = _new_job()
     asyncio.create_task(_run_generation(job_id, req))
     return {"job_id": job_id, "status": "queued"}
+
+
+def _fit_preview_dimensions(width: int, height: int, max_side: int = 512) -> tuple[int, int]:
+    width = max(64, int(width or max_side))
+    height = max(64, int(height or max_side))
+    scale = min(max_side / max(width, height), 1.0)
+    w = max(64, int(width * scale))
+    h = max(64, int(height * scale))
+    return max(64, round(w / 16) * 16), max(64, round(h / 16) * 16)
+
+
+@app.post("/api/realtime/preview")
+async def realtime_preview(req: RealtimePreviewRequest):
+    session_id = req.session_id.strip() or uuid.uuid4().hex
+    job = realtime_previews.create(session_id)
+    asyncio.create_task(_run_realtime_preview(job["job_id"], req, session_id))
+    return {
+        "job_id": job["job_id"],
+        "session_id": session_id,
+        "revision": job["revision"],
+        "status": job["status"],
+    }
+
+
+@app.get("/api/realtime/preview/{job_id}")
+async def realtime_preview_status(job_id: str):
+    job = realtime_previews.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Preview job not found")
+    return job
+
+
+@app.post("/api/realtime/cancel/{job_id}")
+async def realtime_preview_cancel(job_id: str):
+    if not realtime_previews.cancel(job_id):
+        raise HTTPException(404, "Preview job not found")
+    return {"ok": True, "job_id": job_id, "status": "cancelled"}
+
+
+async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, session_id: str):
+    realtime_previews.update(job_id, status="running", progress=1)
+    loop = asyncio.get_event_loop()
+
+    def progress_cb(step: int, total: int):
+        pct = int(step / max(total, 1) * 100)
+        realtime_previews.update(job_id, progress=max(1, min(pct, 98)))
+
+    try:
+        width, height = _fit_preview_dimensions(req.width, req.height)
+        preview_req = GenerationRequest(
+            prompt=req.prompt,
+            negative_prompt=req.negative_prompt,
+            mode="redraw",
+            checkpoint="turbo",
+            quantization="fp8",
+            steps=max(4, min(6, int(req.preview_steps))),
+            cfg=0.0,
+            width=width,
+            height=height,
+            num_images=1,
+            seed=-1,
+            denoise=1.0,
+            use_prompt_expander=False,
+            refine=False,
+            moodboard_strength=max(0.0, min(1.0, float(req.moodboard_strength))),
+            moodboard_images=[req.canvas_image_b64],
+        )
+        results, seed, filenames, _ = await loop.run_in_executor(
+            None, lambda: pipeline.generate(preview_req, progress_cb=progress_cb)
+        )
+        for filename in filenames:
+            try:
+                (OUTPUTS_DIR / filename).unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Could not delete realtime preview file %s", filename, exc_info=True)
+        image = results[0] if results else ""
+        realtime_previews.complete(job_id, image_b64=image, seed=seed)
+    except Exception as e:
+        logger.exception("Realtime preview failed for job %s in session %s", job_id, session_id)
+        realtime_previews.fail(job_id, str(e))
 
 
 async def _run_generation(job_id: str, req: GenerationRequest):

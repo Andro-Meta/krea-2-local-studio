@@ -46,6 +46,17 @@ class GenerationRequest(BaseModel):
     moodboard_images: List[str] = []
 
 
+class RealtimePreviewRequest(BaseModel):
+    session_id: str
+    prompt: str
+    negative_prompt: str = ""
+    canvas_image_b64: str
+    width: int = 512
+    height: int = 512
+    preview_steps: int = 5
+    moodboard_strength: float = 0.75
+
+
 class GalleryItem(BaseModel):
     id: int
     filename: str
