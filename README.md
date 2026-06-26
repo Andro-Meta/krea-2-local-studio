@@ -31,7 +31,7 @@ venv\Scripts\python.exe scripts\download_support_models.py
 
 ## Setup
 
-1. Install Python 3.12+ and Node.js 18+.
+1. Install Python 3.12+ and Node.js 18+. Python 3.12 is the recommended public setup target.
 2. Run:
 
 ```bat
@@ -56,6 +56,12 @@ run.bat local
 `run.bat` starts the Krea web server in share mode at `/krea`. Admins can manage users, passwords, roles, Tailscale status, and the `/krea` Funnel route from the System tab.
 
 The app always uses the `/krea` path for Tailscale Funnel so other local tools can keep their own root Funnel route.
+
+## Performance
+
+The default install uses PyTorch CUDA wheels and verifies that CUDA is available before setup completes. The fp8 Turbo workflow is the recommended starting point for 24 GB GPUs.
+
+For measured efficiency notes, including what helped and what was tested but not adopted, see [`docs/performance.md`](docs/performance.md).
 
 ## Secrets And Local Files
 

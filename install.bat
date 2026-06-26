@@ -56,25 +56,30 @@ python -m pip install --upgrade pip --quiet
 :: -- PyTorch with CUDA 12.8 ----------------------------------------------------
 echo.
 echo [4/9] Installing PyTorch + CUDA 12.8 (may take several minutes)...
-python -c "import torch; v=torch.__version__; assert '2.' in v" >nul 2>&1
+python -c "import torch; assert torch.cuda.is_available(), 'CUDA is not available'; assert '+cu' in torch.__version__, torch.__version__; print(torch.__version__)" >nul 2>&1
 if not errorlevel 1 (
-    echo        PyTorch already installed, skipping.
+    for /f "tokens=*" %%t in ('python -c "import torch; print(torch.__version__)"') do echo        PyTorch %%t with CUDA already installed, skipping.
 ) else (
     pip install torch torchvision torchaudio ^
         --index-url https://download.pytorch.org/whl/cu128 ^
         --quiet
     if errorlevel 1 (
-        echo WARNING: cu128 wheel failed. Trying cu121 fallback...
+        echo WARNING: cu128 wheel failed. Trying cu126 fallback...
         pip install torch torchvision torchaudio ^
-            --index-url https://download.pytorch.org/whl/cu121 ^
+            --index-url https://download.pytorch.org/whl/cu126 ^
             --quiet
         if errorlevel 1 (
             echo ERROR: PyTorch installation failed.
             exit /b 1
         )
-        echo        Installed PyTorch with CUDA 12.1.
+        echo        Installed PyTorch with CUDA 12.6.
     ) else (
         echo        PyTorch installed with CUDA 12.8.
+    )
+    python -c "import torch; assert torch.cuda.is_available(), 'CUDA is not available'; print('       Verified', torch.__version__, 'on', torch.cuda.get_device_name(0))"
+    if errorlevel 1 (
+        echo ERROR: PyTorch installed, but CUDA is not available. Update NVIDIA drivers and re-run install.bat.
+        exit /b 1
     )
 )
 
@@ -85,8 +90,12 @@ pip install -r requirements.txt --quiet
 if errorlevel 1 (
     echo WARNING: Some deps failed. Retrying core deps only...
     pip install fastapi "uvicorn[standard]" python-multipart aiosqlite aiofiles ^
-        pydantic pydantic-settings requests pillow einops ^
+        pydantic pydantic-settings requests pillow numpy einops psutil ^
         transformers safetensors diffusers accelerate torchao --quiet
+    if errorlevel 1 (
+        echo ERROR: Python dependency installation failed.
+        exit /b 1
+    )
 )
 echo        Dependencies installed.
 

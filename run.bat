@@ -15,6 +15,16 @@ if not exist "venv\Scripts\activate.bat" (
 )
 call venv\Scripts\activate.bat
 
+if not exist "backend\krea2\mmdit.py" (
+    echo Downloading krea2 source files...
+    python scripts\download_krea2.py
+    if errorlevel 1 (
+        echo ERROR: Could not download krea2/mmdit.py. Check internet connection.
+        pause
+        exit /b 1
+    )
+)
+
 echo Stopping any old Krea sharing/server process...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$root=(Resolve-Path '.').Path.ToLower(); Get-CimInstance Win32_Process | Where-Object { $cmd=[string]$_.CommandLine; ($cmd -like '*krea_share_control.pyw*') -or (($cmd.ToLower() -like ('*' + $root + '*')) -and ($cmd -like '*backend.main:app*')) -or (($cmd -like '*backend.main:app*') -and ($cmd -like '*--port 8200*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
