@@ -6,6 +6,7 @@ import io
 import logging
 import json
 import re
+from collections.abc import Mapping
 from functools import lru_cache
 from dataclasses import dataclass
 
@@ -67,7 +68,7 @@ def _load_local_qwen():
     processor = Qwen3VLProcessor.from_pretrained(model_path)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
         attn_implementation="sdpa",
     ).eval().to(device)
     return tokenizer, processor, model
@@ -78,15 +79,27 @@ def _strip_data_url(image_b64: str) -> str:
 
 
 def _decode_generation(tokenizer, outputs, inputs=None) -> str:
-    output = outputs[0] if outputs else []
+    output = outputs[0] if outputs is not None else []
     try:
         input_len = int(getattr(inputs, "shape", [0, 0])[-1]) if inputs is not None else 0
         output = output[input_len:]
     except Exception:
-        output = outputs[0] if outputs else []
+        output = outputs[0] if outputs is not None else []
     text = tokenizer.decode(output, skip_special_tokens=True).strip()
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     return text
+
+
+def _input_ids(inputs):
+    if isinstance(inputs, Mapping):
+        return inputs.get("input_ids")
+    return inputs
+
+
+def _generation_kwargs(inputs) -> dict:
+    if isinstance(inputs, Mapping):
+        return dict(inputs)
+    return {"input_ids": inputs}
 
 
 def expand_prompt_local(prompt: str) -> PromptExpansionResult:
@@ -102,13 +115,13 @@ def expand_prompt_local(prompt: str) -> PromptExpansionResult:
             return_tensors="pt",
         ).to(getattr(model, "device", "cpu"))
         outputs = model.generate(
-            input_ids=inputs,
+            **_generation_kwargs(inputs),
             max_new_tokens=700,
             do_sample=True,
             temperature=0.7,
             eos_token_id=getattr(tokenizer, "eos_token_id", None),
         )
-        expanded = _decode_generation(tokenizer, outputs, inputs) or prompt
+        expanded = _decode_generation(tokenizer, outputs, _input_ids(inputs)) or prompt
         return PromptExpansionResult(
             expanded=expanded,
             changed=expanded.strip() != prompt.strip(),

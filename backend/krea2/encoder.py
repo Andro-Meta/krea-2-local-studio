@@ -71,7 +71,7 @@ class Qwen3VLConditioner(nn.Module):
 
         self.qwen = Qwen3VLForConditionalGeneration.from_pretrained(
             version,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             attn_implementation="sdpa",
         )
         self.qwen = self.qwen.eval().requires_grad_(False)

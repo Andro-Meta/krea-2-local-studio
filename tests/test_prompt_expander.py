@@ -11,6 +11,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from prompt_expander import (
+    _decode_generation,
     describe_image_local,
     describe_image_openrouter,
     expand_prompt_local,
@@ -21,7 +22,10 @@ from prompt_expander import (
 
 class PromptExpanderTests(unittest.TestCase):
     def test_reports_local_helper_failure(self) -> None:
-        with patch("prompt_expander.logger.warning"):
+        with (
+            patch("prompt_expander._load_local_qwen", side_effect=RuntimeError("missing local model")),
+            patch("prompt_expander.logger.warning"),
+        ):
             result = expand_prompt_result("a haunted house", backend="local")
 
         self.assertEqual(result.expanded, "a haunted house")
@@ -55,6 +59,57 @@ class PromptExpanderTests(unittest.TestCase):
         self.assertTrue(result.changed)
         self.assertEqual(result.backend, "local")
         self.assertIn("cinematic", result.expanded)
+
+    def test_local_qwen_expands_prompt_with_batch_encoding(self) -> None:
+        class FakeInputs(dict):
+            def to(self, *_args, **_kwargs):
+                return self
+
+        class FakeTokenizer:
+            eos_token_id = 9
+
+            def apply_chat_template(self, messages, add_generation_prompt=True, return_tensors=None):
+                return FakeInputs({"input_ids": [10, 11], "attention_mask": [1, 1]})
+
+            def decode(self, tokens, skip_special_tokens=True):
+                return "A v5-compatible local expanded prompt."
+
+        class FakeModel:
+            device = "cpu"
+
+            def generate(self, **kwargs):
+                self.kwargs = kwargs
+                assert "input_ids" in kwargs
+                assert "attention_mask" in kwargs
+                return [[10, 11, 12, 13]]
+
+        model = FakeModel()
+        with patch("prompt_expander._load_local_qwen", return_value=(FakeTokenizer(), None, model)):
+            result = expand_prompt_local("a small chapel")
+
+        self.assertTrue(result.changed)
+        self.assertEqual(result.backend, "local")
+        self.assertIn("v5-compatible", result.expanded)
+
+    def test_decode_generation_accepts_tensor_like_outputs(self) -> None:
+        class FakeInput:
+            shape = [1, 2]
+
+        class FakeOutputs:
+            def __bool__(self):
+                raise RuntimeError("tensor truth value is ambiguous")
+
+            def __getitem__(self, index):
+                self.index = index
+                return [10, 11, 12, 13]
+
+        class FakeTokenizer:
+            def decode(self, tokens, skip_special_tokens=True):
+                return "decoded " + ",".join(str(token) for token in tokens)
+
+        text = _decode_generation(FakeTokenizer(), FakeOutputs(), FakeInput())
+
+        self.assertEqual(text, "decoded 12,13")
 
     def test_local_qwen_describes_image(self) -> None:
         class FakeInputs(dict):
