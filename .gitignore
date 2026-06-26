@@ -1,0 +1,48 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+share_auth.json
+app.db
+*.db
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+
+# Generated data
+outputs/
+logs/
+*.log
+*.log.*
+install_log.txt
+server_test.log
+server_test.log.err
+
+# Downloaded model weights and caches
+models/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.gguf
+
+# Local agent/editor state
+.claude/
+.cursor/
+.vscode/
+docs/superpowers/
+
+# OS
+Thumbs.db
+Desktop.ini
