@@ -36,7 +36,7 @@ jobs:
         run: python -m compileall backend tests scripts krea_share_control.pyw
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: npm
