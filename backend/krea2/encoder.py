@@ -78,6 +78,7 @@ class Qwen3VLConditioner(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(version, max_length=max_length)
         # Separate fast tokenizer for the assistant-turn suffix (matches official).
         self.processor = Qwen2TokenizerFast.from_pretrained(version, max_length=max_length)
+        self._vision_processor = None
 
     def _stack_layers(
         self,
@@ -95,6 +96,12 @@ class Qwen3VLConditioner(nn.Module):
             txt:     (B, seq, 12, 2560) conditioning (4D, txtfusion-ready)
             txtmask: (B, seq) attention mask
         """
+        if len(prompts) > 1 and len(set(prompts)) == 1:
+            txt, mask = self._encode_unique_text([prompts[0]])
+            return txt.expand(len(prompts), -1, -1, -1), mask.expand(len(prompts), -1)
+        return self._encode_unique_text(prompts)
+
+    def _encode_unique_text(self, prompts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
         device = next(self.qwen.parameters()).device
 
         text = [PROMPT_PREFIX + p for p in prompts]
@@ -125,6 +132,13 @@ class Qwen3VLConditioner(nn.Module):
         mask = mask[:, PREFIX_IDX:]
         return hiddens, mask
 
+    def _get_vision_processor(self):
+        if self._vision_processor is None:
+            from transformers import Qwen3VLProcessor
+
+            self._vision_processor = Qwen3VLProcessor.from_pretrained(self._version)
+        return self._vision_processor
+
     def forward_with_images(
         self,
         prompts: list[str],
@@ -136,15 +150,12 @@ class Qwen3VLConditioner(nn.Module):
         text-only encoding on any failure.
         """
         try:
-            from transformers import Qwen3VLProcessor  # noqa: F401
+            processor = self._get_vision_processor()
         except ImportError:
             logger.warning("Qwen3VLProcessor unavailable; text-only fallback")
             return self.forward(prompts)
 
-        from transformers import Qwen3VLProcessor
-
         device = next(self.qwen.parameters()).device
-        processor = Qwen3VLProcessor.from_pretrained(self._version)
         n_images = len(images)
         resized = [img.resize((384, 384)).convert("RGB") for img in images]
         wrapped = _wrap_image_prompt(prompts[0], n_images)
