@@ -100,10 +100,8 @@ def _strip_public_base_path(scope: dict) -> None:
     path = scope.get("path", "")
     if path == PUBLIC_BASE_PATH:
         scope["path"] = "/"
-        scope["root_path"] = PUBLIC_BASE_PATH
     elif path.startswith(PUBLIC_BASE_PATH + "/"):
         scope["path"] = path[len(PUBLIC_BASE_PATH):] or "/"
-        scope["root_path"] = PUBLIC_BASE_PATH
 
 
 def _is_auth_exempt(path: str, method: str = "GET") -> bool:

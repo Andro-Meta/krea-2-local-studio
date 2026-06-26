@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.cookiejar
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -81,6 +82,14 @@ class ShareServerSmokeTests(unittest.TestCase):
                     urllib.request.urlopen(f"{base}/krea/api/settings", timeout=2)
                 self.assertEqual(err.exception.code, 401)
                 err.exception.close()
+
+                index = ROOT / "frontend" / "dist" / "index.html"
+                if index.exists():
+                    match = re.search(r"src=\"\./(assets/[^\"]+\.js)\"", index.read_text(encoding="utf-8"))
+                    self.assertIsNotNone(match)
+                    with urllib.request.urlopen(f"{base}/krea/{match.group(1)}", timeout=3) as res:
+                        self.assertEqual(res.status, 200)
+                        self.assertIn("javascript", res.headers.get("Content-Type", ""))
 
                 jar = http.cookiejar.CookieJar()
                 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))

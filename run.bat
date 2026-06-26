@@ -28,6 +28,9 @@ if not exist "backend\krea2\mmdit.py" (
 echo Stopping any old Krea sharing/server process...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$root=(Resolve-Path '.').Path.ToLower(); Get-CimInstance Win32_Process | Where-Object { $cmd=[string]$_.CommandLine; ($cmd -like '*krea_share_control.pyw*') -or (($cmd.ToLower() -like ('*' + $root + '*')) -and ($cmd -like '*backend.main:app*')) -or (($cmd -like '*backend.main:app*') -and ($cmd -like '*--port 8200*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "Get-NetTCPConnection -LocalPort 8200 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+timeout /t 1 /nobreak >nul
 
 python scripts\download_support_models.py --check >nul 2>&1
 if errorlevel 1 (
