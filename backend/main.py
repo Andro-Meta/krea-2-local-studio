@@ -11,7 +11,6 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Optional
 
 # No triton on Windows → disable dynamo before torch loads it (mmdit posemb uses
 # @torch.compile(fullgraph=True), which would hard-fail at first forward).
@@ -67,6 +66,7 @@ from share_auth import (
 )
 from support_models import download_support_models, support_model_status
 from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, start_funnel, stop_funnel, tailscale_status, tailscale_up
+from security_utils import append_query_param, normalize_lora_import_url, safe_child_file, safe_lora_filename
 from system_check import get_system_report
 
 logger = logging.getLogger(__name__)
@@ -503,8 +503,9 @@ async def load_model(req: LoadModelRequest):
         await loop.run_in_executor(
             None, lambda: pipeline.load(req.checkpoint_path, req.quantization)
         )
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    except Exception as exc:
+        logger.exception("Model load failed")
+        raise HTTPException(500, "Model load failed. Check the server logs for details.") from exc
     return {"status": "loaded", "checkpoint": req.checkpoint_path}
 
 
@@ -543,12 +544,10 @@ async def delete_gallery_item(gallery_id: int):
 @app.get("/api/outputs/{filename}")
 async def serve_output(filename: str):
     from settings import OUTPUTS_DIR
-    # Prevent path traversal: only a bare filename inside OUTPUTS_DIR is allowed.
-    if "/" in filename or "\\" in filename or ".." in filename:
-        raise HTTPException(400, "Invalid filename")
-    p = (OUTPUTS_DIR / filename).resolve()
-    if OUTPUTS_DIR.resolve() not in p.parents:
-        raise HTTPException(400, "Invalid filename")
+    try:
+        p = safe_child_file(OUTPUTS_DIR, filename)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid filename") from exc
     if not p.exists():
         raise HTTPException(404)
     return FileResponse(str(p))
@@ -589,44 +588,23 @@ async def download_lora(lora_name: str):
             ),
         )
         return {"ok": True, "path": dest}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    except Exception as exc:
+        logger.exception("Official LoRA download failed for %s", lora_name)
+        raise HTTPException(500, "LoRA download failed. Check the server logs for details.") from exc
 
 
 @app.post("/api/loras/import")
 async def import_lora_url(req: LoraImportRequest):
     """Download a LoRA from a HuggingFace or CivitAI URL."""
-    import re
     import urllib.request
 
-    url = req.url.strip()
+    try:
+        url = normalize_lora_import_url(req.url)
+        filename = safe_lora_filename(req.filename, url)
+        dest = safe_child_file(LORAS_DIR, filename)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
-    # Resolve HuggingFace model page → resolve URL
-    # e.g. https://huggingface.co/user/repo/blob/main/file.safetensors
-    #   → https://huggingface.co/user/repo/resolve/main/file.safetensors
-    url = re.sub(r"huggingface\.co/(.+)/blob/", r"huggingface.co/\1/resolve/", url)
-
-    # CivitAI model page URL → API download URL
-    # e.g. https://civitai.com/models/123456 or /models/123456?modelVersionId=789
-    civitai_page = re.match(r"https?://civitai\.com/models/(\d+)", url)
-    civitai_version = re.search(r"modelVersionId=(\d+)", url)
-    if civitai_page and not re.search(r"/api/download/", url):
-        if civitai_version:
-            url = f"https://civitai.com/api/download/models/{civitai_version.group(1)}"
-        else:
-            raise HTTPException(400, "Paste the full CivitAI model URL including ?modelVersionId=... or the direct download link")
-
-    # Derive filename
-    filename = req.filename.strip()
-    if not filename:
-        # Take last path segment, strip query string
-        filename = url.split("?")[0].rstrip("/").split("/")[-1]
-    if not filename.endswith(".safetensors"):
-        filename += ".safetensors"
-    # Sanitize
-    filename = re.sub(r"[^\w\-.]", "_", filename)
-
-    dest = LORAS_DIR / filename
     if dest.exists():
         v = inspect_lora(dest)
         return {"ok": True, "path": str(dest), "filename": filename, "skipped": True,
@@ -636,7 +614,7 @@ async def import_lora_url(req: LoraImportRequest):
     if "civitai.com" in url:
         token = req.civitai_token or settings.civitai_token
         if token:
-            url = url + ("&" if "?" in url else "?") + f"token={token}"
+            url = append_query_param(url, "token", token)
 
     def _fetch():
         request = urllib.request.Request(url, headers=headers)
@@ -653,10 +631,11 @@ async def import_lora_url(req: LoraImportRequest):
                 "compatible": v["compatible"], "match_info": v["reason"]}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as exc:
         if dest.exists():
             dest.unlink(missing_ok=True)
-        raise HTTPException(500, f"Download failed: {e}")
+        logger.exception("Imported LoRA download failed from allowed host")
+        raise HTTPException(502, "LoRA import failed. Check the URL and server logs.") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -715,8 +694,9 @@ async def automask(req: AutoMaskRequest):
 
     try:
         img = _Image.open(_io.BytesIO(_b64.b64decode(req.image_b64)))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"Bad image: {e}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Automask image decode failed: %s", exc)
+        raise HTTPException(400, "Bad image data.") from exc
     loop = asyncio.get_event_loop()
     mask = await loop.run_in_executor(
         None, lambda: generate_mask(img, req.prompt, req.threshold)
@@ -738,7 +718,11 @@ async def describe_image(req: DescribeImageRequest):
         else:
             result = await loop.run_in_executor(None, lambda: describe_image_local(req.image_b64))
     except Exception as exc:
-        detail = openrouter_error_hint(exc) if settings.prompt_expander_backend == "openrouter" else str(exc)
+        if settings.prompt_expander_backend == "openrouter":
+            detail = openrouter_error_hint(exc)
+        else:
+            logger.exception("Local image description failed")
+            detail = "Local image description failed. Use System > Krea Moodboard Conditioning / Local AI Assets to repair local models."
         raise HTTPException(502, detail) from exc
     return DescribeImageResponse(**result)
 
@@ -773,7 +757,8 @@ async def download_support_models_endpoint():
     try:
         results = await loop.run_in_executor(None, download_support_models)
     except Exception as exc:
-        raise HTTPException(502, f"Support model download failed: {exc}") from exc
+        logger.exception("Support model download failed")
+        raise HTTPException(502, "Support model download failed. Check the server logs for details.") from exc
     return {"ok": True, "items": results, "status": support_model_status()}
 
 
@@ -782,6 +767,7 @@ async def download_support_models_endpoint():
 # ---------------------------------------------------------------------------
 
 ENV_PATH = Path(__file__).parent.parent / ".env"
+SECRET_ENV_KEYS = {"HF_TOKEN", "CIVITAI_TOKEN", "IDEOGRAM_API_KEY", "OPENROUTER_API_KEY"}
 
 
 def _read_env() -> dict[str, str]:
@@ -796,7 +782,7 @@ def _read_env() -> dict[str, str]:
 
 
 def _write_env(env: dict[str, str]) -> None:
-    lines = [f"{k}={v}" for k, v in env.items()]
+    lines = [f"{k}={v}" for k, v in env.items() if k not in SECRET_ENV_KEYS]
     ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -804,14 +790,16 @@ def _write_env(env: dict[str, str]) -> None:
 async def get_settings():
     env = _read_env()
     return {
-        "hf_token": env.get("HF_TOKEN", ""),
-        "civitai_token": env.get("CIVITAI_TOKEN", ""),
+        "hf_token": "",
+        "civitai_token": "",
         "krea2_turbo_path": env.get("KREA2_TURBO_PATH", ""),
         "krea2_raw_path": env.get("KREA2_RAW_PATH", ""),
         "output_dir": env.get("OUTPUT_DIR", str(MODELS_DIR.parent / "outputs")),
         "prompt_expander_backend": env.get("PROMPT_EXPANDER_BACKEND", settings.prompt_expander_backend),
         "openrouter_model": env.get("OPENROUTER_MODEL", settings.openrouter_model),
         "openrouter_free_only": env.get("OPENROUTER_FREE_ONLY", str(settings.openrouter_free_only)).lower() in {"1", "true", "yes"},
+        "has_hf_token": bool(env.get("HF_TOKEN", settings.hf_token)),
+        "has_civitai_token": bool(env.get("CIVITAI_TOKEN", settings.civitai_token)),
         "has_ideogram_api_key": bool(env.get("IDEOGRAM_API_KEY", settings.ideogram_api_key)),
         "has_openrouter_api_key": bool(env.get("OPENROUTER_API_KEY", settings.openrouter_api_key)),
     }
@@ -821,9 +809,9 @@ async def get_settings():
 async def update_settings(req: SettingsUpdate):
     env = _read_env()
     if req.hf_token is not None:
-        env["HF_TOKEN"] = req.hf_token
+        settings.hf_token = req.hf_token.replace("\r", "").replace("\n", "")
     if req.civitai_token is not None:
-        env["CIVITAI_TOKEN"] = req.civitai_token
+        settings.civitai_token = req.civitai_token.replace("\r", "").replace("\n", "")
     if req.krea2_turbo_path is not None:
         env["KREA2_TURBO_PATH"] = req.krea2_turbo_path
     if req.krea2_raw_path is not None:
@@ -834,11 +822,9 @@ async def update_settings(req: SettingsUpdate):
         env["PROMPT_EXPANDER_BACKEND"] = req.prompt_expander_backend
         settings.prompt_expander_backend = req.prompt_expander_backend
     if req.ideogram_api_key is not None:
-        env["IDEOGRAM_API_KEY"] = req.ideogram_api_key.replace("\r", "").replace("\n", "")
-        settings.ideogram_api_key = env["IDEOGRAM_API_KEY"]
+        settings.ideogram_api_key = req.ideogram_api_key.replace("\r", "").replace("\n", "")
     if req.openrouter_api_key is not None:
-        env["OPENROUTER_API_KEY"] = req.openrouter_api_key.replace("\r", "").replace("\n", "")
-        settings.openrouter_api_key = env["OPENROUTER_API_KEY"]
+        settings.openrouter_api_key = req.openrouter_api_key.replace("\r", "").replace("\n", "")
     if req.openrouter_model is not None:
         env["OPENROUTER_MODEL"] = req.openrouter_model
         settings.openrouter_model = req.openrouter_model

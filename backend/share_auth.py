@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 
 ITERS = 200_000
 SESSION_TTL_SECONDS = 12 * 60 * 60
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 def load_users(path: Path) -> dict[str, dict[str, str]]:
@@ -48,8 +50,8 @@ def _normalize_role(role: str) -> str:
 
 def add_user(path: Path, username: str, password: str, role: str | None = None) -> None:
     username = username.strip()
-    if not username:
-        raise ValueError("username is required")
+    if not USERNAME_RE.fullmatch(username):
+        raise ValueError("username must be 1-64 characters: letters, numbers, dots, dashes, or underscores")
     if len(password) < 8:
         raise ValueError("password must be at least 8 characters")
     users = load_users(path)

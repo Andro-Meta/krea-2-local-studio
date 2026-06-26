@@ -439,7 +439,7 @@ export default function SystemStatus() {
               fullWidth
               type="password"
               placeholder={settings?.has_openrouter_api_key ? 'Saved. Paste a new key to replace it.' : 'sk-or-v1-...'}
-              helperText="Stored locally in .env. The saved key is never displayed."
+              helperText="Applied to this server session. For persistent keys, set them manually in your local .env."
             />
             <TextField
               label="OpenRouter model"

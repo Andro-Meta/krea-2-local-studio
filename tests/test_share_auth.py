@@ -67,6 +67,14 @@ class ShareAuthTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 share_auth.add_user(Path(td) / "auth.json", "alice", "short")
 
+    def test_rejects_unsafe_usernames(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = Path(td) / "auth.json"
+            for username in ("bad name", "../admin", "alice\r\nSet-Cookie:evil=1"):
+                with self.subTest(username=username):
+                    with self.assertRaises(ValueError):
+                        share_auth.add_user(store, username, "correct horse")
+
 
 if __name__ == "__main__":
     unittest.main()

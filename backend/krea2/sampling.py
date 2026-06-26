@@ -121,6 +121,8 @@ def sample(
         neg = negative_prompts or [""] * txt.shape[0]
         negative_txt, negative_txtmask = encoder(neg)
     if cfg:
+        if negative_txt is None:
+            raise ValueError("negative conditioning is required when guidance is enabled")
         negative_txt = negative_txt.to(device=device, dtype=dtype)
         if negative_txtmask is not None:
             negative_txtmask = negative_txtmask.to(device=device)
