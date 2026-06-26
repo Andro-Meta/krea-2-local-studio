@@ -4,9 +4,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import math
 from pathlib import Path
-from typing import Optional
 
 import torch
 from PIL import Image

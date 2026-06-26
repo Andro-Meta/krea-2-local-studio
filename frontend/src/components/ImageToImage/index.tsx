@@ -1,11 +1,11 @@
-import React, { useCallback } from 'react'
+import { useCallback, useEffect, type ChangeEvent } from 'react'
 import { Box, Button, Slider, Stack, Typography } from '@mui/material'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import { useStore } from '../../store'
 import GeneratePanel from '../GeneratePanel'
 
 function ImageUploader({ label, value, onChange }: { label: string; value: string; onChange: (b64: string) => void }) {
-  const handleFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     const reader = new FileReader()
@@ -41,7 +41,7 @@ function ImageUploader({ label, value, onChange }: { label: string; value: strin
 export default function ImageToImagePanel() {
   const { params, setParam, setParams } = useStore()
 
-  React.useEffect(() => {
+  useEffect(() => {
     setParams({ mode: 'img2img' })
   }, [])
 

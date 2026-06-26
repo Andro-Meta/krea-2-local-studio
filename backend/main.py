@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import gc
-import io
-import json
 import logging
 import os
 import secrets
@@ -41,7 +38,6 @@ from schemas import (
     ExpandPromptRequest,
     ExpandPromptResponse,
     FavoriteRequest,
-    GalleryListResponse,
     GenerationRequest,
     LoadModelRequest,
     SettingsUpdate,

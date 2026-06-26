@@ -49,5 +49,5 @@ def parse_weights(weights_str: str) -> list[float]:
         if len(vals) == N_LAYERS:
             return vals
     except ValueError:
-        pass
+        return DEFAULT_LAYER_WEIGHTS
     return DEFAULT_LAYER_WEIGHTS

@@ -1,4 +1,3 @@
-import React from 'react'
 import { Box, Tabs, Tab, Typography } from '@mui/material'
 import Layout from './components/Layout'
 import GeneratePanel from './components/GeneratePanel'

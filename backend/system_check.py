@@ -1,13 +1,15 @@
 """Hardware pre-flight checks for Krea 2 Studio."""
 from __future__ import annotations
 
-import gc
+import logging
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 VARIANT_REQS: dict[str, dict[str, Any]] = {
     "turbo_bf16": {
@@ -83,8 +85,8 @@ def mem_snapshot() -> str:
             free_b, total_b = torch.cuda.mem_get_info(0)
             gib = 1024 ** 3
             parts.append(f"VRAM {free_b / gib:.1f}/{total_b / gib:.1f}GB")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("CUDA memory snapshot unavailable: %s", exc)
     return " | ".join(parts) if parts else "memory info unavailable"
 
 
@@ -137,8 +139,8 @@ def get_system_report() -> dict[str, Any]:
             if torch.cuda.is_available():
                 ours_gb = torch.cuda.memory_reserved(0) / (1024 ** 3)
                 vram_free_eff += ours_gb
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("CUDA reserved memory unavailable: %s", exc)
 
     variants = []
     for v, req in VARIANT_REQS.items():

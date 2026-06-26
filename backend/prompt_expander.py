@@ -83,7 +83,7 @@ def _decode_generation(tokenizer, outputs, inputs=None) -> str:
         input_len = int(getattr(inputs, "shape", [0, 0])[-1]) if inputs is not None else 0
         output = output[input_len:]
     except Exception:
-        pass
+        output = outputs[0] if outputs else []
     text = tokenizer.decode(output, skip_special_tokens=True).strip()
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     return text

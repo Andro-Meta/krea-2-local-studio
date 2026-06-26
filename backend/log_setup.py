@@ -32,5 +32,5 @@ def flush_all() -> None:
     for h in logging.getLogger().handlers:
         try:
             h.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("Log handler flush failed: %s", exc)

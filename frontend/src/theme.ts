@@ -3,7 +3,6 @@ import { createTheme, alpha } from '@mui/material/styles'
 // M3 dark seed color: deep purple
 const primary = '#D0BCFF'
 const secondary = '#CCC2DC'
-const tertiary = '#EFB8C8'
 const surface = '#131218'
 const surfaceVariant = '#1E1B2E'
 const surfaceContainer = '#211F2D'

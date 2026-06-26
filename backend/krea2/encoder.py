@@ -10,7 +10,6 @@ Extended with forward_with_images() for multimodal reference-image conditioning.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import torch
 import torch.nn as nn

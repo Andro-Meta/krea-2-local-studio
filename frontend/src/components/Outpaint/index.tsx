@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import {
   Alert, Box, Button, Chip, CircularProgress, Paper, Slider, Stack,
   ToggleButton, ToggleButtonGroup, Typography,
@@ -48,7 +48,7 @@ export default function OutpaintPanel() {
     'continue the existing lighting, perspective, color palette, texture, depth of field, and composition beyond the original frame'
   ), [])
 
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     const b64 = await readFileB64(file)

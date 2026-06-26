@@ -1,6 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Box, Button, Chip, IconButton, Stack, TextField, Tooltip, Typography } from '@mui/material'
-import AddIcon from '@mui/icons-material/Add'
 import DeleteIcon from '@mui/icons-material/Delete'
 import GridOnIcon from '@mui/icons-material/GridOn'
 import { useStore } from '../../store'
@@ -58,13 +57,13 @@ export default function CanvasControl() {
 
   useEffect(() => { draw() }, [draw])
 
-  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onMouseDown = (e: MouseEvent<HTMLCanvasElement>) => {
     const r = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - r.left, y = e.clientY - r.top
     setDrawing({ x, y })
   }
 
-  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const onMouseMove = (e: MouseEvent<HTMLCanvasElement>) => {
     if (!drawing) return
     const r = canvasRef.current!.getBoundingClientRect()
     const x = e.clientX - r.left, y = e.clientY - r.top

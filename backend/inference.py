@@ -205,6 +205,7 @@ class Krea2Pipeline:
 
             watchdog = LoadWatchdog()
             watchdog.start()
+            mmdit = ae = encoder = None
             try:
                 logger.info(f"Loading {checkpoint_path} [{quantization}] ...")
 
@@ -270,7 +271,6 @@ class Krea2Pipeline:
                 # Free anything reclaimable before the ~8GB encoder load.
                 watchdog.check()
                 gc.collect()
-                hf_token = settings.hf_token or None
                 encoder = Qwen3VLConditioner(str(support_model_path("qwen3_vl"))).eval()
                 logger.info(f"Encoder loaded. {mem_snapshot()}")
 
@@ -280,12 +280,9 @@ class Krea2Pipeline:
                 # Drop partially-loaded locals first — they hold GPU tensors not yet
                 # assigned to self, so empty_cache() can't free them otherwise.
                 # (del locals()[name] is a no-op on real function locals in CPython.)
-                try: del mmdit
-                except (NameError, UnboundLocalError): pass
-                try: del ae
-                except (NameError, UnboundLocalError): pass
-                try: del encoder
-                except (NameError, UnboundLocalError): pass
+                mmdit = None
+                ae = None
+                encoder = None
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

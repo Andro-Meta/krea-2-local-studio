@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react'
+import { useEffect, useRef, type ChangeEvent } from 'react'
 import { Box, Button, Slider, Stack, Typography } from '@mui/material'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import { useStore } from '../../store'
@@ -9,7 +9,7 @@ export default function InpaintPanel() {
 
   useEffect(() => { setParams({ mode: 'inpaint' }) }, [])
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     const reader = new FileReader()
