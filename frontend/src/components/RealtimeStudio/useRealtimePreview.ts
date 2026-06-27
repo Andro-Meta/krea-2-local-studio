@@ -45,6 +45,7 @@ export function useRealtimePreview() {
             progress: 100,
             image: job.image_b64,
             seed: job.seed ?? null,
+            metadata: job.metadata ?? null,
             lastUpdated: Date.now(),
             error: null,
           })

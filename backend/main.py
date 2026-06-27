@@ -522,11 +522,11 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
             moodboard_strength=max(0.0, min(1.0, float(req.moodboard_strength))),
             moodboard_images=[req.canvas_image_b64],
         )
-        results, seed, filenames, _ = await loop.run_in_executor(
+        results, seed, filenames, _, metadata = await loop.run_in_executor(
             None, lambda: pipeline.generate(preview_req, progress_cb=progress_cb, save_outputs=False)
         )
         image = results[0] if results else ""
-        realtime_previews.complete(job_id, image_b64=image, seed=seed)
+        realtime_previews.complete(job_id, image_b64=image, seed=seed, metadata=metadata[0] if metadata else {})
     except Exception as e:
         logger.exception("Realtime preview failed")
         realtime_previews.fail(job_id, str(e))
@@ -566,15 +566,16 @@ async def _run_generation(job_id: str, req: GenerationRequest):
                 req.steps = 50
             if req.cfg < 30:
                 req.cfg = 30
-            results, seed, filenames, lora_reports = await loop.run_in_executor(
+            results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
                 None, lambda: generate_flux_fill(req, progress_cb=progress_cb)
             )
         else:
-            results, seed, filenames, lora_reports = await loop.run_in_executor(
+            results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
                 None, lambda: pipeline.generate(req, progress_cb=progress_cb)
             )
         job["images"] = results
         job["seed"] = seed
+        job["metadata"] = metadata
         job["status"] = "done"
         job["progress"] = 100
         # Surface LoRAs that were requested but not applied (wrong model/format).
@@ -597,12 +598,13 @@ async def _run_generation(job_id: str, req: GenerationRequest):
                     seed=seed + i,
                     loras=[l.get("name", "") for l in req.loras],
                     mode=req.mode,
+                    metadata=metadata[i] if i < len(metadata) else {},
                 )
             except Exception:
                 logger.exception(f"Gallery save failed for {fname}")
 
         await ws_manager.broadcast(job_id, {
-            "type": "done", "images": results, "seed": seed,
+            "type": "done", "images": results, "seed": seed, "metadata": metadata,
             "lora_warnings": lora_warnings,
             "edit_provider": job.get("edit_provider"),
             "provider_warning": job.get("provider_warning"),
@@ -834,9 +836,10 @@ async def import_lora_url(req: LoraImportRequest):
 @app.post("/api/upscale")
 async def upscale(req: UpscaleRequest):
     from upscaler import (
-        b64_to_pil, pil_to_b64, upscale_model_refine, upscale_realesrgan,
+        b64_to_pil, upscale_model_refine, upscale_realesrgan,
         upscale_tiled_vae, upscale_ultimate,
     )
+    from output_saver import encode_images
 
     img = b64_to_pil(req.image_b64)
     loop = asyncio.get_event_loop()
@@ -870,7 +873,22 @@ async def upscale(req: UpscaleRequest):
     else:
         raise HTTPException(400, f"Unknown upscale method: {req.method}")
 
-    return {"image_b64": pil_to_b64(result)}
+    metadata = {
+        "schema_version": 1,
+        "app": "Krea 2 Studio",
+        "operation": "upscale",
+        "prompt": req.prompt,
+        "method": req.method,
+        "scale": req.scale,
+        "denoise": req.denoise,
+        "tile_size": req.tile_size,
+        "seam_fix": req.seam_fix,
+        "source_gallery_id": req.gallery_id,
+        "width": result.width,
+        "height": result.height,
+    }
+    encoded, _ = encode_images([result], OUTPUTS_DIR, save_outputs=False, metadata=[metadata])
+    return {"image_b64": encoded[0], "metadata": metadata}
 
 
 @app.post("/api/automask")

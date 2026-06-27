@@ -56,6 +56,7 @@ export interface LightboxItem {
   filename?: string
   prompt?: string
   favorite?: boolean
+  metadata?: Record<string, any>
 }
 
 export interface LightboxState {
@@ -71,6 +72,7 @@ export interface RealtimePreviewState {
   progress: number
   image: string
   seed: number | null
+  metadata?: Record<string, any> | null
   error: string | null
   lastUpdated: number | null
   paused: boolean
@@ -163,6 +165,7 @@ const defaultRealtime: RealtimeState = {
     progress: 0,
     image: '',
     seed: null,
+    metadata: null,
     error: null,
     lastUpdated: null,
     paused: false,
@@ -188,12 +191,13 @@ interface AppState {
   jobId: string | null
   progress: number
   results: string[]
+  resultsMetadata: Array<Record<string, any>>
   lastSeed: number | null
   generationError: string | null
   setGenerating: (v: boolean) => void
   setJobId: (id: string | null) => void
   setProgress: (n: number) => void
-  setResults: (imgs: string[], seed?: number) => void
+  setResults: (imgs: string[], seed?: number, metadata?: Array<Record<string, any>>) => void
   setError: (e: string | null) => void
 
   systemReport: SystemReport | null
@@ -235,12 +239,13 @@ export const useStore = create<AppState>((set, get) => ({
   jobId: null,
   progress: 0,
   results: [],
+  resultsMetadata: [],
   lastSeed: null,
   generationError: null,
   setGenerating: (v) => set({ generating: v }),
   setJobId: (id) => set({ jobId: id }),
   setProgress: (n) => set({ progress: n }),
-  setResults: (imgs, seed) => set({ results: imgs, lastSeed: seed ?? null }),
+  setResults: (imgs, seed, metadata) => set({ results: imgs, lastSeed: seed ?? null, resultsMetadata: metadata ?? [] }),
   setError: (e) => set({ generationError: e }),
 
   systemReport: null,

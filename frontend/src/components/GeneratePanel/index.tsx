@@ -14,7 +14,7 @@ import CanvasControl from './CanvasControl'
 import ResultsView from './ResultsView'
 
 export default function GeneratePanel() {
-  const { params, generating, progress, results, lastSeed, generationError,
+  const { params, generating, progress, results, resultsMetadata, lastSeed, generationError,
           setGenerating, setJobId, setProgress, setResults, setError,
           modelLoaded, setModelLoaded, setTab } = useStore()
   const inRedrawStudio = params.mode !== 'txt2img'
@@ -85,7 +85,7 @@ export default function GeneratePanel() {
       wsRef.current = connectWS(job_id, (data: any) => {
         if (data.type === 'progress') setProgress(data.pct ?? 0)
         if (data.type === 'done') {
-          setResults(data.images ?? [], data.seed)
+          setResults(data.images ?? [], data.seed, data.metadata ?? [])
           setGenerating(false)
           setProgress(100)
           const warns = data.lora_warnings ?? []
@@ -160,7 +160,7 @@ export default function GeneratePanel() {
           {generating ? 'Generating…' : 'Generate'}
         </Button>
 
-        <ResultsView images={results} seed={lastSeed} />
+        <ResultsView images={results} seed={lastSeed} metadata={resultsMetadata} />
       </Stack>
     </Box>
   )

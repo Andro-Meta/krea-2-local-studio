@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,6 +60,49 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(len(encoded), 1)
         self.assertEqual(filenames, [])
         self.assertEqual(saved_files, [])
+
+    def test_output_encoder_embeds_generation_metadata(self) -> None:
+        import output_saver
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            image = Image.new("RGB", (16, 16), "purple")
+            metadata = {"prompt": "a purple cube", "seed": 123, "steps": 8}
+
+            encoded, filenames = output_saver.encode_images([image], out_dir, metadata=[metadata])
+            with Image.open(out_dir / filenames[0]) as saved_img:
+                saved_info = dict(saved_img.info)
+            with Image.open(__import__("io").BytesIO(__import__("base64").b64decode(encoded[0]))) as roundtrip_img:
+                roundtrip_info = dict(roundtrip_img.info)
+
+        self.assertEqual(json.loads(saved_info["krea2_metadata"])["prompt"], "a purple cube")
+        self.assertEqual(json.loads(roundtrip_info["krea2_metadata"])["seed"], 123)
+
+    def test_generation_metadata_excludes_image_payloads(self) -> None:
+        from generation_metadata import build_generation_metadata
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(
+            prompt="a neon chair",
+            negative_prompt="blurry",
+            checkpoint="turbo",
+            quantization="fp8",
+            steps=8,
+            cfg=0.0,
+            seed=42,
+            moodboard_images=["A" * 128],
+            ref_image1_b64="B" * 128,
+            loras=[{"name": "krea2_darkbrush", "filename": "krea2_darkbrush.safetensors", "strength": 0.7}],
+        )
+
+        metadata = build_generation_metadata(req, base_seed=42, image_index=1, filename="out.png", resolved_provider="krea_native")
+
+        self.assertEqual(metadata["prompt"], "a neon chair")
+        self.assertEqual(metadata["seed"], 43)
+        self.assertEqual(metadata["checkpoint"], "turbo")
+        self.assertEqual(metadata["quantization"], "fp8")
+        self.assertEqual(metadata["image_references"]["moodboard_count"], 1)
+        self.assertNotIn("A" * 128, json.dumps(metadata))
 
     def test_official_lora_download_uses_loras_subfolder(self) -> None:
         import lora_manager

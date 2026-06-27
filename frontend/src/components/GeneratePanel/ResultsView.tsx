@@ -19,9 +19,10 @@ const UPSCALE_METHODS = [
 interface Props {
   images: string[]
   seed: number | null
+  metadata?: Array<Record<string, any>>
 }
 
-export default function ResultsView({ images, seed }: Props) {
+export default function ResultsView({ images, seed, metadata = [] }: Props) {
   const { openLightbox, params } = useStore()
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null)
   const [activeIdx, setActiveIdx] = useState(0)
@@ -39,10 +40,10 @@ export default function ResultsView({ images, seed }: Props) {
     setMenuAnchor(null)
     setBusy(label)
     try {
-      const { image_b64 } = await apiFetch.upscale(images[activeIdx], method, {
+      const { image_b64, metadata: upscaledMetadata } = await apiFetch.upscale(images[activeIdx], method, {
         prompt: params.prompt,
       })
-      openLightbox([{ src: `data:image/png;base64,${image_b64}`, prompt: params.prompt }])
+      openLightbox([{ src: `data:image/png;base64,${image_b64}`, prompt: params.prompt, metadata: upscaledMetadata }])
       setToast(`${label} complete — opened full size`)
     } catch (e: any) {
       setToast(e?.response?.data?.detail ?? e.message ?? 'Upscale failed')
@@ -71,6 +72,7 @@ export default function ResultsView({ images, seed }: Props) {
                     src: `data:image/png;base64,${img}`,
                     prompt: params.prompt,
                     filename: `krea2_result_${idx + 1}.png`,
+                    metadata: metadata[idx],
                   })), i)}
                 />
                 <Box sx={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 0.5 }}>

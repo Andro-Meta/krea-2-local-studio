@@ -74,6 +74,7 @@ export interface RealtimePreviewJob {
   progress: number
   image_b64?: string
   seed?: number | null
+  metadata?: Record<string, any> | null
   error?: string | null
 }
 
@@ -123,6 +124,7 @@ export interface GalleryItem {
   created_at: string
   favorite: boolean
   thumbnail_b64?: string
+  metadata?: Record<string, any>
 }
 
 export interface LoraInfo {
@@ -212,7 +214,7 @@ export const apiFetch = {
     api.post<{ job_id: string; status: string }>('/api/generate', req).then(r => r.data),
 
   jobStatus: (jobId: string) =>
-    api.get<{ job_id: string; status: string; progress: number; images: string[]; error?: string; seed?: number }>(`/api/generate/${jobId}`).then(r => r.data),
+    api.get<{ job_id: string; status: string; progress: number; images: string[]; error?: string; seed?: number; metadata?: Record<string, any>[] }>(`/api/generate/${jobId}`).then(r => r.data),
 
   realtimePreview: (req: RealtimePreviewRequest) =>
     api.post<RealtimePreviewJob>('/api/realtime/preview', req, { timeout: 120000 }).then(r => r.data),
@@ -271,7 +273,7 @@ export const apiFetch = {
       .then(r => r.data.image_b64),
 
   upscale: (image_b64: string, method: string, opts?: { scale?: number; denoise?: number; prompt?: string; tile_size?: number; seam_fix?: boolean }) =>
-    api.post<{ image_b64: string }>('/api/upscale', {
+    api.post<{ image_b64: string; metadata?: Record<string, any> }>('/api/upscale', {
       image_b64, method,
       scale: opts?.scale ?? (method === 'realesrgan' ? 4 : 2),
       denoise: opts?.denoise ?? (method === 'ultimate' ? 0.3 : 0.24),

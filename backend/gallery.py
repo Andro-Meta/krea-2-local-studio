@@ -28,10 +28,15 @@ async def init_db() -> None:
                 seed INTEGER DEFAULT 0,
                 loras TEXT DEFAULT '[]',
                 mode TEXT DEFAULT 'txt2img',
+                metadata_json TEXT DEFAULT '{}',
                 favorite INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
             )
         """)
+        columns = await (await db.execute("PRAGMA table_info(gallery)")).fetchall()
+        names = {row[1] for row in columns}
+        if "metadata_json" not in names:
+            await db.execute("ALTER TABLE gallery ADD COLUMN metadata_json TEXT DEFAULT '{}'")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_gallery_created ON gallery(created_at DESC)"
         )
@@ -50,16 +55,17 @@ async def save_image(
     seed: int = 0,
     loras: list | None = None,
     mode: str = "txt2img",
+    metadata: dict | None = None,
 ) -> int:
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
             """INSERT INTO gallery
                (filename, prompt, negative_prompt, checkpoint, steps, cfg,
-                width, height, seed, loras, mode, favorite, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                width, height, seed, loras, mode, metadata_json, favorite, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
             (filename, prompt, negative_prompt, checkpoint, steps, cfg,
-             width, height, seed, json.dumps(loras or []), mode, created_at),
+             width, height, seed, json.dumps(loras or []), mode, json.dumps(metadata or {}), created_at),
         )
         await db.commit()
         return cursor.lastrowid
@@ -98,6 +104,10 @@ async def get_gallery(
         for row in rows:
             item = dict(row)
             item["favorite"] = bool(item["favorite"])
+            try:
+                item["metadata"] = json.loads(item.get("metadata_json") or "{}")
+            except json.JSONDecodeError:
+                item["metadata"] = {}
             img_path = OUTPUTS_DIR / item["filename"]
             item["thumbnail_b64"] = _make_thumbnail(img_path) if img_path.exists() else None
             items.append(item)

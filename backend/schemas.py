@@ -74,6 +74,7 @@ class GalleryItem(BaseModel):
     created_at: str
     favorite: bool = False
     thumbnail_b64: Optional[str] = None
+    metadata: dict = {}
 
 
 class GalleryListResponse(BaseModel):

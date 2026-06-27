@@ -3,6 +3,7 @@ import { Alert, Box, CircularProgress, IconButton, Snackbar, Stack, TextField, T
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
 import { useStore } from '../../store'
 import { apiFetch } from '../../api'
+import CreatePromptFromImage from '../CreatePromptFromImage'
 
 export default function PromptSection() {
   const { params, setParam } = useStore()
@@ -51,6 +52,11 @@ export default function PromptSection() {
           </span>
         </Tooltip>
       </Box>
+      <CreatePromptFromImage
+        value={params.prompt}
+        onChange={prompt => setParam('prompt', prompt)}
+        compact
+      />
       {params.mode !== 'txt2img' && (
         <TextField
           label="Negative prompt"

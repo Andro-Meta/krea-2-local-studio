@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Box, CircularProgress, IconButton, Modal, Snackbar, Tooltip, Typography } from '@mui/material'
+import { Alert, Box, Button, CircularProgress, IconButton, Modal, Snackbar, Tooltip, Typography } from '@mui/material'
 import CloseIcon from '@mui/icons-material/Close'
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
 import ChevronRightIcon from '@mui/icons-material/ChevronRight'
@@ -15,6 +15,7 @@ import OpenInFullIcon from '@mui/icons-material/OpenInFull'
 import { apiFetch } from '../../api'
 import { useStore } from '../../store'
 import { downloadImage, srcToBase64 } from '../../lib/imageActions'
+import { metadataToGenerateParams, type ImportTargetMode } from '../../lib/galleryMetadataImport'
 
 type Point = { x: number; y: number }
 
@@ -24,6 +25,28 @@ function distance(a: Point, b: Point) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function metadataRows(metadata?: Record<string, any>) {
+  if (!metadata) return []
+  const rows: Array<[string, string]> = []
+  const add = (label: string, value: any) => {
+    if (value === undefined || value === null || value === '') return
+    rows.push([label, Array.isArray(value) ? value.join(', ') : String(value)])
+  }
+  add('Seed', metadata.seed)
+  add('Model', metadata.checkpoint || metadata.method)
+  add('Quantization', metadata.quantization)
+  add('Steps', metadata.steps)
+  add('CFG', metadata.cfg)
+  add('Size', metadata.width && metadata.height ? `${metadata.width} x ${metadata.height}` : '')
+  add('Mode', metadata.mode || metadata.operation)
+  add('Denoise', metadata.denoise)
+  add('Moodboards', metadata.moodboard_ids)
+  add('LoRAs', metadata.loras?.map((lora: any) => lora.name || lora.filename).filter(Boolean))
+  add('Enhancer', metadata.krea_enhancer?.enabled ? `on (${metadata.krea_enhancer.strength})` : '')
+  add('Rebalance', metadata.rebalance?.enabled ? `on (${metadata.rebalance.multiplier})` : '')
+  return rows
 }
 
 function eventPoint(e: React.PointerEvent): Point {
@@ -38,7 +61,7 @@ export default function Lightbox() {
   const item = lightbox?.items[lightbox.index]
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState<Point>({ x: 0, y: 0 })
-  const [toast, setToast] = useState<{ text: string; severity: 'success' | 'info' | 'error' } | null>(null)
+  const [toast, setToast] = useState<{ text: string; severity: 'success' | 'info' | 'warning' | 'error' } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const pointers = useRef(new Map<number, Point>())
   const lastPan = useRef<Point | null>(null)
@@ -173,6 +196,27 @@ export default function Lightbox() {
     }
   }
 
+  const importSettings = async (mode: ImportTargetMode) => {
+    if (!item.metadata) {
+      setToast({ text: 'This image has no saved generation metadata.', severity: 'warning' })
+      return
+    }
+    setBusy(`Importing to ${mode}`)
+    try {
+      if (mode === 'txt2img') {
+        setParams(metadataToGenerateParams(item.metadata, mode))
+      } else {
+        await withImage(b64 => setParams(metadataToGenerateParams(item.metadata!, mode, b64)))
+      }
+      setTab(0)
+      closeLightbox()
+    } catch (e: any) {
+      setToast({ text: e?.message ?? 'Could not import settings', severity: 'error' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const toggleFavorite = async () => {
     if (!item.id) return
     const favorite = !item.favorite
@@ -190,6 +234,7 @@ export default function Lightbox() {
 
   const actionSx = { bgcolor: 'rgba(0,0,0,0.55)', minWidth: 44, minHeight: 44, zIndex: 3 }
   const stopControlPointer = (e: React.PointerEvent) => e.stopPropagation()
+  const rows = metadataRows(item.metadata)
 
   return (
     <Modal open onClose={closeLightbox}>
@@ -260,6 +305,44 @@ export default function Lightbox() {
               <CircularProgress size={18} color="inherit" />
               <Typography>{busy}...</Typography>
             </Box>
+          </Box>
+        )}
+        {item.metadata && (
+          <Box
+            sx={{
+              position: 'fixed', top: 68, right: 16, width: { xs: 'calc(100vw - 32px)', sm: 340 },
+              maxHeight: '55vh', overflow: 'auto', p: 1.5, borderRadius: 2, zIndex: 3,
+              bgcolor: 'rgba(0,0,0,0.72)', color: 'white', backdropFilter: 'blur(10px)',
+            }}
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
+          >
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>Generation metadata</Typography>
+            {item.metadata.prompt && (
+              <Typography variant="caption" sx={{ display: 'block', mb: 1, color: 'rgba(255,255,255,0.82)' }}>
+                {item.metadata.prompt}
+              </Typography>
+            )}
+            {rows.map(([label, value]) => (
+              <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, py: 0.25 }}>
+                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.58)' }}>{label}</Typography>
+                <Typography variant="caption" sx={{ textAlign: 'right', fontFamily: 'Roboto Mono, monospace' }}>{value}</Typography>
+              </Box>
+            ))}
+            <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', mt: 1 }}>
+              <Button size="small" variant="contained" onClick={() => importSettings('txt2img')}>Import T2I</Button>
+              <Button size="small" variant="outlined" onClick={() => importSettings('redraw')}>Redraw</Button>
+              <Button size="small" variant="outlined" onClick={() => importSettings('img2img')}>Img2Img</Button>
+              <Button size="small" variant="outlined" onClick={() => importSettings('inpaint')}>Inpaint</Button>
+              <Button size="small" variant="outlined" onClick={() => importSettings('outpaint')}>Outpaint</Button>
+            </Box>
+            <Button
+              size="small"
+              sx={{ mt: 1 }}
+              onClick={() => navigator.clipboard?.writeText(JSON.stringify(item.metadata, null, 2))}
+            >
+              Copy metadata
+            </Button>
           </Box>
         )}
         <Box

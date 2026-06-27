@@ -64,6 +64,7 @@ export default function GalleryPanel() {
       filename: item.filename,
       prompt: item.prompt,
       favorite: item.favorite,
+      metadata: item.metadata,
     })), idx)
   }
 

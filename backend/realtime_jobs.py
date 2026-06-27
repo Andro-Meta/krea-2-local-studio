@@ -31,6 +31,7 @@ class RealtimePreviewRegistry:
             "progress": 0,
             "image_b64": None,
             "seed": None,
+            "metadata": None,
             "error": None,
             "created_at": time.time(),
             "updated_at": time.time(),
@@ -60,14 +61,14 @@ class RealtimePreviewRegistry:
             return False
         return self._latest_revision.get(job["session_id"]) == job["revision"]
 
-    def complete(self, job_id: str, *, image_b64: str, seed: int | None) -> bool:
+    def complete(self, job_id: str, *, image_b64: str, seed: int | None, metadata: dict | None = None) -> bool:
         job = self._jobs.get(job_id)
         if job is None or job.get("status") == "cancelled":
             return False
         if not self.is_current(job_id):
             self.update(job_id, status="stale", progress=100)
             return False
-        return self.update(job_id, status="done", progress=100, image_b64=image_b64, seed=seed)
+        return self.update(job_id, status="done", progress=100, image_b64=image_b64, seed=seed, metadata=metadata or {})
 
     def fail(self, job_id: str, error: str) -> bool:
         return self.update(job_id, status="error", progress=100, error=error)

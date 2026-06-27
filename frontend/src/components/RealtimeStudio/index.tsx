@@ -15,6 +15,7 @@ import RealtimeCanvas, { makeImageLayer } from './RealtimeCanvas'
 import RealtimeToolbar from './RealtimeToolbar'
 import { createDefaultDocument, documentToPngB64, promptFromLayerNotes } from './canvasDocument'
 import { useRealtimePreview } from './useRealtimePreview'
+import CreatePromptFromImage from '../CreatePromptFromImage'
 
 function statusText(status: string) {
   if (status === 'queued') return 'Queued'
@@ -92,7 +93,7 @@ export default function RealtimeStudio() {
           error: null,
           progress: 100,
         })
-        setResults([image], final.seed)
+        setResults([image], final.seed, final.metadata ?? [])
       }
     } catch (e) {
       setRealtimePreview({ status: 'error', error: e instanceof Error ? e.message : 'Final render failed' })
@@ -215,7 +216,7 @@ export default function RealtimeStudio() {
                     </Box>
                     {realtime.preview.error && <Alert severity="error">{realtime.preview.error}</Alert>}
                     <Stack direction="row" spacing={1} flexWrap="wrap">
-                      <Button size="small" disabled={!realtime.preview.image} onClick={() => openLightbox([{ src: `data:image/png;base64,${realtime.preview.image}`, prompt: realtime.prompt }], 0)}>
+                      <Button size="small" disabled={!realtime.preview.image} onClick={() => openLightbox([{ src: `data:image/png;base64,${realtime.preview.image}`, prompt: realtime.prompt, metadata: realtime.preview.metadata ?? undefined }], 0)}>
                         Open
                       </Button>
                       <Button size="small" disabled={!realtime.preview.image} onClick={addPreviewAsLayer}>
@@ -231,6 +232,11 @@ export default function RealtimeStudio() {
                   <Stack spacing={1.5}>
                     <Typography variant="h6">Prompt</Typography>
                     <TextField label="What should Krea redraw this into?" value={realtime.prompt} onChange={e => setRealtime({ prompt: e.target.value })} multiline minRows={3} />
+                    <CreatePromptFromImage
+                      value={realtime.prompt}
+                      onChange={prompt => setRealtime({ prompt })}
+                      compact
+                    />
                     <TextField label="Negative prompt" value={realtime.negativePrompt} onChange={e => setRealtime({ negativePrompt: e.target.value })} multiline minRows={2} />
                     <Divider />
                     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>

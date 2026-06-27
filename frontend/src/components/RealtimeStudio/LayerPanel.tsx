@@ -5,6 +5,7 @@ import DeleteIcon from '@mui/icons-material/Delete'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 import type { RealtimeDocument, RealtimeLayer } from './canvasDocument'
+import CreatePromptFromImage from '../CreatePromptFromImage'
 
 interface Props {
   document: RealtimeDocument
@@ -92,6 +93,12 @@ export default function LayerPanel({ document, selectedLayerId, onDocumentChange
                   placeholder="e.g. green branch shape, use this as an object"
                   onClick={e => e.stopPropagation()}
                   onChange={e => updateLayer(layer.id, { note: e.target.value })}
+                />
+                <CreatePromptFromImage
+                  value={layer.note ?? ''}
+                  onChange={note => updateLayer(layer.id, { note })}
+                  mode="append"
+                  compact
                 />
               </Stack>
             </CardContent>

@@ -27,6 +27,7 @@ import torch
 from PIL import Image
 
 from conditioning import parse_weights, rebalance
+from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
 from lora_manager import apply_loras, build_trigger_prompt
 from moodboards_catalog import moodboard_generation_context
@@ -708,8 +709,16 @@ class Krea2Pipeline:
 
         # Save + return base64 + filenames. Realtime previews pass
         # save_outputs=False so they never spam the Gallery output directory.
-        results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs)
-        return results, seed, filenames, lora_reports
+        metadata = [
+            build_generation_metadata(req, base_seed=seed, image_index=i, filename=filenames[i] if i < len(filenames) else "")
+            for i in range(len(images))
+        ]
+        results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs, metadata=metadata)
+        metadata = [
+            {**item, "filename": filenames[i] if i < len(filenames) else item.get("filename", "")}
+            for i, item in enumerate(metadata)
+        ]
+        return results, seed, filenames, lora_reports, metadata
 
 
 # Singleton used by FastAPI

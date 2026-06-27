@@ -9,6 +9,7 @@ from typing import Callable
 
 from PIL import Image
 
+from generation_metadata import build_generation_metadata
 from output_saver import encode_images
 from quality_assets import asset_by_id, asset_installed
 from settings import OUTPUTS_DIR
@@ -138,5 +139,13 @@ def generate_flux_fill(
         )
 
     images = [img.convert("RGB") for img in result.images]
-    results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs)
-    return results, seed, filenames, []
+    metadata = [
+        build_generation_metadata(request, base_seed=seed, image_index=i, filename="", resolved_provider="flux_fill")
+        for i in range(len(images))
+    ]
+    results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs, metadata=metadata)
+    metadata = [
+        {**item, "filename": filenames[i] if i < len(filenames) else item.get("filename", "")}
+        for i, item in enumerate(metadata)
+    ]
+    return results, seed, filenames, [], metadata

@@ -16,6 +16,7 @@ import { useStore } from '../../store'
 import { apiFetch, type LoraInfo } from '../../api'
 import MaskCanvas from '../Inpaint/MaskCanvas'
 import { buildOutpaintImage } from '../../lib/outpaint'
+import CreatePromptFromImage from '../CreatePromptFromImage'
 import {
   loraToGeneration,
   presetFor,
@@ -320,6 +321,12 @@ function ReferenceCard({
             helperText="Short notes work best: what to preserve, ignore, or place."
             multiline
             minRows={2}
+          />
+          <CreatePromptFromImage
+            value={slot.note}
+            onChange={onNote}
+            mode="append"
+            compact
           />
           {slot.image && <Button size="small" color="inherit" onClick={onClear}>Clear image</Button>}
         </Stack>
@@ -658,6 +665,11 @@ export default function RedrawStudio() {
                 multiline
                 minRows={3}
                 fullWidth
+              />
+              <CreatePromptFromImage
+                value={instruction}
+                onChange={prompt => { setInstruction(prompt); setReadyMessage(null) }}
+                compact
               />
 
               <TextField
