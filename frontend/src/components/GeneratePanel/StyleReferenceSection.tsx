@@ -9,6 +9,7 @@ import { useStore, type StyleReference } from '../../store'
 
 const MAX_STYLE_REFS = 10
 const TOKEN_SIZES: StyleReference['token_size'][] = ['low', 'normal', 'high', 'max']
+const ROLES = ['style', 'layout', 'subject', 'mood', 'texture'] as const
 
 function move<T>(items: T[], from: number, to: number) {
   const next = [...items]
@@ -32,6 +33,16 @@ export default function StyleReferenceSection() {
     setParam('style_references', refs.filter((_, i) => i !== index))
   }
 
+  const addMask = (index: number, file?: File) => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      const b64 = String(ev.target?.result || '').split(',')[1]
+      if (b64) updateRef(index, { mask_b64: b64 })
+    }
+    reader.readAsDataURL(file)
+  }
+
   const addImages = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []).slice(0, Math.max(0, MAX_STYLE_REFS - refs.length))
     files.forEach(file => {
@@ -43,7 +54,7 @@ export default function StyleReferenceSection() {
         if (current.length >= MAX_STYLE_REFS) return
         setParam('style_references', [
           ...current,
-          { image_b64: b64, strength: 1.0, role: 'style', token_size: 'normal' },
+          { image_b64: b64, strength: 1.0, role: 'style', token_size: 'normal', vision_position: 'before_prompt' },
         ])
       }
       reader.readAsDataURL(file)
@@ -66,6 +77,21 @@ export default function StyleReferenceSection() {
           <Typography variant="caption" sx={{ color: 'text.disabled', mb: 1, display: 'block' }}>
             Comfy-style references accept up to 10 images. Strength ranges from -2.0 to 2.0; negative values are advanced and push away from a reference.
           </Typography>
+
+          <TextField
+            select
+            size="small"
+            label="Reference fusion"
+            value={params.style_fusion_mode}
+            onChange={e => setParam('style_fusion_mode', e.target.value as typeof params.style_fusion_mode)}
+            fullWidth
+            helperText="Style only ignores layout/target refs. Preserve structure keeps source composition in edit modes. Semantic fusion blends prompt and references."
+            sx={{ mb: 1 }}
+          >
+            <MenuItem value="semantic_fusion">Semantic fusion</MenuItem>
+            <MenuItem value="style_only">Style transfer only</MenuItem>
+            <MenuItem value="preserve_structure">Preserve structure</MenuItem>
+          </TextField>
 
           <Stack spacing={1}>
             {refs.map((ref, index) => (
@@ -100,12 +126,12 @@ export default function StyleReferenceSection() {
                   <TextField
                     select
                     size="small"
-                    label="Token size"
-                    value={ref.token_size}
-                    onChange={e => updateRef(index, { token_size: e.target.value as StyleReference['token_size'] })}
+                    label="Role"
+                    value={ref.role}
+                    onChange={e => updateRef(index, { role: e.target.value })}
                     sx={{ minWidth: 120 }}
                   >
-                    {TOKEN_SIZES.map(size => <MenuItem key={size} value={size}>{size}</MenuItem>)}
+                    {ROLES.map(role => <MenuItem key={role} value={role}>{role}</MenuItem>)}
                   </TextField>
 
                   <Stack direction="row" spacing={0.5}>
@@ -117,6 +143,71 @@ export default function StyleReferenceSection() {
                     </Button>
                   </Stack>
                 </Stack>
+
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
+                  <TextField
+                    select
+                    size="small"
+                    label="Token budget"
+                    value={ref.token_size}
+                    onChange={e => updateRef(index, { token_size: e.target.value as StyleReference['token_size'] })}
+                    sx={{ minWidth: 130 }}
+                  >
+                    {TOKEN_SIZES.map(size => <MenuItem key={size} value={size}>{size}</MenuItem>)}
+                  </TextField>
+                  <TextField
+                    size="small"
+                    type="number"
+                    label="Vision MP"
+                    value={ref.vision_megapixels ?? ''}
+                    onChange={e => updateRef(index, { vision_megapixels: e.target.value ? Number(e.target.value) : null })}
+                    inputProps={{ min: 0.1, max: 4, step: 0.1 }}
+                    sx={{ minWidth: 110 }}
+                  />
+                  <TextField
+                    size="small"
+                    type="number"
+                    label="Mask padding"
+                    value={ref.mask_padding ?? 0}
+                    onChange={e => updateRef(index, { mask_padding: Math.max(0, Number(e.target.value) || 0) })}
+                    inputProps={{ min: 0, max: 512, step: 8 }}
+                    sx={{ minWidth: 125 }}
+                  />
+                  <TextField
+                    select
+                    size="small"
+                    label="Image position"
+                    value={ref.vision_position ?? 'before_prompt'}
+                    onChange={e => updateRef(index, { vision_position: e.target.value as StyleReference['vision_position'] })}
+                    sx={{ minWidth: 150 }}
+                  >
+                    <MenuItem value="before_prompt">Image before prompt</MenuItem>
+                    <MenuItem value="after_prompt">Image after prompt</MenuItem>
+                  </TextField>
+                  <Button size="small" component="label" variant={ref.mask_b64 ? 'contained' : 'outlined'}>
+                    {ref.mask_b64 ? 'Mask set' : 'Add mask'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={e => {
+                        addMask(index, e.target.files?.[0])
+                        e.currentTarget.value = ''
+                      }}
+                    />
+                  </Button>
+                </Stack>
+                <TextField
+                  size="small"
+                  label="Reference instruction"
+                  value={ref.system_prompt ?? ''}
+                  onChange={e => updateRef(index, { system_prompt: e.target.value.slice(0, 512) })}
+                  fullWidth
+                  multiline
+                  maxRows={2}
+                  sx={{ mt: 1 }}
+                  helperText="Optional Qwen system prompt override for this reference, max 512 characters."
+                />
               </Box>
             ))}
 

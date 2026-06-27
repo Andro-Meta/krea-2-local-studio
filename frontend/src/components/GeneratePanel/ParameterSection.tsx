@@ -51,8 +51,8 @@ export default function ParameterSection() {
   const setEnhancerVariant = (variant: typeof params.krea_enhancer_variant) => {
     setParams({
       krea_enhancer_variant: variant,
-      use_rebalance: variant === 'rebalance' || variant === 'rebalance_enhancer',
-      krea_enhancer_enabled: variant === 'enhancer' || variant === 'rebalance_enhancer',
+      use_rebalance: variant !== 'current',
+      krea_enhancer_enabled: variant !== 'off',
     })
   }
   const setInpaintMethod = (method: typeof params.inpaint_method) => {
@@ -328,23 +328,69 @@ export default function ParameterSection() {
               />
               <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', mt: 0.5 }}>
                 Conditioning Rebalance
-                <InfoTip text="Independently scales the 12 Qwen3-VL encoder layer taps. Layer 9 (5×) and layer 11 (4×) most strongly affect style. The global multiplier scales everything." />
+                <InfoTip text="Artifact-safe presets rebalance the 12 Qwen3-VL encoder layer taps while preserving overall conditioning magnitude. Legacy keeps the old multiply behavior for reproducible comparisons." />
               </Typography>
-              <LabeledSlider
-                label="Global multiplier"
-                value={params.rebalance_multiplier}
-                min={0.5} max={10} step={0.1}
-                onChange={v => setParam('rebalance_multiplier', v)}
-                tip="Scales all 12 conditioning taps together. Default 4.0 matches Krea's reference. Lower = softer prompt adherence."
-              />
-              <TextField
-                label="Per-layer weights (12 comma-separated values)"
-                value={params.rebalance_weights}
-                onChange={e => setParam('rebalance_weights', e.target.value)}
-                size="small"
-                fullWidth
-                helperText="Layers 1–12 of Qwen3-VL. Default: 1,1,1,1,1,1,1,2.5,5,1.1,4,1"
-              />
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    select
+                    label="Conditioning preset"
+                    value={params.rebalance_preset}
+                    onChange={e => {
+                      const preset = e.target.value as typeof params.rebalance_preset
+                      setParams({
+                        rebalance_preset: preset,
+                        rebalance_mode: preset === 'legacy' ? 'legacy_multiply' : 'rms_renorm',
+                        rebalance_renormalize: preset !== 'legacy',
+                        rebalance_multiplier: preset === 'legacy' ? 4.0 : 1.0,
+                      })
+                    }}
+                    size="small"
+                    fullWidth
+                    helperText="Default: Balanced, artifact-safe"
+                  >
+                    <MenuItem value="balanced">Balanced, artifact-safe</MenuItem>
+                    <MenuItem value="subtle">Subtle</MenuItem>
+                    <MenuItem value="detail">Detail</MenuItem>
+                    <MenuItem value="uniform">Uniform</MenuItem>
+                    <MenuItem value="legacy">Legacy multiply</MenuItem>
+                    <MenuItem value="custom">Custom</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    select
+                    label="Rebalance mode"
+                    value={params.rebalance_mode}
+                    onChange={e => setParam('rebalance_mode', e.target.value as typeof params.rebalance_mode)}
+                    size="small"
+                    fullWidth
+                    helperText="RMS renorm keeps prompt strength stable"
+                  >
+                    <MenuItem value="rms_renorm">RMS renormalized</MenuItem>
+                    <MenuItem value="legacy_multiply">Legacy multiply</MenuItem>
+                  </TextField>
+                </Grid>
+              </Grid>
+              {(params.rebalance_preset === 'custom' || params.rebalance_preset === 'legacy' || params.rebalance_mode === 'legacy_multiply') && (
+                <>
+                  <LabeledSlider
+                    label="Global multiplier"
+                    value={params.rebalance_multiplier}
+                    min={0.5} max={10} step={0.1}
+                    onChange={v => setParam('rebalance_multiplier', v)}
+                    tip="Scales all 12 conditioning taps together. Balanced default is 1.0; legacy 4.0 matches the older Studio behavior."
+                  />
+                  <TextField
+                    label="Per-layer weights (12 comma-separated values)"
+                    value={params.rebalance_weights}
+                    onChange={e => setParam('rebalance_weights', e.target.value)}
+                    size="small"
+                    fullWidth
+                    helperText="Layers 1–12 of Qwen3-VL. Default: 1,1,1,1,1,1,1,2.5,5,1.1,4,1"
+                  />
+                </>
+              )}
               <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', mt: 0.5 }}>
                 Seed Variance
                 <InfoTip text="Adds deterministic, bounded noise to unprotected conditioning tokens. Off is bitwise-equivalent to the normal seed path; high values can reduce prompt fidelity." />
@@ -441,27 +487,38 @@ export default function ParameterSection() {
               </Typography>
               <TextField
                 select
-                label="Testing variant"
+                label="Prompt adherence experiment"
                 value={params.krea_enhancer_variant}
                 onChange={e => setEnhancerVariant(e.target.value as typeof params.krea_enhancer_variant)}
                 size="small"
                 fullWidth
                 helperText="Use fixed seed/prompt to compare baseline, current rebalance, enhancer, and stacked conditioning."
               >
-                <MenuItem value="off">Baseline: no rebalance, no enhancer</MenuItem>
-                <MenuItem value="rebalance">Current default: rebalance only</MenuItem>
-                <MenuItem value="enhancer">Enhancer only</MenuItem>
-                <MenuItem value="rebalance_enhancer">Rebalance + enhancer</MenuItem>
+                <MenuItem value="off">Off</MenuItem>
+                <MenuItem value="current">Current enhancer</MenuItem>
+                <MenuItem value="capped_delta">Text-fusion capped delta</MenuItem>
+                <MenuItem value="current_plus_capped">Stacked test</MenuItem>
               </TextField>
               {params.krea_enhancer_enabled && (
-                <LabeledSlider
-                  label="Enhancer strength"
-                  value={params.krea_enhancer_strength}
-                  min={0} max={2} step={0.05}
-                  onChange={v => setParam('krea_enhancer_strength', v)}
-                  tip="Blends the internal text-fusion enhancement from neutral 0.0 to full 2.0. Start at 1.0 for A/B tests."
-                  helperText="Experimental · compare with a fixed seed before using in a final workflow"
-                />
+                <>
+                  <LabeledSlider
+                    label="Enhancer strength"
+                    value={params.krea_enhancer_strength}
+                    min={0} max={2} step={0.05}
+                    onChange={v => setParam('krea_enhancer_strength', v)}
+                    tip="Blends the internal text-fusion enhancement from neutral 0.0 to full 2.0. Start at 1.0 for A/B tests."
+                    helperText="Experimental · compare with a fixed seed before using in a final workflow"
+                  />
+                  {(params.krea_enhancer_variant === 'capped_delta' || params.krea_enhancer_variant === 'current_plus_capped') && (
+                    <LabeledSlider
+                      label="Delta cap"
+                      value={params.krea_enhancer_delta_cap}
+                      min={0.05} max={2} step={0.05}
+                      onChange={v => setParam('krea_enhancer_delta_cap', v)}
+                      tip="Caps text-fusion output shift relative to the reference pass. Lower is safer; 0.75 matches the default."
+                    />
+                  )}
+                </>
               )}
             </Stack>
           </AccordionDetails>

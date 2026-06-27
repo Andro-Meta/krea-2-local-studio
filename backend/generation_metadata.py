@@ -19,11 +19,19 @@ def _style_ref_dict(item: Any) -> dict:
     if not isinstance(item, dict):
         return {}
     image_b64 = str(item.get("image_b64", "") or "")
+    mask_b64 = str(item.get("mask_b64", "") or "")
     return {
+        "image_b64": image_b64,
+        "mask_b64": mask_b64,
         "strength": float(item.get("strength", 1.0)),
         "role": str(item.get("role", "style")),
         "token_size": str(item.get("token_size", "normal")),
+        "mask_padding": int(item.get("mask_padding", 0) or 0),
+        "vision_megapixels": item.get("vision_megapixels"),
+        "system_prompt": str(item.get("system_prompt", "") or ""),
+        "vision_position": str(item.get("vision_position", "before_prompt") or "before_prompt"),
         "hash": hashlib.sha256(image_b64.encode("utf-8")).hexdigest() if image_b64 else "",
+        "mask_hash": hashlib.sha256(mask_b64.encode("utf-8")).hexdigest() if mask_b64 else "",
     }
 
 
@@ -55,6 +63,8 @@ def build_generation_metadata(
             "filename": str(item.get("filename", "")),
             "strength": float(item.get("strength", 1.0)),
             "enabled": bool(item.get("enabled", True)),
+            "block_filter": str(item.get("block_filter", "all") or "all"),
+            "custom_blocks": _safe_list(item.get("custom_blocks", [])),
         }
         for item in _safe_list(getattr(req, "loras", []))
         if isinstance(item, dict)
@@ -110,6 +120,7 @@ def build_generation_metadata(
             "moodboard_count": len(moodboard_images),
             "ref_image_count": len(ref_images),
             "style_reference_count": len(style_references),
+            "style_fusion_mode": str(getattr(req, "style_fusion_mode", "semantic_fusion")),
             "style_references": style_references,
             "hashes": _hash_refs([*moodboard_images, *ref_images]),
         },
@@ -120,6 +131,9 @@ def build_generation_metadata(
         },
         "rebalance": {
             "enabled": bool(getattr(req, "use_rebalance", False)),
+            "mode": str(getattr(req, "rebalance_mode", "rms_renorm")),
+            "preset": str(getattr(req, "rebalance_preset", "balanced")),
+            "renormalize": bool(getattr(req, "rebalance_renormalize", True)),
             "multiplier": float(getattr(req, "rebalance_multiplier", 0.0)),
             "weights": str(getattr(req, "rebalance_weights", "")),
             "edit_enabled": bool(getattr(req, "edit_rebalance_enabled", True)),
@@ -127,7 +141,9 @@ def build_generation_metadata(
         },
         "krea_enhancer": {
             "enabled": bool(getattr(req, "krea_enhancer_enabled", False)),
+            "variant": str(getattr(req, "krea_enhancer_variant", "off")),
             "strength": float(getattr(req, "krea_enhancer_strength", 1.0)),
+            "delta_cap": float(getattr(req, "krea_enhancer_delta_cap", 0.75)),
         },
         "refine": {
             "enabled": bool(getattr(req, "refine", False)),

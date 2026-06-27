@@ -26,9 +26,10 @@ os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 import torch
 from PIL import Image
 
-from conditioning import blend_split_conditioning, parse_weights, rebalance
+from conditioning import blend_split_conditioning, rebalance, resolve_rebalance_weights
 from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
+from krea2.encoder import cap_vision_megapixels, crop_image_to_mask
 from krea2.sampler_registry import validate_sampler_configuration
 from krea2.lanpaint_sampler import LanPaintSettings
 from lora_manager import apply_loras, build_trigger_prompt
@@ -57,10 +58,10 @@ def _request_field_was_set(req, field: str) -> bool:
 def _apply_creativity_defaults(req) -> None:
     creativity = str(getattr(req, "creativity", "medium") or "medium").lower()
     presets = {
-        "raw": {"moodboard_strength": 0.15, "rebalance_multiplier": 2.0},
-        "low": {"moodboard_strength": 0.25, "rebalance_multiplier": 3.0},
-        "medium": {"moodboard_strength": 0.35, "rebalance_multiplier": 4.0},
-        "high": {"moodboard_strength": 0.5, "rebalance_multiplier": 5.5},
+        "raw": {"moodboard_strength": 0.15, "rebalance_multiplier": 1.0},
+        "low": {"moodboard_strength": 0.25, "rebalance_multiplier": 1.0},
+        "medium": {"moodboard_strength": 0.35, "rebalance_multiplier": 1.0},
+        "high": {"moodboard_strength": 0.5, "rebalance_multiplier": 1.15},
     }
     preset = presets.get(creativity, presets["medium"])
     if not _request_field_was_set(req, "moodboard_strength"):
@@ -106,6 +107,7 @@ def normalize_generation_defaults(req) -> None:
 def resolve_style_references(req, *, limit: int = 10) -> list[dict]:
     """Return structured style refs, preserving legacy ref_image1..3 inputs."""
     refs: list[dict] = []
+    fusion_mode = str(getattr(req, "style_fusion_mode", "semantic_fusion") or "semantic_fusion")
     for item in list(getattr(req, "style_references", []) or []):
         if hasattr(item, "model_dump"):
             item = item.model_dump()
@@ -114,11 +116,26 @@ def resolve_style_references(req, *, limit: int = 10) -> list[dict]:
         image_b64 = str(item.get("image_b64", "") or "")
         if not image_b64:
             continue
+        role = str(item.get("role", "style") or "style")
+        if role == "target":
+            continue
+        token_size = str(item.get("token_size", "normal") or "normal")
+        strength = float(item.get("strength", 1.0))
+        if role == "layout" or fusion_mode == "preserve_structure":
+            token_size = "low" if token_size in {"low", "normal"} else "normal"
+            strength = min(strength, 0.65)
+        if fusion_mode == "style_only" and role not in {"style", "mood", "texture"}:
+            continue
         refs.append({
             "image_b64": image_b64,
-            "strength": float(item.get("strength", 1.0)),
-            "role": str(item.get("role", "style") or "style"),
-            "token_size": str(item.get("token_size", "normal") or "normal"),
+            "strength": strength,
+            "role": role,
+            "token_size": token_size,
+            "mask_b64": str(item.get("mask_b64", "") or ""),
+            "mask_padding": int(item.get("mask_padding", 0) or 0),
+            "vision_megapixels": item.get("vision_megapixels"),
+            "system_prompt": str(item.get("system_prompt", "") or ""),
+            "vision_position": str(item.get("vision_position", "before_prompt") or "before_prompt"),
         })
 
     for image_b64 in (
@@ -132,10 +149,27 @@ def resolve_style_references(req, *, limit: int = 10) -> list[dict]:
                 "strength": 1.0,
                 "role": "style",
                 "token_size": "normal",
+                "mask_b64": "",
+                "mask_padding": 0,
+                "vision_megapixels": None,
+                "system_prompt": "",
+                "vision_position": "before_prompt",
             })
         if len(refs) >= limit:
             break
     return refs[:limit]
+
+
+def _prepare_style_reference_image(ref: dict) -> Image.Image:
+    image = _b64_to_pil(str(ref["image_b64"])).convert("RGB")
+    mask_b64 = str(ref.get("mask_b64", "") or "")
+    if mask_b64:
+        mask = _b64_to_pil(mask_b64).convert("L")
+        image = crop_image_to_mask(image, mask, padding=int(ref.get("mask_padding", 0) or 0))
+    megapixels = ref.get("vision_megapixels")
+    if megapixels is not None:
+        image = cap_vision_megapixels(image, float(megapixels))
+    return image
 
 
 def _align_conditioning_pair(text_txt, text_mask, image_txt, image_mask):
@@ -691,13 +725,29 @@ class Krea2Pipeline:
             req.moodboard_uuids = catalog_context["uuids"]
         if catalog_context["style_text"]:
             prompt = f"{prompt}\n\n{catalog_context['style_text']}" if prompt.strip() else catalog_context["style_text"]
+        style_fusion_mode = str(getattr(req, "style_fusion_mode", "semantic_fusion") or "semantic_fusion")
+        if style_fusion_mode == "preserve_structure" and str(getattr(req, "mode", "")) in {"redraw", "img2img", "inpaint", "outpaint"}:
+            prompt = (
+                f"{prompt}\n\nPreserve the source composition, pose, layout, and spatial relationships. "
+                "Use references for style and surface detail without replacing the underlying structure."
+            )
 
         # Encode text. Conditioning is cheap to reuse; moving the 4B Qwen encoder
         # CPU→GPU is not, so cache final CPU tensors by prompt/reference settings.
         style_refs = resolve_style_references(req)
         style_ref_b64s = [ref["image_b64"] for ref in style_refs]
         style_ref_settings = tuple(
-            (self._hash_ref_images([ref["image_b64"]])[0], float(ref["strength"]), ref["role"], ref["token_size"])
+            (
+                self._hash_ref_images([ref["image_b64"]])[0],
+                self._hash_ref_images([ref["mask_b64"]])[0] if ref.get("mask_b64") else "",
+                int(ref.get("mask_padding", 0) or 0),
+                ref.get("vision_megapixels"),
+                float(ref["strength"]),
+                ref["role"],
+                ref["token_size"],
+                ref.get("system_prompt", ""),
+                ref.get("vision_position", "before_prompt"),
+            )
             for ref in style_refs
         )
         ref_b64s = [
@@ -706,7 +756,10 @@ class Krea2Pipeline:
             if b64
         ]
         ref_hashes = self._hash_ref_images(ref_b64s)
-        weights = parse_weights(req.rebalance_weights) if req.use_rebalance else None
+        rebalance_preset = str(getattr(req, "rebalance_preset", "balanced") or "balanced")
+        rebalance_mode = str(getattr(req, "rebalance_mode", "rms_renorm") or "rms_renorm")
+        rebalance_renormalize = bool(getattr(req, "rebalance_renormalize", True))
+        weights = resolve_rebalance_weights(rebalance_preset, req.rebalance_weights) if req.use_rebalance else None
         mult = req.rebalance_multiplier
         if req.use_rebalance and (mood_id or ref_b64s or catalog_context["items"]):
             mult = mult * (0.5 + float(getattr(req, "moodboard_strength", 0.5)))
@@ -732,12 +785,16 @@ class Krea2Pipeline:
             req.num_images,
             ref_hashes,
             bool(req.use_rebalance),
+            rebalance_mode,
+            rebalance_preset,
+            bool(rebalance_renormalize),
             req.rebalance_weights,
             float(mult),
             style_ref_settings,
             bool(edit_rebalance_enabled),
             edit_rebalance_profile,
             "qwen_image_edit_plus" if edit_plus_active else "qwen_reference",
+            style_fusion_mode,
         )
         negative_key = (
             "negative",
@@ -755,12 +812,23 @@ class Krea2Pipeline:
             try:
                 if cached_positive is None:
                     if ref_b64s:
-                        ref_images = [_b64_to_pil(b64).convert("RGB") for b64 in ref_b64s]
+                        moodboard_images = [
+                            _b64_to_pil(b64).convert("RGB")
+                            for b64 in list(getattr(req, "moodboard_images", []) or [])
+                            if b64
+                        ]
+                        ref_images = [*moodboard_images, *[_prepare_style_reference_image(ref) for ref in style_refs]]
                         token_order = {"low": 0, "normal": 1, "high": 2, "max": 3}
                         token_size = max(
                             (ref.get("token_size", "normal") for ref in style_refs),
                             key=lambda value: token_order.get(value, 1),
                             default="normal",
+                        )
+                        system_prompt = next((ref.get("system_prompt", "") for ref in style_refs if ref.get("system_prompt")), None)
+                        vision_position = (
+                            "after_prompt"
+                            if any(ref.get("vision_position") == "after_prompt" for ref in style_refs)
+                            else "before_prompt"
                         )
                         if edit_rebalance_enabled:
                             text_txt, text_mask = self.encoder([prompt] * req.num_images)
@@ -772,7 +840,11 @@ class Krea2Pipeline:
                                 )
                             else:
                                 image_txt, image_mask = self.encoder.forward_with_images(
-                                    [prompt] * req.num_images, images=ref_images, token_size=token_size
+                                    [prompt] * req.num_images,
+                                    images=ref_images,
+                                    token_size=token_size,
+                                    system_prompt=system_prompt,
+                                    vision_position=vision_position,
                                 )
                             text_txt, txtmask, image_txt = _align_conditioning_pair(
                                 text_txt, text_mask, image_txt, image_mask
@@ -792,13 +864,25 @@ class Krea2Pipeline:
                                 )
                             else:
                                 txt, txtmask = self.encoder.forward_with_images(
-                                    [prompt] * req.num_images, images=ref_images, token_size=token_size
+                                    [prompt] * req.num_images,
+                                    images=ref_images,
+                                    token_size=token_size,
+                                    system_prompt=system_prompt,
+                                    vision_position=vision_position,
                                 )
                     else:
                         txt, txtmask = self.encoder([prompt] * req.num_images)
 
                     if req.use_rebalance and weights is not None and not edit_rebalance_enabled:
-                        txt = rebalance(txt, multiplier=mult, layer_weights=weights)
+                        txt = rebalance(
+                            txt,
+                            multiplier=mult,
+                            layer_weights=weights,
+                            preset=rebalance_preset,
+                            weights_str=req.rebalance_weights,
+                            mode=rebalance_mode,
+                            renormalize=rebalance_renormalize,
+                        )
                     self._put_conditioning_cache(positive_key, txt, txtmask)
 
                 if negative_key is not None and cached_negative is None:
@@ -890,6 +974,8 @@ class Krea2Pipeline:
             self.mmdit,
             enabled=bool(getattr(req, "krea_enhancer_enabled", False)),
             strength=float(getattr(req, "krea_enhancer_strength", 1.0)),
+            variant=str(getattr(req, "krea_enhancer_variant", "off")),
+            delta_cap=float(getattr(req, "krea_enhancer_delta_cap", 0.75)),
         ):
             images = sampling.sample(
                 model=self.mmdit,

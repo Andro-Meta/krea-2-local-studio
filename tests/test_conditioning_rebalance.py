@@ -51,6 +51,32 @@ class ConditioningRebalanceTests(unittest.TestCase):
         self.assertEqual(parse_weights("not,a,weight"), DEFAULT_LAYER_WEIGHTS)
         self.assertEqual(parse_weights("1,2,3"), DEFAULT_LAYER_WEIGHTS)
 
+    def test_rms_renorm_rebalance_preserves_magnitude(self) -> None:
+        from conditioning import rebalance
+
+        torch.manual_seed(123)
+        txt = torch.randn(1, 4, 12, 8, dtype=torch.float32)
+
+        out = rebalance(txt, preset="balanced", mode="rms_renorm", multiplier=1.0)
+
+        self.assertEqual(out.shape, txt.shape)
+        self.assertLess(abs(float(out.float().pow(2).mean().sqrt()) - float(txt.float().pow(2).mean().sqrt())), 1e-5)
+
+    def test_legacy_rebalance_still_multiplies_conditioning(self) -> None:
+        from conditioning import rebalance
+
+        txt = torch.ones(1, 1, 12, 2, dtype=torch.float32)
+
+        out = rebalance(txt, preset="legacy", mode="legacy_multiply", multiplier=4.0)
+
+        self.assertEqual(float(out[0, 0, 0, 0]), 4.0)
+        self.assertEqual(float(out[0, 0, 8, 0]), 20.0)
+
+    def test_unknown_rebalance_preset_uses_balanced(self) -> None:
+        from conditioning import PRESET_LAYER_WEIGHTS, resolve_rebalance_weights
+
+        self.assertEqual(resolve_rebalance_weights("missing", ""), PRESET_LAYER_WEIGHTS["balanced"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,8 @@ function lorasFromMetadata(value: unknown): GenerateParams['loras'] {
       filename: String(item.filename || item.name || ''),
       strength: numberValue(item.strength) ?? 1,
       enabled: booleanValue(item.enabled) ?? true,
+      block_filter: oneOf(item.block_filter, ['all', 'early', 'middle', 'late', 'style_safe', 'custom'] as const) ?? 'all',
+      custom_blocks: stringArray(item.custom_blocks),
     }))
     .filter(item => item.name || item.filename)
 }
@@ -44,16 +46,19 @@ function styleRefsFromMetadata(value: unknown): GenerateParams['style_references
       strength: numberValue(item.strength) ?? 1,
       role: String(item.role || 'style'),
       token_size: oneOf(item.token_size, ['low', 'normal', 'high', 'max'] as const) ?? 'normal',
+      mask_b64: typeof item.mask_b64 === 'string' ? item.mask_b64 : undefined,
+      mask_padding: numberValue(item.mask_padding),
+      vision_megapixels: numberValue(item.vision_megapixels),
+      system_prompt: typeof item.system_prompt === 'string' ? item.system_prompt : undefined,
+      vision_position: oneOf(item.vision_position, ['before_prompt', 'after_prompt'] as const),
     }))
     .filter(item => item.image_b64)
     .slice(0, 10)
 }
 
-function enhancerVariant(enabled: boolean, rebalanceEnabled: boolean): GenerateParams['krea_enhancer_variant'] {
-  if (enabled && rebalanceEnabled) return 'rebalance_enhancer'
-  if (enabled) return 'enhancer'
-  if (rebalanceEnabled) return 'rebalance'
-  return 'off'
+function enhancerVariant(metadata: Record<string, any>): GenerateParams['krea_enhancer_variant'] {
+  return oneOf(metadata.krea_enhancer?.variant, ['off', 'current', 'capped_delta', 'current_plus_capped'] as const)
+    ?? (booleanValue(metadata.krea_enhancer?.enabled) ? 'capped_delta' : 'off')
 }
 
 export function metadataToGenerateParams<TMode extends ImportTargetMode>(
@@ -93,6 +98,7 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     quality_preset: oneOf(metadata.quality_preset, ['fast', 'balanced', 'best', 'raw_benchmark'] as const),
     creativity: oneOf(metadata.creativity, ['raw', 'low', 'medium', 'high'] as const),
     style_references: styleRefsFromMetadata(metadata.image_references?.style_references),
+    style_fusion_mode: oneOf(metadata.image_references?.style_fusion_mode, ['style_only', 'preserve_structure', 'semantic_fusion'] as const),
     loras: lorasFromMetadata(metadata.loras),
     bboxes: Array.isArray(metadata.bboxes) ? metadata.bboxes : [],
     mood: String(metadata.mood || ''),
@@ -105,11 +111,15 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     use_rebalance: rebalanceEnabled,
     rebalance_multiplier: numberValue(metadata.rebalance?.multiplier),
     rebalance_weights: typeof metadata.rebalance?.weights === 'string' ? metadata.rebalance.weights : undefined,
+    rebalance_mode: oneOf(metadata.rebalance?.mode, ['legacy_multiply', 'rms_renorm'] as const),
+    rebalance_preset: oneOf(metadata.rebalance?.preset, ['legacy', 'subtle', 'balanced', 'detail', 'uniform', 'custom'] as const),
+    rebalance_renormalize: booleanValue(metadata.rebalance?.renormalize),
     edit_rebalance_enabled: booleanValue(metadata.rebalance?.edit_enabled),
     edit_rebalance_profile: oneOf(metadata.rebalance?.edit_profile, ['default', 'edit', 'conservative'] as const),
     krea_enhancer_enabled: enhancerEnabled,
     krea_enhancer_strength: numberValue(metadata.krea_enhancer?.strength),
-    krea_enhancer_variant: enhancerVariant(enhancerEnabled, rebalanceEnabled),
+    krea_enhancer_variant: enhancerVariant(metadata),
+    krea_enhancer_delta_cap: numberValue(metadata.krea_enhancer?.delta_cap),
     refine: booleanValue(metadata.refine?.enabled),
     refine_denoise: numberValue(metadata.refine?.denoise),
     refine_steps: numberValue(metadata.refine?.steps),

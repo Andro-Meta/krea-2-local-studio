@@ -28,10 +28,13 @@ const imported = metadataToGenerateParams({
   moodboard_ids: [12],
   moodboard_uuids: ['abc'],
   creativity: 'medium',
-  image_references: { style_references: [{ image_b64: 'STYLE_B64', strength: -0.5, token_size: 'high' }] },
+  image_references: {
+    style_fusion_mode: 'preserve_structure',
+    style_references: [{ image_b64: 'STYLE_B64', strength: -0.5, token_size: 'high', vision_position: 'after_prompt' }],
+  },
   seed_variance: { preset: 'off', strength: 0, protection: 'first_half' },
-  rebalance: { enabled: true, multiplier: 5, weights: '1,2' },
-  krea_enhancer: { enabled: true, strength: 0.8 },
+  rebalance: { enabled: true, mode: 'rms_renorm', preset: 'detail', renormalize: true, multiplier: 5, weights: '1,2' },
+  krea_enhancer: { enabled: true, variant: 'capped_delta', strength: 0.8, delta_cap: 0.65 },
   refine: { enabled: true, denoise: 0.2, steps: 4 },
 }, 'redraw', 'IMAGE_B64')
 
@@ -47,8 +50,14 @@ imported.lanpaint_lambda satisfies number | undefined
 imported.lanpaint_prompt_mode satisfies string | undefined
 imported.creativity satisfies string | undefined
 imported.style_references?.[0].strength satisfies number | undefined
+imported.style_references?.[0].vision_position satisfies string | undefined
+imported.style_fusion_mode satisfies string | undefined
 imported.moodboard_uuids?.[0] satisfies string | undefined
 imported.seed_variance_protection satisfies string | undefined
+imported.rebalance_mode satisfies string | undefined
+imported.rebalance_preset satisfies string | undefined
+imported.rebalance_renormalize satisfies boolean | undefined
+imported.krea_enhancer_delta_cap satisfies number | undefined
 
 const importedT2i = metadataToGenerateParams({ prompt: 'x', mode: 'txt2img' }, 'txt2img', 'IMAGE_B64')
 const importedImg2Img = metadataToGenerateParams({ prompt: 'x', mode: 'txt2img' }, 'img2img', 'IMAGE_B64')

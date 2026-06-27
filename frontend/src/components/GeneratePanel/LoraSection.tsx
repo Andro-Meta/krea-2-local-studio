@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react'
 import {
   Box, Chip, CircularProgress, Collapse, IconButton, InputAdornment,
-  Slider, Stack, TextField, Tooltip, Typography,
+  MenuItem, Slider, Stack, TextField, Tooltip, Typography,
 } from '@mui/material'
 import DownloadIcon from '@mui/icons-material/Download'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import AddLinkIcon from '@mui/icons-material/AddLink'
 import { useStore } from '../../store'
 import { apiFetch } from '../../api'
+
+const BLOCK_FILTERS = ['all', 'style_safe', 'early', 'middle', 'late'] as const
 
 export default function LoraSection() {
   const { params, setParam, loras, setLoras } = useStore()
@@ -28,12 +30,16 @@ export default function LoraSection() {
     if (existing) {
       setParam('loras', params.loras.filter(l => l.name !== name))
     } else {
-      setParam('loras', [...params.loras, { name, filename, strength: 1.0, enabled: true }])
+      setParam('loras', [...params.loras, { name, filename, strength: 1.0, enabled: true, block_filter: 'style_safe' }])
     }
   }
 
   const setStrength = (name: string, strength: number) => {
     setParam('loras', params.loras.map(l => l.name === name ? { ...l, strength } : l))
+  }
+
+  const setBlockFilter = (name: string, blockFilter: typeof BLOCK_FILTERS[number]) => {
+    setParam('loras', params.loras.map(l => l.name === name ? { ...l, block_filter: blockFilter } : l))
   }
 
   const download = async (name: string) => {
@@ -136,7 +142,7 @@ export default function LoraSection() {
                 )}
               </Stack>
               {active && lora.installed && (
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ pl: 1, pt: 0.25, maxWidth: 200 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ pl: 1, pt: 0.25, maxWidth: 340 }}>
                   <Typography variant="caption" sx={{ color: 'text.disabled', minWidth: 40 }}>
                     {active.strength.toFixed(2)}
                   </Typography>
@@ -147,6 +153,19 @@ export default function LoraSection() {
                     size="small"
                     valueLabelDisplay="auto"
                   />
+                  <TextField
+                    select
+                    size="small"
+                    label="Block filter"
+                    value={active.block_filter ?? 'all'}
+                    onChange={e => setBlockFilter(lora.name, e.target.value as typeof BLOCK_FILTERS[number])}
+                    helperText={(active.block_filter ?? 'all') === 'style_safe' ? 'Recommended for Krea style LoRAs' : undefined}
+                    sx={{ minWidth: 135 }}
+                  >
+                    {BLOCK_FILTERS.map(filter => (
+                      <MenuItem key={filter} value={filter}>{filter.replace('_', '-')}</MenuItem>
+                    ))}
+                  </TextField>
                 </Stack>
               )}
             </Box>

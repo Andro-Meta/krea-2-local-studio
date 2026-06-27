@@ -45,16 +45,39 @@ export interface GenerationRequest {
   edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   creativity?: 'raw' | 'low' | 'medium' | 'high'
-  style_references?: Array<{ image_b64: string; strength?: number; role?: string; token_size?: 'low' | 'normal' | 'high' | 'max' }>
-  loras?: Array<{ name: string; filename?: string; strength?: number; enabled?: boolean }>
+  style_references?: Array<{
+    image_b64: string
+    strength?: number
+    role?: string
+    token_size?: 'low' | 'normal' | 'high' | 'max'
+    mask_b64?: string
+    mask_padding?: number
+    vision_megapixels?: number | null
+    system_prompt?: string
+    vision_position?: 'before_prompt' | 'after_prompt'
+  }>
+  style_fusion_mode?: 'style_only' | 'preserve_structure' | 'semantic_fusion'
+  loras?: Array<{
+    name: string
+    filename?: string
+    strength?: number
+    enabled?: boolean
+    block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom'
+    custom_blocks?: string[]
+  }>
   use_rebalance?: boolean
   rebalance_multiplier?: number
   rebalance_weights?: string
+  rebalance_mode?: 'legacy_multiply' | 'rms_renorm'
+  rebalance_preset?: 'legacy' | 'subtle' | 'balanced' | 'detail' | 'uniform' | 'custom'
+  rebalance_renormalize?: boolean
   edit_rebalance_enabled?: boolean
   edit_rebalance_profile?: 'default' | 'edit' | 'conservative'
   conditioning_mode?: 'auto' | 'qwen_image_edit_plus' | 'qwen_reference'
+  krea_enhancer_variant?: 'off' | 'current' | 'capped_delta' | 'current_plus_capped'
   krea_enhancer_enabled?: boolean
   krea_enhancer_strength?: number
+  krea_enhancer_delta_cap?: number
   bboxes?: Array<{ label: string; bbox: number[] }>
   init_image_b64?: string
   mask_b64?: string
@@ -174,6 +197,7 @@ export interface SystemReport {
   gpu_processes: string[]
   gpu_process_details?: Array<{ pid: number; name: string; used_memory_gb?: number }>
   model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null; text_encoder_source?: { kind: string; path: string; runtime?: string; status?: string } | null; memory?: Record<string, any> }
+  attention_acceleration?: { status: string; available: boolean; reason: string; recommendation: string }
   support_models?: Array<{ id: string; label: string; repo_id: string; purpose: string; installed: boolean; optional?: boolean; cache_dir: string }>
   variants: Array<{ id: string; label: string; vram_gb: number; ram_gb: number; blockers: string[]; warnings: string[]; ok: boolean }>
 }

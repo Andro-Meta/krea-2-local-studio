@@ -11,8 +11,13 @@ class BoundingBox(BaseModel):
 class StyleReferenceInput(BaseModel):
     image_b64: str
     strength: float = Field(default=1.0, ge=-2.0, le=2.0)
-    role: str = "style"
+    role: Literal["style", "layout", "subject", "mood", "texture", "target"] = "style"
     token_size: Literal["low", "normal", "high", "max"] = "normal"
+    mask_b64: Optional[str] = None
+    mask_padding: int = Field(default=0, ge=0, le=512)
+    vision_megapixels: Optional[float] = Field(default=None, gt=0.0, le=4.0)
+    system_prompt: Optional[str] = Field(default=None, max_length=512)
+    vision_position: Literal["before_prompt", "after_prompt"] = "before_prompt"
 
 
 class GenerationRequest(BaseModel):
@@ -48,15 +53,21 @@ class GenerationRequest(BaseModel):
     quality_preset: str = "balanced"  # fast | balanced | best | raw_benchmark
     creativity: Literal["raw", "low", "medium", "high"] = "medium"
     style_references: List[StyleReferenceInput] = Field(default_factory=list, max_length=10)
+    style_fusion_mode: Literal["style_only", "preserve_structure", "semantic_fusion"] = "semantic_fusion"
     loras: List[dict] = []
     use_rebalance: bool = True
-    rebalance_multiplier: float = 4.0
+    rebalance_multiplier: float = 1.0
     rebalance_weights: str = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
+    rebalance_mode: Literal["legacy_multiply", "rms_renorm"] = "rms_renorm"
+    rebalance_preset: Literal["legacy", "subtle", "balanced", "detail", "uniform", "custom"] = "balanced"
+    rebalance_renormalize: bool = True
     edit_rebalance_enabled: bool = True
     edit_rebalance_profile: Literal["default", "edit", "conservative"] = "conservative"
     conditioning_mode: Literal["auto", "qwen_image_edit_plus", "qwen_reference"] = "auto"
     krea_enhancer_enabled: bool = False
+    krea_enhancer_variant: Literal["off", "current", "capped_delta", "current_plus_capped"] = "off"
     krea_enhancer_strength: float = 1.0
+    krea_enhancer_delta_cap: float = Field(default=0.75, ge=0.05, le=2.0)
     bboxes: List[BoundingBox] = []
     init_image_b64: Optional[str] = None
     mask_b64: Optional[str] = None

@@ -9,7 +9,14 @@ if TYPE_CHECKING:
     from torch import Tensor
 
 DEFAULT_LAYER_WEIGHTS = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.5, 5.0, 1.1, 4.0, 1.0]
-DEFAULT_MULTIPLIER = 4.0
+PRESET_LAYER_WEIGHTS = {
+    "legacy": DEFAULT_LAYER_WEIGHTS,
+    "balanced": DEFAULT_LAYER_WEIGHTS,
+    "detail": [0.8, 0.8, 0.9, 0.9, 1.0, 1.0, 1.2, 3.0, 6.0, 1.5, 5.0, 1.2],
+    "subtle": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 2.0, 1.0, 1.5, 1.0],
+    "uniform": [1.0] * 12,
+}
+DEFAULT_MULTIPLIER = 1.0
 N_LAYERS = 12
 LAYER_DIM = 2560  # Qwen3-VL hidden dim
 EDIT_REBALANCE_PROFILES = {
@@ -51,6 +58,14 @@ def scale_conditioning(
     return (t * multiplier).to(orig_dtype)
 
 
+def rms_renormalize_conditioning(source: "Tensor", weighted: "Tensor", eps: float = 1e-6) -> "Tensor":
+    import torch
+
+    source_rms = torch.clamp(source.float().pow(2).mean().sqrt(), min=eps)
+    weighted_rms = torch.clamp(weighted.float().pow(2).mean().sqrt(), min=eps)
+    return (weighted.float() * (source_rms / weighted_rms)).to(weighted.dtype)
+
+
 def guidance_conditioning(base: "Tensor", guide: "Tensor", scale: float = 1.0) -> "Tensor":
     """Project guide onto normalized base direction and add a bounded contrastive delta."""
     orig_dtype = base.dtype
@@ -87,12 +102,31 @@ def blend_split_conditioning(
     return ((text_txt.float() * text_w + image_txt.float() * image_w) / total).to(text_txt.dtype)
 
 
+def resolve_rebalance_weights(preset: str = "balanced", weights_str: str = "") -> list[float]:
+    preset = str(preset or "balanced").strip().lower()
+    if preset == "custom":
+        return parse_weights(weights_str)
+    return PRESET_LAYER_WEIGHTS.get(preset, PRESET_LAYER_WEIGHTS["balanced"])
+
+
 def rebalance(
     txt: "Tensor",
     multiplier: float = DEFAULT_MULTIPLIER,
     layer_weights: list[float] | None = None,
+    *,
+    preset: str = "balanced",
+    weights_str: str = "",
+    mode: str = "rms_renorm",
+    renormalize: bool = True,
 ) -> "Tensor":
-    return scale_conditioning(txt, multiplier=multiplier, layer_weights=layer_weights)
+    if layer_weights is None:
+        layer_weights = resolve_rebalance_weights(preset, weights_str)
+    weighted = scale_conditioning(txt, multiplier=1.0, layer_weights=layer_weights)
+    if str(mode or "rms_renorm") == "legacy_multiply":
+        return scale_conditioning(txt, multiplier=multiplier, layer_weights=layer_weights)
+    if renormalize:
+        weighted = rms_renormalize_conditioning(txt, weighted)
+    return (weighted.float() * float(multiplier)).to(txt.dtype)
 
 
 def parse_weights(weights_str: str) -> list[float]:

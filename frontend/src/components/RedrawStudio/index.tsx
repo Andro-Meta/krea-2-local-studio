@@ -407,6 +407,7 @@ export default function RedrawStudio() {
       ref_image3_b64: '',
       moodboard_images: activeImages.map(slot => slot.image),
       moodboard_strength: preset.moodboardStrength,
+      style_fusion_mode: 'semantic_fusion',
       denoise: preset.denoise,
       checkpoint: preset.checkpoint,
       quantization: preset.quantization,
@@ -420,7 +421,7 @@ export default function RedrawStudio() {
       width: dimensions?.width ?? params.width,
       height: dimensions?.height ?? params.height,
       use_rebalance: true,
-      rebalance_multiplier: Math.max(params.rebalance_multiplier || 4, 4),
+      rebalance_multiplier: params.rebalance_multiplier || 1,
     })
     setReadyMessage('Reference redraw is ready. Use Generate below.')
   }
@@ -434,6 +435,7 @@ export default function RedrawStudio() {
       mask_b64: preserveMode === 'masked' ? params.mask_b64 : '',
       moodboard_images: activeImages.slice(1).map(slot => slot.image),
       moodboard_strength: preset.moodboardStrength,
+      style_fusion_mode: 'preserve_structure',
       denoise,
       checkpoint: preset.checkpoint,
       quantization: preset.quantization,
@@ -478,6 +480,7 @@ export default function RedrawStudio() {
       mask_b64: result.mask_b64,
       moodboard_images: activeImages.slice(1).map(slot => slot.image),
       moodboard_strength: preset.moodboardStrength,
+      style_fusion_mode: 'preserve_structure',
       width: result.width,
       height: result.height,
       denoise: preset.denoise,

@@ -171,6 +171,36 @@ _ALPHA_SUFFIX = ".alpha"
 _COMPAT_THRESHOLD = 0.5
 
 _MODEL_SHAPES: dict | None = None
+LORA_BLOCK_FILTERS = {"all", "early", "middle", "late", "style_safe", "custom"}
+
+
+def _lora_module_group(module_name: str) -> str:
+    if module_name.startswith("txtfusion."):
+        return "style"
+    if module_name.startswith("blocks."):
+        parts = module_name.split(".")
+        if len(parts) > 1 and parts[1].isdigit():
+            index = int(parts[1])
+            if index < 9:
+                return "early"
+            if index < 20:
+                return "middle"
+            return "late"
+    return "other"
+
+
+def _block_filter_allows(module_name: str, block_filter: str = "all", custom_blocks: list[str] | None = None) -> bool:
+    block_filter = str(block_filter or "all")
+    group = _lora_module_group(module_name)
+    if block_filter == "all":
+        return True
+    if block_filter in {"early", "middle", "late"}:
+        return group == block_filter
+    if block_filter == "style_safe":
+        return group in {"style", "late"}
+    if block_filter == "custom":
+        return group in set(custom_blocks or [])
+    return False
 
 
 def _model_linear_shapes(model=None) -> dict:
@@ -316,31 +346,50 @@ def apply_loras(model, loras: list[dict], device: str = "cuda") -> list[dict]:
             logger.warning(f"LoRA {filename} NOT applied: {verdict['reason']}")
             continue
         strength = float(lora.get("strength", 1.0))
+        block_filter = str(lora.get("block_filter", "all") or "all")
+        custom_blocks = [str(item) for item in lora.get("custom_blocks", []) if isinstance(item, str)]
         try:
-            n = _attach_single_lora(model, module_by_name, path, strength, device)
-            reports.append({"name": name, "applied": True, "matched": n,
+            n, skipped = _attach_single_lora(model, module_by_name, path, strength, device, block_filter=block_filter, custom_blocks=custom_blocks)
+            reports.append({"name": name, "applied": True, "matched": n, "skipped": skipped,
+                            "block_filter": block_filter,
                             "total": verdict["total"], "format": verdict["format"],
-                            "reason": f"applied {n} layers"})
-            logger.info(f"Applied LoRA {filename} (strength={strength}, {n} layers, {verdict['format']})")
+                            "reason": f"applied {n} layers; skipped {skipped}"})
+            logger.info(f"Applied LoRA {filename} (strength={strength}, {n} layers, {skipped} skipped, {verdict['format']})")
         except Exception as e:  # noqa: BLE001
-            reports.append({"name": name, "applied": False, "reason": str(e)})
+            reports.append({"name": name, "applied": False, "block_filter": block_filter, "reason": str(e)})
             logger.error(f"LoRA apply failed {filename}: {e}")
     return reports
 
 
-def _attach_single_lora(model, module_by_name, path: Path, strength: float, device: str) -> int:
+def _attach_single_lora(
+    model,
+    module_by_name,
+    path: Path,
+    strength: float,
+    device: str,
+    *,
+    block_filter: str = "all",
+    custom_blocks: list[str] | None = None,
+) -> tuple[int, int]:
     import torch
     from safetensors.torch import load_file
 
     dtype = next(model.parameters()).dtype
     sd = load_file(str(path), device=device)
     attached = 0
+    skipped = 0
     for base, A, B, scale_factor in _load_lora_pairs(sd):
-        mod = module_by_name.get(_lora_base_to_module(base))
+        module_name = _lora_base_to_module(base)
+        if not _block_filter_allows(module_name, block_filter, custom_blocks):
+            skipped += 1
+            continue
+        mod = module_by_name.get(module_name)
         if mod is None or not isinstance(mod, torch.nn.Linear):
+            skipped += 1
             continue
         out_f, in_f = mod.weight.shape
         if A.shape[1] != in_f or B.shape[0] != out_f or A.shape[0] != B.shape[1]:
+            skipped += 1
             continue
         A = A.to(device=device, dtype=dtype)             # (rank, in)
         B = B.to(device=device, dtype=dtype)             # (out, rank)
@@ -349,4 +398,4 @@ def _attach_single_lora(model, module_by_name, path: Path, strength: float, devi
         attached += 1
     if attached == 0:
         raise RuntimeError("no LoRA layers matched the model")
-    return attached
+    return attached, skipped

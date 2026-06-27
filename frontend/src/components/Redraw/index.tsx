@@ -219,7 +219,7 @@ export default function RedrawPanel() {
       width: align16(params.width || 1024),
       height: align16(params.height || 1024),
       use_rebalance: true,
-      rebalance_multiplier: Math.max(params.rebalance_multiplier || 4, 4),
+      rebalance_multiplier: params.rebalance_multiplier || 1,
     })
   }
 

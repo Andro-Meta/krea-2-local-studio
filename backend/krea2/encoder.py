@@ -51,6 +51,7 @@ IMAGE_TOKEN_SIZES = {
     "high": 1024,
     "max": 1280,
 }
+MAX_SYSTEM_PROMPT_CHARS = 512
 
 
 def resolve_conditioner_source(version: str | None = None) -> dict[str, str]:
@@ -90,16 +91,55 @@ def resolve_conditioner_source(version: str | None = None) -> dict[str, str]:
     }
 
 
-def _wrap_image_prompt(text: str, n_images: int) -> str:
+def _bounded_system_prompt(system_prompt: str | None = None) -> str:
+    value = (system_prompt or IMAGE_SYSTEM_PROMPT).strip()
+    return value[:MAX_SYSTEM_PROMPT_CHARS] or IMAGE_SYSTEM_PROMPT
+
+
+def _wrap_image_prompt(
+    text: str,
+    n_images: int,
+    *,
+    system_prompt: str | None = None,
+    vision_position: str = "before_prompt",
+) -> str:
     img_prefix = "".join(
         f"Picture {i + 1}: <|vision_start|><|image_pad|><|vision_end|>"
         for i in range(n_images)
     )
+    user_content = f"{img_prefix}{text}" if vision_position != "after_prompt" else f"{text}{img_prefix}"
     return (
-        f"<|im_start|>system\n{IMAGE_SYSTEM_PROMPT}<|im_end|>\n"
-        f"<|im_start|>user\n{img_prefix}{text}<|im_end|>\n"
+        f"<|im_start|>system\n{_bounded_system_prompt(system_prompt)}<|im_end|>\n"
+        f"<|im_start|>user\n{user_content}<|im_end|>\n"
         "<|im_start|>assistant\n"
     )
+
+
+def crop_image_to_mask(image, mask, padding: int = 0):
+    mask = mask.convert("L").resize(image.size)
+    bbox = mask.point(lambda value: 255 if value > 0 else 0).getbbox()
+    if bbox is None:
+        return image.convert("RGB")
+    left, top, right, bottom = bbox
+    pad = max(0, int(padding or 0))
+    left = max(0, left - pad)
+    top = max(0, top - pad)
+    right = min(image.width, right + pad)
+    bottom = min(image.height, bottom + pad)
+    return image.convert("RGB").crop((left, top, right, bottom))
+
+
+def cap_vision_megapixels(image, megapixels: float | None = None):
+    if megapixels is None or megapixels <= 0:
+        return image.convert("RGB")
+    max_pixels = int(float(megapixels) * 1_000_000)
+    current_pixels = image.width * image.height
+    if max_pixels <= 0 or current_pixels <= max_pixels:
+        return image.convert("RGB")
+    scale = (max_pixels / float(current_pixels)) ** 0.5
+    width = max(1, int(round(image.width * scale)))
+    height = max(1, int(round(image.height * scale)))
+    return image.convert("RGB").resize((width, height))
 
 
 def _wrap_image_edit_plus_prompt(text: str, n_images: int, negative_text: str = "") -> str:
@@ -209,6 +249,9 @@ class Qwen3VLConditioner(nn.Module):
         prompts: list[str],
         images: list,  # list[PIL.Image]
         token_size: str = "normal",
+        *,
+        system_prompt: str | None = None,
+        vision_position: str = "before_prompt",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode prompts + reference images via Qwen3-VL vision path.
 
@@ -225,7 +268,12 @@ class Qwen3VLConditioner(nn.Module):
         n_images = len(images)
         image_size = IMAGE_TOKEN_SIZES.get(token_size, IMAGE_TOKEN_SIZES["normal"])
         resized = [img.resize((image_size, image_size)).convert("RGB") for img in images]
-        wrapped = _wrap_image_prompt(prompts[0], n_images)
+        wrapped = _wrap_image_prompt(
+            prompts[0],
+            n_images,
+            system_prompt=system_prompt,
+            vision_position=vision_position,
+        )
 
         try:
             inputs = processor(text=wrapped, images=resized, return_tensors="pt").to(device)

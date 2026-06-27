@@ -187,6 +187,7 @@ def get_gpu_process_details() -> list[dict[str, Any]]:
 
 
 def get_system_report() -> dict[str, Any]:
+    from krea2.performance_guard import attention_acceleration_diagnostic
     from settings import settings, MODELS_DIR
 
     gpu_name, vram_total, vram_free = get_gpu_info()
@@ -247,5 +248,10 @@ def get_system_report() -> dict[str, Any]:
         "gpu_process_details": gpu_proc_details,
         "models_dir": str(MODELS_DIR),
         "model_status": {"loaded": False},  # populated by main.py
+        "attention_acceleration": attention_acceleration_diagnostic(
+            device="cuda" if gpu_name else "cpu",
+            dtype="fp8",
+            text_fusion=True,
+        ),
         "variants": variants,
     }

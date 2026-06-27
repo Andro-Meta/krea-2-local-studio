@@ -844,6 +844,25 @@ export default function SystemStatus() {
           </Stack>
         </Paper>}
 
+        {report?.attention_acceleration && (
+          <Paper sx={{ p: 1.5, border: '1px solid rgba(255,255,255,0.08)' }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+              <Typography variant="body2">Attention acceleration</Typography>
+              <Chip
+                size="small"
+                label={report.attention_acceleration.status.replace(/_/g, ' ')}
+                color={report.attention_acceleration.status === 'available_but_off' ? 'info' : 'default'}
+              />
+            </Stack>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.5 }}>
+              {report.attention_acceleration.reason}
+            </Typography>
+            <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block' }}>
+              {report.attention_acceleration.recommendation}
+            </Typography>
+          </Paper>
+        )}
+
         {/* Variants */}
         {report?.variants.map(v => (
           <Paper key={v.id} sx={{ p: 1.5, border: v.ok ? '1px solid rgba(102,187,106,0.3)' : '1px solid rgba(239,83,80,0.2)' }}>

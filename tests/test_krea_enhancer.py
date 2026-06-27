@@ -25,7 +25,46 @@ class KreaEnhancerTests(unittest.TestCase):
         self.assertIn("krea_enhancer_enabled", data)
         self.assertFalse(data["krea_enhancer_enabled"])
         self.assertEqual(data["krea_enhancer_strength"], 1.0)
+        self.assertEqual(data["krea_enhancer_variant"], "off")
+        self.assertEqual(data["krea_enhancer_delta_cap"], 0.75)
         self.assertEqual(data["moodboard_ids"], [])
+
+    def test_delta_cap_bounds_output_shift(self) -> None:
+        if torch is None:
+            self.skipTest("torch is not installed in the lightweight CI environment")
+        enhancer = importlib.import_module("krea_enhancer")
+
+        class FakeTxtFusion:
+            def original_forward(self, x, mask=None):
+                return x[:, :, 0, :]
+
+        txtfusion = FakeTxtFusion()
+        txtfusion._krea_enhancer_original_forward = txtfusion.original_forward
+        x = torch.ones((1, 1, 12, 2560), dtype=torch.float32)
+
+        out = enhancer._enhanced_forward(txtfusion, x, mask=None, strength=1.0, variant="capped_delta", delta_cap=0.1)
+
+        reference = txtfusion.original_forward(x)
+        shift = torch.sqrt(torch.mean((out.float() - reference.float()) ** 2))
+        base = torch.sqrt(torch.mean(reference.float() ** 2))
+        self.assertLessEqual(float(shift / base), 0.1001)
+
+    def test_shape_guard_skips_incompatible_txtfusion_input(self) -> None:
+        if torch is None:
+            self.skipTest("torch is not installed in the lightweight CI environment")
+        enhancer = importlib.import_module("krea_enhancer")
+
+        class FakeTxtFusion:
+            def original_forward(self, x, mask=None):
+                return x.mean(dim=-1)
+
+        txtfusion = FakeTxtFusion()
+        txtfusion._krea_enhancer_original_forward = txtfusion.original_forward
+        x = torch.ones((1, 1, 8, 128), dtype=torch.float32)
+
+        out = enhancer._enhanced_forward(txtfusion, x, mask=None, strength=1.0, variant="capped_delta", delta_cap=0.1)
+
+        self.assertTrue(torch.equal(out, txtfusion.original_forward(x)))
 
     def test_enhancer_context_temporarily_patches_txtfusion(self) -> None:
         if torch is None:

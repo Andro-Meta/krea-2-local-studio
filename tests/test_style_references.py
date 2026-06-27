@@ -23,6 +23,26 @@ class StyleReferenceSchemaTests(unittest.TestCase):
         self.assertEqual(ref.role, "style")
         self.assertEqual(ref.token_size, "normal")
 
+    def test_style_reference_roles_are_validated(self) -> None:
+        from schemas import StyleReferenceInput
+
+        for role in ("style", "layout", "subject", "mood", "texture", "target"):
+            with self.subTest(role=role):
+                self.assertEqual(StyleReferenceInput(image_b64="abc", role=role).role, role)
+
+        with self.assertRaises(ValidationError):
+            StyleReferenceInput(image_b64="abc", role="invalid")
+
+    def test_generation_request_accepts_style_fusion_modes(self) -> None:
+        from schemas import GenerationRequest
+
+        for mode in ("style_only", "preserve_structure", "semantic_fusion"):
+            with self.subTest(mode=mode):
+                self.assertEqual(GenerationRequest(prompt="x", style_fusion_mode=mode).style_fusion_mode, mode)
+
+        with self.assertRaises(ValidationError):
+            GenerationRequest(prompt="x", style_fusion_mode="invalid")
+
     def test_style_reference_strength_accepts_comfy_range(self) -> None:
         from schemas import StyleReferenceInput
 
@@ -100,7 +120,17 @@ class StyleReferenceSchemaTests(unittest.TestCase):
         self.assertEqual(refs[0]["strength"], 1.25)
         self.assertEqual(refs[0]["token_size"], "high")
         self.assertEqual(refs[1]["strength"], -0.5)
-        self.assertNotIn("positive", str(metadata))
+        self.assertEqual(refs[0]["image_b64"], "positive")
+
+    def test_generation_metadata_records_style_fusion_mode(self) -> None:
+        from generation_metadata import build_generation_metadata
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(prompt="a quiet forest", style_fusion_mode="preserve_structure")
+
+        metadata = build_generation_metadata(req, base_seed=123)
+
+        self.assertEqual(metadata["image_references"]["style_fusion_mode"], "preserve_structure")
 
 
 if __name__ == "__main__":

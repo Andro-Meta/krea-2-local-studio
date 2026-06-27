@@ -16,6 +16,7 @@ ENHANCER_PROFILE_12 = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.5, 5.0, 1.1, 4.0, 1.
 ENHANCER_CHUNK_PROFILE = ENHANCER_PROFILE_12 + ENHANCER_PROFILE_12
 ENHANCER_GLOBAL_MULTIPLIER = 15.0
 TXTFUSION_TOKEN_REL_CAP = 0.75
+ENHANCER_VARIANTS = {"off", "current", "capped_delta", "current_plus_capped"}
 
 
 def _bounded_float(value: Any, default: float, lo: float, hi: float) -> float:
@@ -63,9 +64,18 @@ def _chunk_gains(device: torch.device, dtype: torch.dtype, strength: float) -> t
     return gains.to(dtype=dtype)
 
 
-def _enhanced_forward(txtfusion: Any, x: torch.Tensor, mask: torch.Tensor | None, strength: float) -> torch.Tensor:
+def _enhanced_forward(
+    txtfusion: Any,
+    x: torch.Tensor,
+    mask: torch.Tensor | None,
+    strength: float,
+    *,
+    variant: str = "capped_delta",
+    delta_cap: float = TXTFUSION_TOKEN_REL_CAP,
+) -> torch.Tensor:
     if x.ndim != 4 or x.shape[2] != KREA2_TAP_LAYERS or x.shape[3] != KREA2_TAP_DIM:
         return txtfusion._krea_enhancer_original_forward(x, mask=mask)
+    variant = variant if variant in ENHANCER_VARIANTS else "capped_delta"
 
     reference = _run_txtfusion_parts(txtfusion, x, mask=mask)
     gains = _chunk_gains(x.device, x.dtype, strength)
@@ -76,19 +86,41 @@ def _enhanced_forward(txtfusion: Any, x: torch.Tensor, mask: torch.Tensor | None
         * global_multiplier
     ).reshape_as(x)
     candidate = _run_txtfusion_parts(txtfusion, scaled_x, mask=mask)
+    if variant == "current":
+        return candidate
+    if variant == "current_plus_capped":
+        reference = candidate.detach()
+        stacked_strength = min(float(strength) * 1.25, 2.0)
+        stacked_gains = _chunk_gains(x.device, x.dtype, stacked_strength)
+        stacked_multiplier = 1.0 + stacked_strength * (ENHANCER_GLOBAL_MULTIPLIER - 1.0)
+        stacked_x = (
+            x.reshape(x.shape[0], x.shape[1], KREA2_CHUNK_COUNT, KREA2_CHUNK_DIM)
+            * stacked_gains.view(1, 1, KREA2_CHUNK_COUNT, 1)
+            * stacked_multiplier
+        ).reshape_as(x)
+        candidate = _run_txtfusion_parts(txtfusion, stacked_x, mask=mask)
 
     post_delta = candidate.detach().float() - reference.detach().float()
     token_base_rms = torch.sqrt(torch.mean(reference.detach().float() ** 2, dim=-1, keepdim=True)).clamp_min(1e-8)
     token_delta_rms = torch.sqrt(torch.mean(post_delta ** 2, dim=-1, keepdim=True)).clamp_min(1e-8)
     token_rel = token_delta_rms / token_base_rms
-    token_scale = (TXTFUSION_TOKEN_REL_CAP / token_rel).clamp(max=1.0)
+    token_scale = (float(delta_cap) / token_rel).clamp(max=1.0)
     return (reference.detach().float() + post_delta * token_scale).to(candidate.dtype)
 
 
 @contextlib.contextmanager
-def krea_enhancer_context(model: Any, *, enabled: bool, strength: float = 1.0) -> Iterator[None]:
+def krea_enhancer_context(
+    model: Any,
+    *,
+    enabled: bool,
+    strength: float = 1.0,
+    variant: str = "capped_delta",
+    delta_cap: float = TXTFUSION_TOKEN_REL_CAP,
+) -> Iterator[None]:
     strength = _bounded_float(strength, 1.0, 0.0, 2.0)
-    if not enabled or strength == 0.0 or not _is_krea2_model(model):
+    delta_cap = _bounded_float(delta_cap, TXTFUSION_TOKEN_REL_CAP, 0.05, 2.0)
+    variant = variant if variant in ENHANCER_VARIANTS else "capped_delta"
+    if not enabled or variant == "off" or strength == 0.0 or not _is_krea2_model(model):
         yield
         return
 
@@ -98,7 +130,14 @@ def krea_enhancer_context(model: Any, *, enabled: bool, strength: float = 1.0) -
     def enhanced_forward(x: torch.Tensor, mask: torch.Tensor | None = None):
         txtfusion._krea_enhancer_original_forward = original_forward
         try:
-            return _enhanced_forward(txtfusion, x, mask=mask, strength=strength)
+            return _enhanced_forward(
+                txtfusion,
+                x,
+                mask=mask,
+                strength=strength,
+                variant=variant,
+                delta_cap=delta_cap,
+            )
         finally:
             if hasattr(txtfusion, "_krea_enhancer_original_forward"):
                 delattr(txtfusion, "_krea_enhancer_original_forward")

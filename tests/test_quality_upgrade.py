@@ -174,7 +174,7 @@ class QualityUpgradeTests(unittest.TestCase):
 
         self.assertEqual(req.creativity, "high")
         self.assertEqual(req.moodboard_strength, 0.5)
-        self.assertEqual(req.rebalance_multiplier, 5.5)
+        self.assertEqual(req.rebalance_multiplier, 1.15)
 
     def test_creativity_preserves_explicit_user_values(self) -> None:
         from inference import normalize_generation_defaults

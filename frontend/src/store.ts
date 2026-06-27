@@ -7,6 +7,8 @@ export interface ActiveLora {
   filename: string
   strength: number
   enabled: boolean
+  block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom'
+  custom_blocks?: string[]
 }
 
 export interface StyleReference {
@@ -14,6 +16,11 @@ export interface StyleReference {
   strength: number
   role: string
   token_size: 'low' | 'normal' | 'high' | 'max'
+  mask_b64?: string
+  mask_padding?: number
+  vision_megapixels?: number | null
+  system_prompt?: string
+  vision_position?: 'before_prompt' | 'after_prompt'
 }
 
 export interface GenerateParams {
@@ -48,15 +55,20 @@ export interface GenerateParams {
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   creativity: 'raw' | 'low' | 'medium' | 'high'
   style_references: StyleReference[]
+  style_fusion_mode: 'style_only' | 'preserve_structure' | 'semantic_fusion'
   use_rebalance: boolean
   rebalance_multiplier: number
   rebalance_weights: string
+  rebalance_mode: 'legacy_multiply' | 'rms_renorm'
+  rebalance_preset: 'legacy' | 'subtle' | 'balanced' | 'detail' | 'uniform' | 'custom'
+  rebalance_renormalize: boolean
   edit_rebalance_enabled: boolean
   edit_rebalance_profile: 'default' | 'edit' | 'conservative'
   conditioning_mode: 'auto' | 'qwen_image_edit_plus' | 'qwen_reference'
-  krea_enhancer_variant: 'off' | 'rebalance' | 'enhancer' | 'rebalance_enhancer'
+  krea_enhancer_variant: 'off' | 'current' | 'capped_delta' | 'current_plus_capped'
   krea_enhancer_enabled: boolean
   krea_enhancer_strength: number
+  krea_enhancer_delta_cap: number
   loras: ActiveLora[]
   bboxes: Array<{ label: string; bbox: number[] }>
   init_image_b64: string
@@ -167,15 +179,20 @@ const defaultParams: GenerateParams = {
   quality_preset: 'balanced',
   creativity: 'medium',
   style_references: [],
+  style_fusion_mode: 'semantic_fusion',
   use_rebalance: true,
-  rebalance_multiplier: 4.0,
+  rebalance_multiplier: 1.0,
   rebalance_weights: '1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0',
+  rebalance_mode: 'rms_renorm',
+  rebalance_preset: 'balanced',
+  rebalance_renormalize: true,
   edit_rebalance_enabled: true,
   edit_rebalance_profile: 'conservative',
   conditioning_mode: 'auto',
-  krea_enhancer_variant: 'rebalance',
+  krea_enhancer_variant: 'off',
   krea_enhancer_enabled: false,
   krea_enhancer_strength: 1.0,
+  krea_enhancer_delta_cap: 0.75,
   loras: [],
   bboxes: [],
   init_image_b64: '',
