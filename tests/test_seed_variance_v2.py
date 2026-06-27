@@ -4,6 +4,11 @@ import sys
 import unittest
 from pathlib import Path
 
+try:
+    import torch
+except ModuleNotFoundError as exc:
+    raise unittest.SkipTest("torch is not installed in the lightweight CI environment") from exc
+
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
@@ -12,7 +17,6 @@ if str(BACKEND) not in sys.path:
 
 class SeedVarianceV2Tests(unittest.TestCase):
     def test_direction_patterns_shape_noise(self) -> None:
-        import torch
         from seed_variance import apply_seed_variance
 
         base = torch.zeros((1, 12, 4), dtype=torch.float32)
@@ -23,7 +27,6 @@ class SeedVarianceV2Tests(unittest.TestCase):
         self.assertGreater(reverse[:, 0].abs().mean().item(), reverse[:, -1].abs().mean().item())
 
     def test_timing_window_limits_injection(self) -> None:
-        import torch
         from seed_variance import apply_seed_variance
 
         base = torch.zeros((1, 20, 3), dtype=torch.float32)
@@ -42,7 +45,6 @@ class SeedVarianceV2Tests(unittest.TestCase):
         self.assertTrue(torch.allclose(varied[:, 10:], base[:, 10:]))
 
     def test_neutral_advanced_controls_match_existing_behavior(self) -> None:
-        import torch
         from seed_variance import apply_seed_variance
 
         base = torch.zeros((1, 8, 2), dtype=torch.float32)
