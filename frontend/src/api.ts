@@ -57,6 +57,18 @@ export interface GenerationRequest {
     vision_position?: 'before_prompt' | 'after_prompt'
   }>
   style_fusion_mode?: 'style_only' | 'preserve_structure' | 'semantic_fusion'
+  regional_prompts?: Array<{
+    prompt: string
+    negative_prompt?: string
+    mask_b64?: string
+    strength?: number
+    feather?: number
+    normalize?: boolean
+    visible?: boolean
+    lora_filter?: string
+  }>
+  regional_base_prompt_strength?: number
+  regional_normalize_masks?: boolean
   loras?: Array<{
     name: string
     filename?: string
@@ -84,6 +96,11 @@ export interface GenerationRequest {
   ref_image1_b64?: string
   ref_image2_b64?: string
   ref_image3_b64?: string
+  use_prompt_planner?: boolean
+  prompt_planner_max_tokens?: number
+  prompt_planner_show_output?: boolean
+  prompt_planner_lock_original?: boolean
+  prompt_planner_use_regions?: boolean
   use_prompt_expander?: boolean
   refine?: boolean
   refine_denoise?: number
@@ -96,6 +113,44 @@ export interface GenerationRequest {
   seed_variance_preset?: 'off' | 'subtle' | 'balanced' | 'creative' | 'bold' | 'custom'
   seed_variance_strength?: number
   seed_variance_protection?: 'none' | 'first_quarter' | 'first_half'
+  seed_variance_direction?: 'none' | 'forward' | 'reverse' | 'center' | 'edges'
+  seed_variance_fade_curve?: 'linear' | 'ease_in' | 'ease_out' | 'smoothstep'
+  seed_variance_injection_start?: number
+  seed_variance_injection_end?: number
+}
+
+export interface PromptPlan {
+  original_prompt: string
+  planned_prompt: string
+  negative_prompt: string
+  subject: string
+  composition: string
+  style: string
+  lighting: string
+  materials: string
+  text_rendering: string
+  regions: Array<Record<string, any>>
+  backend: 'local' | 'heuristic' | 'off'
+  changed: boolean
+  error?: string | null
+}
+
+export interface PromptRecipe {
+  id: string
+  name: string
+  description: string
+  prompt: string
+  negative_prompt: string
+  planner_instruction: string
+  loras: any[]
+  moodboard_ids: number[]
+  moodboard_uuids: string[]
+  style_references: any[]
+  regional_prompts: any[]
+  seed_variance_preset: string
+  krea_enhancer_variant: string
+  rebalance_preset: string
+  updated_at: string
 }
 
 export interface RealtimePreviewRequest {
@@ -430,6 +485,12 @@ export const apiFetch = {
 
   expandPrompt: (prompt: string) =>
     api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' }>('/api/expand-prompt', { prompt }).then(r => r.data),
+  planPrompt: (prompt: string, max_tokens = 700) =>
+    api.post<PromptPlan>('/api/plan-prompt', { prompt, max_tokens }).then(r => r.data),
+  promptRecipes: () => api.get<{ items: PromptRecipe[] }>('/api/prompt-recipes').then(r => r.data),
+  savePromptRecipe: (recipe: Partial<PromptRecipe> & { name: string }) =>
+    api.post<PromptRecipe>('/api/prompt-recipes', recipe).then(r => r.data),
+  deletePromptRecipe: (id: string) => api.delete<{ ok: boolean }>(`/api/prompt-recipes/${encodeURIComponent(id)}`).then(r => r.data),
 
   authMe: () => api.get<AuthSession>('/api/auth/me').then(r => r.data),
   logout: () => api.post('/api/auth/logout').then(r => r.data),

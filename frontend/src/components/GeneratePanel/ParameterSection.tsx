@@ -441,6 +441,59 @@ export default function ParameterSection() {
                   helperText="Higher = more variation with the same seed, lower prompt fidelity"
                 />
               )}
+              {params.seed_variance_preset !== 'off' && (
+                <>
+                  <Grid container spacing={1.5}>
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        select
+                        label="Variance direction"
+                        value={params.seed_variance_direction}
+                        onChange={e => setParam('seed_variance_direction', e.target.value as typeof params.seed_variance_direction)}
+                        size="small"
+                        fullWidth
+                        helperText="Default: none"
+                      >
+                        <MenuItem value="none">None</MenuItem>
+                        <MenuItem value="forward">Forward</MenuItem>
+                        <MenuItem value="reverse">Reverse</MenuItem>
+                        <MenuItem value="center">Center weighted</MenuItem>
+                        <MenuItem value="edges">Edge weighted</MenuItem>
+                      </TextField>
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        select
+                        label="Variance fade"
+                        value={params.seed_variance_fade_curve}
+                        onChange={e => setParam('seed_variance_fade_curve', e.target.value as typeof params.seed_variance_fade_curve)}
+                        size="small"
+                        fullWidth
+                        helperText="Default: linear"
+                      >
+                        <MenuItem value="linear">Linear</MenuItem>
+                        <MenuItem value="ease_in">Ease in</MenuItem>
+                        <MenuItem value="ease_out">Ease out</MenuItem>
+                        <MenuItem value="smoothstep">Smoothstep</MenuItem>
+                      </TextField>
+                    </Grid>
+                  </Grid>
+                  <LabeledSlider
+                    label="Variance injection start"
+                    value={params.seed_variance_injection_start}
+                    min={0} max={1} step={0.05}
+                    onChange={v => setParam('seed_variance_injection_start', Math.min(v, params.seed_variance_injection_end))}
+                    helperText="Default: 0.00"
+                  />
+                  <LabeledSlider
+                    label="Variance injection end"
+                    value={params.seed_variance_injection_end}
+                    min={0} max={1} step={0.05}
+                    onChange={v => setParam('seed_variance_injection_end', Math.max(v, params.seed_variance_injection_start))}
+                    helperText="Default: 1.00"
+                  />
+                </>
+              )}
               {(params.mode === 'redraw' || params.mode === 'img2img' || params.mode === 'inpaint' || params.mode === 'outpaint') && (
                 <>
                   <TextField

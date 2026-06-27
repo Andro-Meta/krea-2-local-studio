@@ -23,6 +23,17 @@ export interface StyleReference {
   vision_position?: 'before_prompt' | 'after_prompt'
 }
 
+export interface RegionalPrompt {
+  prompt: string
+  negative_prompt: string
+  mask_b64: string
+  strength: number
+  feather: number
+  normalize: boolean
+  visible: boolean
+  lora_filter: string
+}
+
 export interface GenerateParams {
   prompt: string
   negative_prompt: string
@@ -56,6 +67,9 @@ export interface GenerateParams {
   creativity: 'raw' | 'low' | 'medium' | 'high'
   style_references: StyleReference[]
   style_fusion_mode: 'style_only' | 'preserve_structure' | 'semantic_fusion'
+  regional_prompts: RegionalPrompt[]
+  regional_base_prompt_strength: number
+  regional_normalize_masks: boolean
   use_rebalance: boolean
   rebalance_multiplier: number
   rebalance_weights: string
@@ -76,6 +90,11 @@ export interface GenerateParams {
   ref_image1_b64: string
   ref_image2_b64: string
   ref_image3_b64: string
+  use_prompt_planner: boolean
+  prompt_planner_max_tokens: number
+  prompt_planner_show_output: boolean
+  prompt_planner_lock_original: boolean
+  prompt_planner_use_regions: boolean
   use_prompt_expander: boolean
   refine: boolean
   refine_denoise: number
@@ -88,6 +107,10 @@ export interface GenerateParams {
   seed_variance_preset: 'off' | 'subtle' | 'balanced' | 'creative' | 'bold' | 'custom'
   seed_variance_strength: number
   seed_variance_protection: 'none' | 'first_quarter' | 'first_half'
+  seed_variance_direction: 'none' | 'forward' | 'reverse' | 'center' | 'edges'
+  seed_variance_fade_curve: 'linear' | 'ease_in' | 'ease_out' | 'smoothstep'
+  seed_variance_injection_start: number
+  seed_variance_injection_end: number
 }
 
 export interface LightboxItem {
@@ -180,6 +203,9 @@ const defaultParams: GenerateParams = {
   creativity: 'medium',
   style_references: [],
   style_fusion_mode: 'semantic_fusion',
+  regional_prompts: [],
+  regional_base_prompt_strength: 0.3,
+  regional_normalize_masks: true,
   use_rebalance: true,
   rebalance_multiplier: 1.0,
   rebalance_weights: '1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0',
@@ -200,6 +226,11 @@ const defaultParams: GenerateParams = {
   ref_image1_b64: '',
   ref_image2_b64: '',
   ref_image3_b64: '',
+  use_prompt_planner: false,
+  prompt_planner_max_tokens: 700,
+  prompt_planner_show_output: false,
+  prompt_planner_lock_original: false,
+  prompt_planner_use_regions: false,
   use_prompt_expander: false,
   refine: false,
   refine_denoise: 0.3,
@@ -212,6 +243,10 @@ const defaultParams: GenerateParams = {
   seed_variance_preset: 'off',
   seed_variance_strength: 0.0,
   seed_variance_protection: 'first_half',
+  seed_variance_direction: 'none',
+  seed_variance_fade_curve: 'linear',
+  seed_variance_injection_start: 0,
+  seed_variance_injection_end: 1,
 }
 
 const defaultRealtime: RealtimeState = {

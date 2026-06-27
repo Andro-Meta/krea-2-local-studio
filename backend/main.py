@@ -48,6 +48,8 @@ from moodboards_catalog import (
     should_sync_moodboards,
 )
 from prompt_expander import describe_image_local, describe_image_openrouter, expand_prompt_result, openrouter_error_hint
+from prompt_planner import plan_prompt
+from prompt_recipes import delete_recipe, list_recipes, save_recipe
 from schemas import (
     AutoMaskRequest,
     DescribeImageRequest,
@@ -68,6 +70,10 @@ from schemas import (
     MoodboardGuidanceMissingRequest,
     MoodboardMashupRequest,
     MoodboardListResponse,
+    PlanPromptRequest,
+    PlanPromptResponse,
+    PromptRecipe,
+    PromptRecipeListResponse,
     MoodboardItem,
     RealtimePreviewRequest,
     SettingsUpdate,
@@ -467,6 +473,18 @@ async def _moodboard_sync_loop() -> None:
 
 @app.post("/api/generate")
 async def generate(req: GenerationRequest):
+    if req.use_prompt_planner:
+        plan = plan_prompt(
+            req.prompt,
+            enabled=True,
+            max_tokens=int(getattr(req, "prompt_planner_max_tokens", 700)),
+        )
+        req.prompt_planner_output = plan.model_dump()
+        if not req.prompt_planner_lock_original and plan.planned_prompt:
+            req.prompt = plan.planned_prompt
+        if plan.negative_prompt and not req.negative_prompt.strip():
+            req.negative_prompt = plan.negative_prompt
+
     # Optional prompt expansion
     if req.use_prompt_expander:
         result = expand_prompt_result(
@@ -1343,6 +1361,31 @@ async def expand_prompt_endpoint(req: ExpandPromptRequest):
         error=result.error,
         backend=result.backend,
     )
+
+
+@app.post("/api/plan-prompt", response_model=PlanPromptResponse)
+async def plan_prompt_endpoint(req: PlanPromptRequest):
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: plan_prompt(req.prompt, enabled=True, max_tokens=req.max_tokens),
+    )
+    return PlanPromptResponse(**result.model_dump())
+
+
+@app.get("/api/prompt-recipes", response_model=PromptRecipeListResponse)
+async def prompt_recipes_list_endpoint():
+    return PromptRecipeListResponse(items=[PromptRecipe(**item) for item in list_recipes()])
+
+
+@app.post("/api/prompt-recipes", response_model=PromptRecipe)
+async def prompt_recipes_save_endpoint(req: PromptRecipe):
+    return PromptRecipe(**save_recipe(req.model_dump()))
+
+
+@app.delete("/api/prompt-recipes/{recipe_id}")
+async def prompt_recipes_delete_endpoint(recipe_id: str):
+    return {"ok": delete_recipe(recipe_id)}
 
 
 # ---------------------------------------------------------------------------

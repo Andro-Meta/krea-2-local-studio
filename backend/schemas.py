@@ -20,6 +20,17 @@ class StyleReferenceInput(BaseModel):
     vision_position: Literal["before_prompt", "after_prompt"] = "before_prompt"
 
 
+class RegionalPromptInput(BaseModel):
+    prompt: str
+    negative_prompt: str = ""
+    mask_b64: str = ""
+    strength: float = Field(default=1.0, ge=0.0, le=2.0)
+    feather: int = Field(default=24, ge=0, le=128)
+    normalize: bool = True
+    visible: bool = True
+    lora_filter: str = ""
+
+
 class GenerationRequest(BaseModel):
     prompt: str
     negative_prompt: str = ""
@@ -54,6 +65,9 @@ class GenerationRequest(BaseModel):
     creativity: Literal["raw", "low", "medium", "high"] = "medium"
     style_references: List[StyleReferenceInput] = Field(default_factory=list, max_length=10)
     style_fusion_mode: Literal["style_only", "preserve_structure", "semantic_fusion"] = "semantic_fusion"
+    regional_prompts: List[RegionalPromptInput] = Field(default_factory=list, max_length=8)
+    regional_base_prompt_strength: float = Field(default=0.3, ge=0.0, le=1.0)
+    regional_normalize_masks: bool = True
     loras: List[dict] = []
     use_rebalance: bool = True
     rebalance_multiplier: float = 1.0
@@ -74,6 +88,12 @@ class GenerationRequest(BaseModel):
     ref_image1_b64: Optional[str] = None
     ref_image2_b64: Optional[str] = None
     ref_image3_b64: Optional[str] = None
+    use_prompt_planner: bool = False
+    prompt_planner_max_tokens: int = Field(default=700, ge=128, le=1600)
+    prompt_planner_show_output: bool = False
+    prompt_planner_lock_original: bool = False
+    prompt_planner_use_regions: bool = False
+    prompt_planner_output: dict = {}
     use_prompt_expander: bool = False
     # Detail refiner: optional second low-denoise self-pass (txt2img/img2img only)
     refine: bool = False
@@ -88,6 +108,10 @@ class GenerationRequest(BaseModel):
     seed_variance_preset: Literal["off", "subtle", "balanced", "creative", "bold", "custom"] = "off"
     seed_variance_strength: float = 0.0
     seed_variance_protection: Literal["none", "first_quarter", "first_half"] = "first_half"
+    seed_variance_direction: Literal["none", "forward", "reverse", "center", "edges"] = "none"
+    seed_variance_fade_curve: Literal["linear", "ease_in", "ease_out", "smoothstep"] = "linear"
+    seed_variance_injection_start: float = Field(default=0.0, ge=0.0, le=1.0)
+    seed_variance_injection_end: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class RealtimePreviewRequest(BaseModel):
@@ -222,6 +246,49 @@ class ExpandPromptResponse(BaseModel):
     changed: bool = False
     error: Optional[str] = None
     backend: str = "local"
+
+
+class PlanPromptRequest(BaseModel):
+    prompt: str
+    max_tokens: int = Field(default=700, ge=128, le=1600)
+
+
+class PlanPromptResponse(BaseModel):
+    original_prompt: str
+    planned_prompt: str
+    negative_prompt: str = ""
+    subject: str = ""
+    composition: str = ""
+    style: str = ""
+    lighting: str = ""
+    materials: str = ""
+    text_rendering: str = ""
+    regions: list[dict] = []
+    backend: str = "local"
+    changed: bool = False
+    error: Optional[str] = None
+
+
+class PromptRecipe(BaseModel):
+    id: str = ""
+    name: str
+    description: str = ""
+    prompt: str = ""
+    negative_prompt: str = ""
+    planner_instruction: str = ""
+    loras: list[dict] = []
+    moodboard_ids: list[int] = []
+    moodboard_uuids: list[str] = []
+    style_references: list[dict] = []
+    regional_prompts: list[dict] = []
+    seed_variance_preset: str = "off"
+    krea_enhancer_variant: str = "off"
+    rebalance_preset: str = "balanced"
+    updated_at: str = ""
+
+
+class PromptRecipeListResponse(BaseModel):
+    items: list[PromptRecipe]
 
 
 class ShareLoginRequest(BaseModel):

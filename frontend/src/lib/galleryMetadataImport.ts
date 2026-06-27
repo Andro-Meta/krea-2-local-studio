@@ -56,6 +56,24 @@ function styleRefsFromMetadata(value: unknown): GenerateParams['style_references
     .slice(0, 10)
 }
 
+function regionalPromptsFromMetadata(value: unknown): GenerateParams['regional_prompts'] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is Record<string, unknown> => item && typeof item === 'object')
+    .map(item => ({
+      prompt: String(item.prompt || ''),
+      negative_prompt: String(item.negative_prompt || ''),
+      mask_b64: '',
+      strength: numberValue(item.strength) ?? 1,
+      feather: numberValue(item.feather) ?? 24,
+      normalize: booleanValue(item.normalize) ?? true,
+      visible: booleanValue(item.visible) ?? true,
+      lora_filter: String(item.lora_filter || ''),
+    }))
+    .filter(item => item.prompt)
+    .slice(0, 8)
+}
+
 function enhancerVariant(metadata: Record<string, any>): GenerateParams['krea_enhancer_variant'] {
   return oneOf(metadata.krea_enhancer?.variant, ['off', 'current', 'capped_delta', 'current_plus_capped'] as const)
     ?? (booleanValue(metadata.krea_enhancer?.enabled) ? 'capped_delta' : 'off')
@@ -99,6 +117,9 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     creativity: oneOf(metadata.creativity, ['raw', 'low', 'medium', 'high'] as const),
     style_references: styleRefsFromMetadata(metadata.image_references?.style_references),
     style_fusion_mode: oneOf(metadata.image_references?.style_fusion_mode, ['style_only', 'preserve_structure', 'semantic_fusion'] as const),
+    regional_prompts: regionalPromptsFromMetadata(metadata.regional_prompts?.regions),
+    regional_base_prompt_strength: numberValue(metadata.regional_prompts?.base_prompt_strength),
+    regional_normalize_masks: booleanValue(metadata.regional_prompts?.normalize_masks),
     loras: lorasFromMetadata(metadata.loras),
     bboxes: Array.isArray(metadata.bboxes) ? metadata.bboxes : [],
     mood: String(metadata.mood || ''),
@@ -108,6 +129,10 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     seed_variance_preset: oneOf(metadata.seed_variance?.preset, ['off', 'subtle', 'balanced', 'creative', 'bold', 'custom'] as const),
     seed_variance_strength: numberValue(metadata.seed_variance?.strength),
     seed_variance_protection: oneOf(metadata.seed_variance?.protection, ['none', 'first_quarter', 'first_half'] as const),
+    seed_variance_direction: oneOf(metadata.seed_variance?.direction, ['none', 'forward', 'reverse', 'center', 'edges'] as const),
+    seed_variance_fade_curve: oneOf(metadata.seed_variance?.fade_curve, ['linear', 'ease_in', 'ease_out', 'smoothstep'] as const),
+    seed_variance_injection_start: numberValue(metadata.seed_variance?.injection_start),
+    seed_variance_injection_end: numberValue(metadata.seed_variance?.injection_end),
     use_rebalance: rebalanceEnabled,
     rebalance_multiplier: numberValue(metadata.rebalance?.multiplier),
     rebalance_weights: typeof metadata.rebalance?.weights === 'string' ? metadata.rebalance.weights : undefined,
@@ -123,6 +148,11 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     refine: booleanValue(metadata.refine?.enabled),
     refine_denoise: numberValue(metadata.refine?.denoise),
     refine_steps: numberValue(metadata.refine?.steps),
+    use_prompt_planner: booleanValue(metadata.prompt_planner?.enabled),
+    prompt_planner_max_tokens: numberValue(metadata.prompt_planner?.max_tokens),
+    prompt_planner_show_output: booleanValue(metadata.prompt_planner?.enabled),
+    prompt_planner_lock_original: booleanValue(metadata.prompt_planner?.lock_original),
+    prompt_planner_use_regions: booleanValue(metadata.prompt_planner?.use_regions),
   }
 
   if (targetMode === 'txt2img') {

@@ -16,12 +16,17 @@ OUT_DIR = ROOT / "outputs" / "verify_krea2_node_parity"
 
 def _wait_job(base_url: str, job_id: str, timeout: int = 900) -> dict[str, Any]:
     deadline = time.time() + timeout
+    last_error = ""
     while time.time() < deadline:
-        data = requests.get(f"{base_url}/api/generate/{job_id}", timeout=30).json()
-        if data.get("status") in {"done", "error"}:
-            return data
-        time.sleep(2)
-    raise TimeoutError(f"job {job_id} timed out")
+        try:
+            data = requests.get(f"{base_url}/api/generate/{job_id}", timeout=120).json()
+            if data.get("status") in {"done", "error"}:
+                return data
+            last_error = ""
+        except requests.RequestException as exc:
+            last_error = str(exc)
+        time.sleep(3)
+    raise TimeoutError(f"job {job_id} timed out; last_error={last_error}")
 
 
 def _write_image(name: str, image_b64: str) -> str:
@@ -32,7 +37,7 @@ def _write_image(name: str, image_b64: str) -> str:
 
 
 def _generate(base_url: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
-    response = requests.post(f"{base_url}/api/generate", json=payload, timeout=60)
+    response = requests.post(f"{base_url}/api/generate", json=payload, timeout=120)
     response.raise_for_status()
     job = _wait_job(base_url, response.json()["job_id"])
     if job.get("status") != "done":
@@ -69,6 +74,41 @@ def main() -> int:
             "seed": 6262,
             "style_fusion_mode": "style_only",
         }),
+        ("prompt_planner", {
+            "prompt": "robot selling lemonade, sign says \"KREA\"",
+            "seed": 7272,
+            "use_prompt_planner": True,
+            "prompt_planner_max_tokens": 512,
+            "prompt_planner_show_output": True,
+        }),
+        ("regional_scene", {
+            "prompt": "split editorial poster with a warm desert on the left and cold arctic lab on the right",
+            "negative_prompt": "labels, captions, words, text, UI overlay, misspelled text",
+            "seed": 8282,
+            "regional_base_prompt_strength": 0.3,
+            "regional_prompts": [
+                {"prompt": "left side warm orange desert dunes", "strength": 0.8, "feather": 24, "normalize": True, "visible": True},
+                {"prompt": "right side blue arctic science lab", "strength": 0.8, "feather": 24, "normalize": True, "visible": True},
+            ],
+        }),
+        ("seed_variance_v2", {
+            "prompt": "four crystal birds arranged in a clean product grid",
+            "seed": 9292,
+            "seed_variance_preset": "balanced",
+            "seed_variance_direction": "center",
+            "seed_variance_fade_curve": "smoothstep",
+            "seed_variance_injection_start": 0.15,
+            "seed_variance_injection_end": 0.85,
+        }),
+        ("recipe_stack", {
+            "prompt": "cinematic neon fashion portrait, reflective jacket, rain street",
+            "seed": 10303,
+            "use_prompt_planner": True,
+            "rebalance_preset": "detail",
+            "krea_enhancer_enabled": True,
+            "krea_enhancer_variant": "capped_delta",
+            "seed_variance_preset": "subtle",
+        }),
     ]
 
     if not args.skip_generation:
@@ -88,7 +128,23 @@ def main() -> int:
                 **patch,
             }
             job = _generate(args.base_url, name, payload)
-            summary["cases"].append({"name": name, "status": job.get("status"), "saved_path": job.get("saved_path")})
+            metadata = (job.get("metadata") or [{}])[0] if isinstance(job.get("metadata"), list) else {}
+            summary["cases"].append({
+                "name": name,
+                "status": job.get("status"),
+                "saved_path": job.get("saved_path"),
+                "metadata_keys": sorted(metadata.keys()) if isinstance(metadata, dict) else [],
+                "adherence_checklist": {
+                    "subject_present": None,
+                    "text_accuracy": None,
+                    "regional_placement": None,
+                    "style_match": None,
+                    "artifacts": None,
+                    "prompt_drift": None,
+                },
+            })
+            summary_path = OUT_DIR / "report.json"
+            summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     summary_path = OUT_DIR / "report.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

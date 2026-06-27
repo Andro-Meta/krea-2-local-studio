@@ -36,6 +36,7 @@ from lora_manager import apply_loras, build_trigger_prompt
 from model_profiles import apply_profile_defaults
 from moodboards_catalog import moodboard_generation_context
 from memory_manager import clear_cuda_cache
+from regional_scene import build_regional_prompt_text
 from output_saver import encode_images
 from seed_variance import apply_seed_variance
 from settings import OUTPUTS_DIR, settings
@@ -731,6 +732,15 @@ class Krea2Pipeline:
                 f"{prompt}\n\nPreserve the source composition, pose, layout, and spatial relationships. "
                 "Use references for style and surface detail without replacing the underlying structure."
             )
+        if getattr(req, "regional_prompts", None):
+            prompt = build_regional_prompt_text(
+                prompt,
+                [
+                    item.model_dump() if hasattr(item, "model_dump") else dict(item)
+                    for item in (getattr(req, "regional_prompts", []) or [])
+                ],
+                base_prompt_strength=float(getattr(req, "regional_base_prompt_strength", 0.3)),
+            )
 
         # Encode text. Conditioning is cheap to reuse; moving the 4B Qwen encoder
         # CPU→GPU is not, so cache final CPU tensors by prompt/reference settings.
@@ -955,6 +965,10 @@ class Krea2Pipeline:
                 else None
             ),
             protection=str(getattr(req, "seed_variance_protection", "first_half")),
+            direction=str(getattr(req, "seed_variance_direction", "none")),
+            fade_curve=str(getattr(req, "seed_variance_fade_curve", "linear")),
+            injection_start=float(getattr(req, "seed_variance_injection_start", 0.0)),
+            injection_end=float(getattr(req, "seed_variance_injection_end", 1.0)),
         )
 
         # Resolve mu (the ModelSamplingFlux shift). 0 or None = auto-resolve:

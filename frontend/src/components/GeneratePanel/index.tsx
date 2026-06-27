@@ -10,7 +10,9 @@ import DimensionSection from './DimensionSection'
 import ParameterSection from './ParameterSection'
 import LoraSection from './LoraSection'
 import MoodboardSection from './MoodboardSection'
+import RecipeSection from './RecipeSection'
 import StyleReferenceSection from './StyleReferenceSection'
+import AdvancedSceneSection from './AdvancedSceneSection'
 import CanvasControl from './CanvasControl'
 import ResultsView from './ResultsView'
 
@@ -75,6 +77,9 @@ export default function GeneratePanel() {
         creativity: params.creativity,
         style_references: params.style_references,
         style_fusion_mode: params.style_fusion_mode,
+        regional_prompts: params.regional_prompts,
+        regional_base_prompt_strength: params.regional_base_prompt_strength,
+        regional_normalize_masks: params.regional_normalize_masks,
         use_rebalance: params.use_rebalance,
         rebalance_multiplier: params.rebalance_multiplier,
         rebalance_weights: params.rebalance_weights,
@@ -95,6 +100,11 @@ export default function GeneratePanel() {
         ref_image1_b64: params.ref_image1_b64 || undefined,
         ref_image2_b64: params.ref_image2_b64 || undefined,
         ref_image3_b64: params.ref_image3_b64 || undefined,
+        use_prompt_planner: params.use_prompt_planner,
+        prompt_planner_max_tokens: params.prompt_planner_max_tokens,
+        prompt_planner_show_output: params.prompt_planner_show_output,
+        prompt_planner_lock_original: params.prompt_planner_lock_original,
+        prompt_planner_use_regions: params.prompt_planner_use_regions,
         use_prompt_expander: params.use_prompt_expander,
         refine: params.refine,
         refine_denoise: params.refine_denoise,
@@ -107,6 +117,10 @@ export default function GeneratePanel() {
         seed_variance_preset: params.seed_variance_preset,
         seed_variance_strength: params.seed_variance_strength,
         seed_variance_protection: params.seed_variance_protection,
+        seed_variance_direction: params.seed_variance_direction,
+        seed_variance_fade_curve: params.seed_variance_fade_curve,
+        seed_variance_injection_start: params.seed_variance_injection_start,
+        seed_variance_injection_end: params.seed_variance_injection_end,
       })
       setJobId(job_id)
 
@@ -161,7 +175,9 @@ export default function GeneratePanel() {
         <ModelSection />
         <DimensionSection />
         {!inRedrawStudio && <StyleReferenceSection />}
+        {!inRedrawStudio && <AdvancedSceneSection />}
         {!inRedrawStudio && <MoodboardSection />}
+        {!inRedrawStudio && <RecipeSection />}
         <LoraSection />
         {!inRedrawStudio && <CanvasControl />}
         <ParameterSection />

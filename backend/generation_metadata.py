@@ -4,6 +4,8 @@ import hashlib
 import time
 from typing import Any
 
+from regional_scene import region_metadata
+
 
 def _safe_list(value: Any) -> list:
     return list(value or []) if isinstance(value, (list, tuple)) else []
@@ -124,10 +126,23 @@ def build_generation_metadata(
             "style_references": style_references,
             "hashes": _hash_refs([*moodboard_images, *ref_images]),
         },
+        "regional_prompts": {
+            "base_prompt_strength": float(getattr(req, "regional_base_prompt_strength", 0.3)),
+            "normalize_masks": bool(getattr(req, "regional_normalize_masks", True)),
+            "regions": [
+                region_metadata(item.model_dump() if hasattr(item, "model_dump") else item)
+                for item in _safe_list(getattr(req, "regional_prompts", []))
+                if isinstance(item.model_dump() if hasattr(item, "model_dump") else item, dict)
+            ][:8],
+        },
         "seed_variance": {
             "preset": str(getattr(req, "seed_variance_preset", "off")),
             "strength": float(getattr(req, "seed_variance_strength", 0.0)),
             "protection": str(getattr(req, "seed_variance_protection", "first_half")),
+            "direction": str(getattr(req, "seed_variance_direction", "none")),
+            "fade_curve": str(getattr(req, "seed_variance_fade_curve", "linear")),
+            "injection_start": float(getattr(req, "seed_variance_injection_start", 0.0)),
+            "injection_end": float(getattr(req, "seed_variance_injection_end", 1.0)),
         },
         "rebalance": {
             "enabled": bool(getattr(req, "use_rebalance", False)),
@@ -151,6 +166,13 @@ def build_generation_metadata(
             "steps": int(getattr(req, "refine_steps", 0)),
         },
         "bboxes": _safe_list(getattr(req, "bboxes", [])),
+        "prompt_planner": {
+            "enabled": bool(getattr(req, "use_prompt_planner", False)),
+            "max_tokens": int(getattr(req, "prompt_planner_max_tokens", 700)),
+            "lock_original": bool(getattr(req, "prompt_planner_lock_original", False)),
+            "use_regions": bool(getattr(req, "prompt_planner_use_regions", False)),
+            "output": getattr(req, "prompt_planner_output", {}) or {},
+        },
         "use_prompt_expander": bool(getattr(req, "use_prompt_expander", False)),
     }
     if extra:
