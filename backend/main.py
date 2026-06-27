@@ -31,10 +31,13 @@ from inference import pipeline
 from log_setup import setup_logging
 from lora_manager import inspect_lora, list_loras
 from moodboards_catalog import (
+    CUSTOM_MOODBOARD_DIR,
     KREA_MOODBOARD_GALLERY_URL,
     MOODBOARD_SEED_PATH,
+    create_custom_moodboard,
+    delete_custom_moodboard,
     export_moodboard_seed,
-    fetch_krea_image_b64,
+    fetch_moodboard_image_b64,
     get_moodboard,
     import_moodboard_urls,
     init_moodboard_db,
@@ -54,6 +57,7 @@ from schemas import (
     GenerationRequest,
     LoadModelRequest,
     MemoryStopProcessRequest,
+    CustomMoodboardRequest,
     MoodboardImportRequest,
     MoodboardImportResponse,
     MoodboardDiscoveryResponse,
@@ -758,8 +762,8 @@ async def delete_gallery_item(gallery_id: int):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/moodboards", response_model=MoodboardListResponse)
-async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False):
-    return await list_moodboards(query=q, page=page, page_size=page_size, favorites_only=favorites)
+async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False, source: str = ""):
+    return await list_moodboards(query=q, page=page, page_size=page_size, favorites_only=favorites, source=source)
 
 
 @app.get("/api/moodboards/discoveries/latest", response_model=MoodboardDiscoveryResponse)
@@ -778,6 +782,26 @@ async def moodboard_detail(moodboard_id: int):
 @app.put("/api/moodboards/{moodboard_id}/favorite")
 async def favorite_moodboard(moodboard_id: int, req: FavoriteRequest):
     await set_moodboard_favorite(moodboard_id, req.favorite)
+    return {"ok": True}
+
+
+@app.post("/api/moodboards/custom", response_model=MoodboardItem)
+async def create_custom_moodboard_endpoint(req: CustomMoodboardRequest):
+    try:
+        return await create_custom_moodboard(
+            title=req.title,
+            taste_profile=req.taste_profile,
+            keywords=req.keywords,
+            image_b64s=req.image_b64s,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/moodboards/custom/{moodboard_id}")
+async def delete_custom_moodboard_endpoint(moodboard_id: int):
+    if not await delete_custom_moodboard(moodboard_id):
+        raise HTTPException(404, "Custom moodboard not found")
     return {"ok": True}
 
 
@@ -800,13 +824,22 @@ async def export_moodboards_seed():
 async def moodboard_image(req: MoodboardImageRequest):
     loop = asyncio.get_event_loop()
     try:
-        image_b64 = await loop.run_in_executor(None, lambda: fetch_krea_image_b64(req.url))
+        image_b64 = await loop.run_in_executor(None, lambda: fetch_moodboard_image_b64(req.url))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception:
         logger.exception("Krea moodboard image fetch failed")
         raise HTTPException(502, "Could not load Krea moodboard image")
     return {"image_b64": image_b64}
+
+
+@app.get("/api/moodboards/custom-images/{board_uuid}/{filename}")
+async def custom_moodboard_image(board_uuid: str, filename: str):
+    path = (CUSTOM_MOODBOARD_DIR / board_uuid / filename).resolve()
+    root = CUSTOM_MOODBOARD_DIR.resolve()
+    if root not in path.parents or not path.exists():
+        raise HTTPException(404, "Custom moodboard image not found")
+    return FileResponse(path)
 
 
 # ---------------------------------------------------------------------------

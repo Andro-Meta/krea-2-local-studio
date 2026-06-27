@@ -219,6 +219,7 @@ class MoodboardItem(BaseModel):
     image_urls: List[str] = []
     related_urls: List[str] = []
     favorite: bool = False
+    source: str = "official"
     first_seen_at: str
     last_seen_at: str
     updated_at: str
@@ -240,6 +241,13 @@ class MoodboardImportResponse(BaseModel):
     ids: List[int]
     new_count: int = 0
     new_ids: List[int] = []
+
+
+class CustomMoodboardRequest(BaseModel):
+    title: str
+    taste_profile: str = ""
+    keywords: List[str] = []
+    image_b64s: List[str] = []
 
 
 class MoodboardDiscoveryResponse(BaseModel):

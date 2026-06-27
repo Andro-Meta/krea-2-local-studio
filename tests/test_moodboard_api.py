@@ -48,6 +48,7 @@ MOODBOARD_ITEM = {
     "image_urls": ["https://optim-images.krea.ai/ref.webp"],
     "related_urls": [],
     "favorite": False,
+    "source": "official",
     "first_seen_at": "2026-01-01T00:00:00Z",
     "last_seen_at": "2026-01-01T00:00:00Z",
     "updated_at": "2026-01-01T00:00:00Z",
@@ -91,7 +92,7 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "import_moodboard_urls", side_effect=fake_import),
             patch.object(main, "export_moodboard_seed", side_effect=fake_export),
             patch.object(main, "latest_moodboard_discovery", side_effect=fake_latest_discovery),
-            patch.object(main, "fetch_krea_image_b64", return_value="abc123"),
+            patch.object(main, "fetch_moodboard_image_b64", return_value="abc123"),
         ):
             listed = client.get("/api/moodboards?q=urban")
             detail = client.get("/api/moodboards/7")
@@ -110,6 +111,33 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exported.json()["exported"], 1)
         self.assertEqual(image.json(), {"image_b64": "abc123"})
         self.assertEqual(latest.json()["items"][0]["title"], "Gritty Cinematic Realism")
+
+    async def test_custom_moodboard_routes_create_and_delete(self) -> None:
+        client = TestClient(main.app)
+        custom_item = {**MOODBOARD_ITEM, "id": 8, "source": "custom", "title": "My Board"}
+
+        async def fake_create(**_: object) -> dict:
+            return custom_item
+
+        async def fake_delete(_: int) -> bool:
+            return True
+
+        with (
+            patch.object(main, "create_custom_moodboard", side_effect=fake_create),
+            patch.object(main, "delete_custom_moodboard", side_effect=fake_delete),
+        ):
+            created = client.post("/api/moodboards/custom", json={
+                "title": "My Board",
+                "taste_profile": "Neon style.",
+                "keywords": ["neon"],
+                "image_b64s": ["abc123"],
+            })
+            deleted = client.delete("/api/moodboards/custom/8")
+
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["source"], "custom")
+        self.assertEqual(created.json()["title"], "My Board")
+        self.assertEqual(deleted.json(), {"ok": True})
 
 
 if __name__ == "__main__":

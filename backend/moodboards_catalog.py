@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shutil
 import sqlite3
 import time
+import uuid as uuidlib
 from dataclasses import dataclass, field
 from html import unescape
 from pathlib import Path
@@ -19,6 +21,7 @@ from settings import BASE_DIR, DB_PATH
 KREA_BASE_URL = "https://www.krea.ai"
 KREA_MOODBOARD_GALLERY_URL = f"{KREA_BASE_URL}/app?gallery=moodboards"
 MOODBOARD_SEED_PATH = BASE_DIR / "data" / "krea_moodboards_seed.json"
+CUSTOM_MOODBOARD_DIR = BASE_DIR / "data" / "custom_moodboards"
 SYNC_META_KEY = "last_krea_moodboard_sync_at"
 DISCOVERY_META_KEY = "latest_krea_moodboard_discovery"
 DEFAULT_SYNC_INTERVAL_SECONDS = 24 * 60 * 60
@@ -96,6 +99,48 @@ def fetch_krea_image_b64(url: str, *, timeout: int = 30) -> str:
     if not content_type.startswith("image/"):
         raise ValueError("URL did not return an image.")
     return base64.b64encode(response.content).decode()
+
+
+def _strip_data_url(image_b64: str) -> str:
+    value = str(image_b64 or "").strip()
+    if "," in value and value.lower().startswith("data:image/"):
+        return value.split(",", 1)[1]
+    return value
+
+
+def _image_extension(raw: bytes) -> str:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return ".webp"
+    return ".png"
+
+
+def _custom_image_url(board_uuid: str, filename: str) -> str:
+    return f"/api/moodboards/custom-images/{board_uuid}/{filename}"
+
+
+def _custom_image_path(url: str, storage_dir: Path = CUSTOM_MOODBOARD_DIR) -> Path:
+    match = re.match(r"^/api/moodboards/custom-images/([^/]+)/([^/]+)$", url)
+    if not match:
+        raise ValueError("Unknown custom moodboard image path.")
+    board_uuid, filename = match.groups()
+    root = storage_dir.resolve()
+    path = (root / board_uuid / filename).resolve()
+    if root not in path.parents:
+        raise ValueError("Invalid custom moodboard image path.")
+    return path
+
+
+def fetch_moodboard_image_b64(url: str, *, storage_dir: Path = CUSTOM_MOODBOARD_DIR, timeout: int = 30) -> str:
+    if str(url).startswith("/api/moodboards/custom-images/"):
+        path = _custom_image_path(url, storage_dir=storage_dir)
+        if not path.exists():
+            raise ValueError("Custom moodboard image not found.")
+        return base64.b64encode(path.read_bytes()).decode()
+    return fetch_krea_image_b64(url, timeout=timeout)
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -309,6 +354,7 @@ async def init_moodboard_db(db_path: Path = DB_PATH) -> None:
                 image_urls TEXT DEFAULT '[]',
                 related_urls TEXT DEFAULT '[]',
                 favorite INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'official',
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -316,8 +362,12 @@ async def init_moodboard_db(db_path: Path = DB_PATH) -> None:
             )
             """
         )
+        columns = [str(row[1]) for row in await (await db.execute("PRAGMA table_info(moodboards)")).fetchall()]
+        if "source" not in columns:
+            await db.execute("ALTER TABLE moodboards ADD COLUMN source TEXT DEFAULT 'official'")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_moodboards_title ON moodboards(title)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_moodboards_favorite ON moodboards(favorite)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_moodboards_source ON moodboards(source)")
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS app_meta (
@@ -338,8 +388,8 @@ async def upsert_moodboard(record: MoodboardRecord, db_path: Path = DB_PATH) -> 
             """
             INSERT INTO moodboards
                 (url, slug, uuid, title, taste_profile, keywords, primary_image_url,
-                 image_urls, related_urls, favorite, first_seen_at, last_seen_at, updated_at, sync_error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                 image_urls, related_urls, favorite, source, first_seen_at, last_seen_at, updated_at, sync_error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'official', ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
                 slug = excluded.slug,
                 uuid = excluded.uuid,
@@ -380,6 +430,85 @@ async def set_moodboard_favorite(moodboard_id: int, favorite: bool, db_path: Pat
         await db.commit()
 
 
+async def create_custom_moodboard(
+    *,
+    title: str,
+    taste_profile: str = "",
+    keywords: list[str] | None = None,
+    image_b64s: list[str],
+    db_path: Path = DB_PATH,
+    storage_dir: Path = CUSTOM_MOODBOARD_DIR,
+) -> dict:
+    cleaned_title = str(title or "").strip()
+    if not cleaned_title:
+        raise ValueError("Custom moodboard title is required.")
+    if not image_b64s:
+        raise ValueError("Add at least one image to save a custom moodboard.")
+    board_uuid = str(uuidlib.uuid4())
+    board_dir = storage_dir / board_uuid
+    board_dir.mkdir(parents=True, exist_ok=True)
+    image_urls: list[str] = []
+    try:
+        for index, image_b64 in enumerate(image_b64s[:10], start=1):
+            raw = base64.b64decode(_strip_data_url(image_b64), validate=True)
+            ext = _image_extension(raw)
+            filename = f"ref_{index:02d}{ext}"
+            (board_dir / filename).write_bytes(raw)
+            image_urls.append(_custom_image_url(board_uuid, filename))
+    except Exception:
+        shutil.rmtree(board_dir, ignore_errors=True)
+        raise ValueError("Custom moodboard images must be valid base64 image data.")
+
+    now = _now_iso()
+    url = f"custom://{board_uuid}"
+    slug = f"custom-{board_uuid}"
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            """
+            INSERT INTO moodboards
+                (url, slug, uuid, title, taste_profile, keywords, primary_image_url,
+                 image_urls, related_urls, favorite, source, first_seen_at, last_seen_at, updated_at, sync_error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 'custom', ?, ?, ?, '')
+            """,
+            (
+                url,
+                slug,
+                board_uuid,
+                cleaned_title,
+                str(taste_profile or ""),
+                json.dumps([str(v).strip() for v in keywords or [] if str(v).strip()]),
+                image_urls[0],
+                json.dumps(image_urls),
+                now,
+                now,
+                now,
+            ),
+        )
+        row = await (await db.execute("SELECT * FROM moodboards WHERE url = ?", (url,))).fetchone()
+        await db.commit()
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute("SELECT * FROM moodboards WHERE url = ?", (url,))).fetchone()
+    return _row_to_item(row)
+
+
+async def delete_custom_moodboard(
+    moodboard_id: int,
+    *,
+    db_path: Path = DB_PATH,
+    storage_dir: Path = CUSTOM_MOODBOARD_DIR,
+) -> bool:
+    item = await get_moodboard(moodboard_id, db_path=db_path)
+    if not item or item.get("source") != "custom":
+        return False
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute("DELETE FROM moodboards WHERE id = ? AND source = 'custom'", (moodboard_id,))
+        await db.commit()
+    if item.get("uuid"):
+        shutil.rmtree(storage_dir / str(item["uuid"]), ignore_errors=True)
+    return True
+
+
 def _json_list(value: str) -> list[str]:
     try:
         data = json.loads(value or "[]")
@@ -391,6 +520,7 @@ def _json_list(value: str) -> list[str]:
 def _row_to_item(row: aiosqlite.Row) -> dict:
     item = dict(row)
     item["favorite"] = bool(item["favorite"])
+    item["source"] = str(item.get("source") or "official")
     item["keywords"] = _json_list(item.get("keywords", "[]"))
     item["image_urls"] = _json_list(item.get("image_urls", "[]"))
     item["related_urls"] = _json_list(item.get("related_urls", "[]"))
@@ -400,6 +530,7 @@ def _row_to_item(row: aiosqlite.Row) -> dict:
 def _sync_row_to_item(row: sqlite3.Row) -> dict:
     item = dict(row)
     item["favorite"] = bool(item["favorite"])
+    item["source"] = str(item.get("source") or "official")
     item["keywords"] = _json_list(item.get("keywords", "[]"))
     item["image_urls"] = _json_list(item.get("image_urls", "[]"))
     item["related_urls"] = _json_list(item.get("related_urls", "[]"))
@@ -436,14 +567,22 @@ async def list_moodboards(
     query: str = "",
     *,
     favorites_only: bool = False,
+    source: str = "",
     page: int = 1,
     page_size: int = 50,
     db_path: Path = DB_PATH,
 ) -> dict:
-    where = "WHERE favorite = 1" if favorites_only else ""
+    where_parts: list[str] = []
+    params: list[object] = []
+    if favorites_only:
+        where_parts.append("favorite = 1")
+    if source in {"official", "custom"}:
+        where_parts.append("source = ?")
+        params.append(source)
+    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
-        rows = await (await db.execute(f"SELECT * FROM moodboards {where}")).fetchall()
+        rows = await (await db.execute(f"SELECT * FROM moodboards {where}", params)).fetchall()
     items = [_row_to_item(row) for row in rows]
     if query.strip():
         scored = [(_score_item(item, query), item) for item in items]
@@ -617,7 +756,7 @@ def _seed_item_from_catalog_item(item: dict) -> dict:
 
 
 async def export_moodboard_seed(seed_path: Path = MOODBOARD_SEED_PATH, *, db_path: Path = DB_PATH) -> int:
-    data = await list_moodboards(page=1, page_size=1_000_000, db_path=db_path)
+    data = await list_moodboards(page=1, page_size=1_000_000, source="official", db_path=db_path)
     seed = {
         "version": 1,
         "source": "https://www.krea.ai/app?gallery=moodboards",

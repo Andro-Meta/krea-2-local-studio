@@ -16,6 +16,9 @@ from moodboards_catalog import (  # noqa: E402
     KREA_MOODBOARD_GALLERY_URL,
     KreaMoodboardCrawler,
     MoodboardRecord,
+    create_custom_moodboard,
+    delete_custom_moodboard,
+    fetch_moodboard_image_b64,
     init_moodboard_db,
     is_allowed_krea_image_url,
     is_allowed_krea_moodboard_url,
@@ -57,6 +60,10 @@ FIXTURE_HTML = """
 
 
 class MoodboardCatalogTests(unittest.TestCase):
+    TINY_PNG_B64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+
     def test_parser_extracts_krea_moodboard_details(self) -> None:
         crawler = KreaMoodboardCrawler(fetch_html=lambda _: FIXTURE_HTML)
 
@@ -276,6 +283,74 @@ class MoodboardCatalogTests(unittest.TestCase):
                 context["uuids"],
                 ["a057f657-b26a-5768-a134-3e21474484fe", "4e938f5c-ff17-539b-bdb2-ad7884cdb369"],
             )
+
+    def test_custom_moodboard_persists_images_and_uses_generation_context(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "custom"
+
+            async def run() -> tuple[dict, dict, str, bool]:
+                await init_moodboard_db(db_path)
+                created = await create_custom_moodboard(
+                    title="My Neon Board",
+                    taste_profile="Pink glass and diagonal neon lighting.",
+                    keywords=["pink glass", "neon"],
+                    image_b64s=[self.TINY_PNG_B64],
+                    db_path=db_path,
+                    storage_dir=storage_dir,
+                )
+                listed = await list_moodboards(source="custom", db_path=db_path)
+                context = moodboard_generation_context([created["id"]], db_path=db_path)
+                fetched = fetch_moodboard_image_b64(created["image_urls"][0], storage_dir=storage_dir)
+                deleted = await delete_custom_moodboard(created["id"], db_path=db_path, storage_dir=storage_dir)
+                return listed, context, fetched, deleted
+
+            listed, context, fetched, deleted = asyncio.run(run())
+
+            self.assertEqual(listed["total"], 1)
+            self.assertEqual(listed["items"][0]["source"], "custom")
+            self.assertEqual(context["items"][0]["title"], "My Neon Board")
+            self.assertIn("Pink glass", context["style_text"])
+            self.assertEqual(fetched, self.TINY_PNG_B64)
+            self.assertTrue(deleted)
+
+    def test_official_moodboard_sync_does_not_overwrite_custom_boards(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "custom"
+
+            async def run() -> tuple[int, int]:
+                await init_moodboard_db(db_path)
+                await create_custom_moodboard(
+                    title="Custom",
+                    taste_profile="Private board.",
+                    keywords=[],
+                    image_b64s=[self.TINY_PNG_B64],
+                    db_path=db_path,
+                    storage_dir=storage_dir,
+                )
+                await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/official-11111111-1111-5111-9111-111111111111",
+                        slug="official-11111111-1111-5111-9111-111111111111",
+                        uuid="11111111-1111-5111-9111-111111111111",
+                        title="Official",
+                        taste_profile="Synced.",
+                        keywords=[],
+                        primary_image_url="https://optim-images.krea.ai/official.webp",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                custom = await list_moodboards(source="custom", db_path=db_path)
+                official = await list_moodboards(source="official", db_path=db_path)
+                return custom["total"], official["total"]
+
+            custom_count, official_count = asyncio.run(run())
+
+            self.assertEqual(custom_count, 1)
+            self.assertEqual(official_count, 1)
 
     def test_sync_throttle_uses_daily_interval(self) -> None:
         with tempfile.TemporaryDirectory() as td:

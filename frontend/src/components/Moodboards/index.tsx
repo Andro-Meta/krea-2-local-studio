@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useRef, useEffect, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import {
   Alert,
   Box,
@@ -24,6 +25,7 @@ import RefreshIcon from '@mui/icons-material/Refresh'
 import SearchIcon from '@mui/icons-material/Search'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import AddLinkIcon from '@mui/icons-material/AddLink'
+import DeleteIcon from '@mui/icons-material/Delete'
 import SaveAltIcon from '@mui/icons-material/SaveAlt'
 import { apiFetch, type MoodboardItem } from '../../api'
 import { useStore } from '../../store'
@@ -51,6 +53,15 @@ function moodboardErrorMessage(error: any, fallback: string) {
   return detail ?? error?.message ?? fallback
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`))
+    reader.onload = event => resolve(String(event.target?.result || '').split(',')[1] || '')
+    reader.readAsDataURL(file)
+  })
+}
+
 export default function MoodboardsPanel() {
   const [items, setItems] = useState<MoodboardItem[]>([])
   const [total, setTotal] = useState(0)
@@ -59,6 +70,7 @@ export default function MoodboardsPanel() {
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
+  const customFileRef = useRef<HTMLInputElement>(null)
   const { params, setParams, setTab, moodboardView, setMoodboardView } = useStore()
 
   const load = useCallback(async (pg = 1) => {
@@ -79,7 +91,13 @@ export default function MoodboardsPanel() {
         setPage(1)
         return
       }
-      const data = await apiFetch.moodboards({ q: query, page: pg, pageSize: PAGE_SIZE, favorites: moodboardView === 'favorites' })
+      const data = await apiFetch.moodboards({
+        q: query,
+        page: pg,
+        pageSize: PAGE_SIZE,
+        favorites: moodboardView === 'favorites',
+        source: moodboardView === 'custom' ? 'custom' : moodboardView === 'official' ? 'official' : undefined,
+      })
       setItems(prev => pg === 1 ? data.items : [...prev, ...data.items])
       setTotal(data.total)
       setPage(pg)
@@ -153,6 +171,54 @@ export default function MoodboardsPanel() {
     }
   }
 
+  const createCustomMoodboard = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []).slice(0, MAX_LOCAL_MOODBOARD_REFS)
+    event.target.value = ''
+    if (!files.length) return
+    const title = window.prompt('Name this custom moodboard.')
+    if (!title?.trim()) return
+    const tasteProfile = window.prompt('Optional taste profile / style description.', '') ?? ''
+    const keywordsText = window.prompt('Optional keywords, separated by commas.', '') ?? ''
+    setBusy('Saving custom moodboard')
+    setMessage(null)
+    try {
+      const image_b64s = (await Promise.all(files.map(fileToBase64))).filter(Boolean)
+      const created = await apiFetch.createCustomMoodboard({
+        title: title.trim(),
+        taste_profile: tasteProfile.trim(),
+        keywords: keywordsText.split(',').map(keyword => keyword.trim()).filter(Boolean),
+        image_b64s,
+      })
+      setMoodboardView('custom')
+      setQuery('')
+      setItems([created])
+      setTotal(1)
+      setPage(1)
+      setMessage({ severity: 'success', text: `Saved custom moodboard “${created.title}”.` })
+    } catch (e: any) {
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not save custom moodboard') })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const deleteCustomMoodboard = async (board: MoodboardItem) => {
+    if (board.source !== 'custom') return
+    if (!window.confirm(`Delete custom moodboard “${board.title}”?`)) return
+    setBusy(`Deleting ${board.title}`)
+    setMessage(null)
+    try {
+      await apiFetch.deleteCustomMoodboard(board.id)
+      setItems(prev => prev.filter(item => item.id !== board.id))
+      setTotal(prev => Math.max(0, prev - 1))
+      setMessage({ severity: 'success', text: `Deleted custom moodboard “${board.title}”.` })
+    } catch (e: any) {
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not delete custom moodboard') })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const useMoodboard = async (board: MoodboardItem) => {
     const refs = moodboardRefs(board)
     setBusy(`Loading ${board.title}`)
@@ -189,6 +255,10 @@ export default function MoodboardsPanel() {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
+            <Button variant="contained" onClick={() => customFileRef.current?.click()} disabled={!!busy}>
+              Create custom
+            </Button>
+            <input ref={customFileRef} type="file" accept="image/*" multiple hidden onChange={createCustomMoodboard} />
             <Button variant="outlined" startIcon={<AddLinkIcon />} onClick={importUrls} disabled={!!busy}>
               Import URLs
             </Button>
@@ -215,9 +285,10 @@ export default function MoodboardsPanel() {
               startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>,
             }}
           />
-          <Tabs value={moodboardView} onChange={(_, v) => setMoodboardView(v)} sx={{ minWidth: 300 }}>
-            <Tab label="All" value="all" />
+          <Tabs value={moodboardView} onChange={(_, v) => setMoodboardView(v)} sx={{ minWidth: 360 }}>
+            <Tab label="Official" value="official" />
             <Tab label="Favorites" value="favorites" />
+            <Tab label="Custom" value="custom" />
             <Tab label="New" value="new" />
           </Tabs>
           <Tooltip title="Refresh list">
@@ -232,7 +303,11 @@ export default function MoodboardsPanel() {
         ) : items.length === 0 ? (
           <Box sx={{ textAlign: 'center', py: 8 }}>
             <Typography sx={{ color: 'text.secondary' }}>
-              {moodboardView === 'new' ? 'No new moodboards have been discovered yet.' : 'No moodboards yet. Click Sync Krea or import a moodboard URL.'}
+              {moodboardView === 'new'
+                ? 'No new moodboards have been discovered yet.'
+                : moodboardView === 'custom'
+                  ? 'No custom moodboards yet. Click Create custom and choose reference images.'
+                  : 'No moodboards yet. Click Sync Krea or import a moodboard URL.'}
             </Typography>
           </Box>
         ) : (
@@ -260,9 +335,16 @@ export default function MoodboardsPanel() {
                     <CardContent sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 1 }}>
                       <Stack direction="row" justifyContent="space-between" spacing={1} alignItems="flex-start">
                         <Typography variant="h6" sx={{ fontSize: 16, lineHeight: 1.25 }}>{board.title}</Typography>
-                        <IconButton size="small" onClick={() => toggleFavorite(board)} aria-label={board.favorite ? 'Remove favorite' : 'Add favorite'}>
-                          {board.favorite ? <FavoriteIcon fontSize="small" sx={{ color: '#F48FB1' }} /> : <FavoriteBorderIcon fontSize="small" />}
-                        </IconButton>
+                        <Stack direction="row" spacing={0.25}>
+                          {board.source === 'custom' && (
+                            <IconButton size="small" onClick={() => deleteCustomMoodboard(board)} aria-label="Delete custom moodboard">
+                              <DeleteIcon fontSize="small" />
+                            </IconButton>
+                          )}
+                          <IconButton size="small" onClick={() => toggleFavorite(board)} aria-label={board.favorite ? 'Remove favorite' : 'Add favorite'}>
+                            {board.favorite ? <FavoriteIcon fontSize="small" sx={{ color: '#F48FB1' }} /> : <FavoriteBorderIcon fontSize="small" />}
+                          </IconButton>
+                        </Stack>
                       </Stack>
                       <Typography variant="body2" sx={{ color: 'text.secondary', display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                         {board.taste_profile || 'No taste profile imported yet.'}

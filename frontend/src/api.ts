@@ -111,6 +111,7 @@ export interface MoodboardItem {
   image_urls: string[]
   related_urls: string[]
   favorite: boolean
+  source: 'official' | 'custom'
   first_seen_at: string
   last_seen_at: string
   updated_at: string
@@ -269,12 +270,13 @@ export const apiFetch = {
 
   moods: () => api.get<Mood[]>('/api/moods').then(r => r.data),
 
-  moodboards: (opts?: { q?: string; page?: number; pageSize?: number; favorites?: boolean }) => {
+  moodboards: (opts?: { q?: string; page?: number; pageSize?: number; favorites?: boolean; source?: 'official' | 'custom' }) => {
     const params = new URLSearchParams()
     if (opts?.q) params.set('q', opts.q)
     params.set('page', String(opts?.page ?? 1))
     params.set('page_size', String(opts?.pageSize ?? 50))
     params.set('favorites', String(opts?.favorites ?? false))
+    if (opts?.source) params.set('source', opts.source)
     return api.get<{ items: MoodboardItem[]; total: number }>(`/api/moodboards?${params.toString()}`).then(r => r.data)
   },
 
@@ -283,6 +285,12 @@ export const apiFetch = {
 
   setMoodboardFavorite: (id: number, favorite: boolean) =>
     api.put(`/api/moodboards/${id}/favorite`, { favorite }).then(r => r.data),
+
+  createCustomMoodboard: (req: { title: string; taste_profile?: string; keywords?: string[]; image_b64s: string[] }) =>
+    api.post<MoodboardItem>('/api/moodboards/custom', req, { timeout: 120000 }).then(r => r.data),
+
+  deleteCustomMoodboard: (id: number) =>
+    api.delete(`/api/moodboards/custom/${id}`).then(r => r.data),
 
   importMoodboards: (urls: string[] = [], maxPages = 200) =>
     api.post<{ imported: number; ids: number[]; new_count: number; new_ids: number[] }>('/api/moodboards/import', { urls, max_pages: maxPages }, { timeout: 180000 })

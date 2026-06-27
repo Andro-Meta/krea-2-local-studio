@@ -241,8 +241,8 @@ interface AppState {
 
   tab: number
   setTab: (n: number) => void
-  moodboardView: 'all' | 'favorites' | 'new'
-  setMoodboardView: (view: 'all' | 'favorites' | 'new') => void
+  moodboardView: 'official' | 'favorites' | 'custom' | 'new'
+  setMoodboardView: (view: 'official' | 'favorites' | 'custom' | 'new') => void
 
   lightbox: LightboxState | null
   lightboxImage: string | null
@@ -289,7 +289,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   tab: 0,
   setTab: (n) => set({ tab: n }),
-  moodboardView: 'all',
+  moodboardView: 'official',
   setMoodboardView: (view) => set({ moodboardView: view }),
 
   lightbox: null,
