@@ -66,7 +66,7 @@ def parse_nvidia_smi_process_csv(output: str, *, current_pid: int | None = None)
             try:
                 item["used_memory_gb"] = _parse_mib(parts[2])
             except ValueError:
-                pass
+                item["used_memory_gb"] = None
         processes.append(item)
     return processes
 

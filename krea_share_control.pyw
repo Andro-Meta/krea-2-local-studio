@@ -18,7 +18,9 @@ import time
 import webbrowser
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+import tkinter.messagebox as messagebox
+import tkinter.simpledialog as simpledialog
+import tkinter.ttk as ttk
 
 ROOT = Path(__file__).resolve().parent
 BACKEND = ROOT / "backend"
@@ -281,7 +283,8 @@ class App:
         try:
             share_auth.add_user(AUTH_FILE, name.strip(), pw)
         except ValueError as e:
-            return messagebox.showwarning("Add login", str(e))
+            messagebox.showwarning("Add login", str(e))
+            return
         self.refresh_users()
         self.log(f"login '{name.strip()}' saved")
 
@@ -314,7 +317,8 @@ class App:
 
     def start(self) -> None:
         if not share_auth.list_users(AUTH_FILE):
-            return messagebox.showwarning("Start sharing", "Add at least one login first.")
+            messagebox.showwarning("Start sharing", "Add at least one login first.")
+            return
         if self.server:
             return
         if port_open():
@@ -325,10 +329,11 @@ class App:
             while time.time() < deadline and port_open():
                 time.sleep(0.25)
             if port_open():
-                return messagebox.showerror(
+                messagebox.showerror(
                     "Start sharing",
                     f"Port {PORT} is already in use by another process. Stop it before sharing.",
                 )
+                return
 
         env = os.environ.copy()
         file_env = read_env_file()

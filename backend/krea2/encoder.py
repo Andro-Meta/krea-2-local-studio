@@ -17,9 +17,6 @@ import torch
 import torch.nn as nn
 
 from .edit_plus import (
-    EDIT_PLUS_IMAGE_SIZE,
-    EDIT_PLUS_MAX_IMAGES,
-    IMAGE_EDIT_PLUS_SYSTEM_PROMPT,
     resize_edit_plus_images,
     wrap_image_edit_plus_prompt,
 )
@@ -83,8 +80,8 @@ def resolve_conditioner_source(version: str | None = None) -> dict[str, str]:
                 "runtime": "hf_bf16_fallback",
                 "status": "FP8 asset installed; runtime unsupported, using HF BF16 fallback",
             }
-    except Exception:
-        pass
+    except FileNotFoundError:
+        logger.debug("Qwen3-VL FP8 support model is not installed")
     return {
         "kind": "hf_bf16",
         "path": "Qwen/Qwen3-VL-4B-Instruct",
@@ -98,6 +95,11 @@ def _wrap_image_prompt(text: str, n_images: int) -> str:
         f"Picture {i + 1}: <|vision_start|><|image_pad|><|vision_end|>"
         for i in range(n_images)
     )
+    return (
+        f"<|im_start|>system\n{IMAGE_SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>user\n{img_prefix}{text}<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
 
 
 def _wrap_image_edit_plus_prompt(text: str, n_images: int, negative_text: str = "") -> str:
@@ -106,11 +108,6 @@ def _wrap_image_edit_plus_prompt(text: str, n_images: int, negative_text: str = 
 
 def _resize_edit_plus_images(images: list) -> list:
     return resize_edit_plus_images(images)
-    return (
-        f"<|im_start|>system\n{IMAGE_SYSTEM_PROMPT}<|im_end|>\n"
-        f"<|im_start|>user\n{img_prefix}{text}<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    )
 
 
 class Qwen3VLConditioner(nn.Module):

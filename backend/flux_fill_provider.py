@@ -17,7 +17,7 @@ from settings import OUTPUTS_DIR
 logger = logging.getLogger(__name__)
 
 FLUX_FILL_REPO = "black-forest-labs/FLUX.1-Fill-dev"
-_pipe = None
+_PIPE_CACHE = {"pipe": None}
 _lock = threading.Lock()
 
 
@@ -63,9 +63,8 @@ def flux_fill_installed() -> bool:
 
 
 def unload_flux_fill() -> None:
-    global _pipe
     with _lock:
-        _pipe = None
+        _PIPE_CACHE["pipe"] = None
     try:
         import torch
 
@@ -76,9 +75,8 @@ def unload_flux_fill() -> None:
 
 
 def _load_pipeline():
-    global _pipe
-    if _pipe is not None:
-        return _pipe
+    if _PIPE_CACHE["pipe"] is not None:
+        return _PIPE_CACHE["pipe"]
 
     spec = asset_by_id("flux_fill")
     source = str(spec.local_path) if asset_installed(spec) else FLUX_FILL_REPO
@@ -92,7 +90,7 @@ def _load_pipeline():
             pipe.enable_model_cpu_offload()
         except Exception:
             pipe = pipe.to("cuda")
-    _pipe = pipe
+    _PIPE_CACHE["pipe"] = pipe
     return pipe
 
 

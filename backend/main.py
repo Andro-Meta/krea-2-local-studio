@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 import logging
 import os
 import secrets
@@ -15,7 +14,6 @@ from pathlib import Path
 # @torch.compile(fullgraph=True), which would hard-fail at first forward).
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
-import torch
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -873,11 +871,41 @@ async def moodboard_image(req: MoodboardImageRequest):
     return {"image_b64": image_b64}
 
 
+_CUSTOM_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+_CUSTOM_IMAGE_FILENAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def _safe_custom_moodboard_image_path(board_uuid: str, filename: str) -> Path:
+    try:
+        safe_board_uuid = str(uuid.UUID(str(board_uuid)))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Invalid custom moodboard id") from exc
+
+    if safe_board_uuid != str(board_uuid).lower():
+        raise ValueError("Invalid custom moodboard id")
+    if not filename or filename != Path(filename).name:
+        raise ValueError("Invalid custom moodboard image name")
+    if any(char not in _CUSTOM_IMAGE_FILENAME_CHARS for char in filename):
+        raise ValueError("Invalid custom moodboard image name")
+    if Path(filename).suffix.lower() not in _CUSTOM_IMAGE_SUFFIXES:
+        raise ValueError("Invalid custom moodboard image type")
+
+    root = CUSTOM_MOODBOARD_DIR.resolve()
+    board_dir = (root / safe_board_uuid).resolve()
+    if board_dir.parent != root:
+        raise ValueError("Invalid custom moodboard image path")
+
+    path = (board_dir / filename).resolve()
+    if path.parent != board_dir or not path.is_file():
+        raise ValueError("Invalid custom moodboard image path")
+    return path
+
+
 @app.get("/api/moodboards/custom-images/{board_uuid}/{filename}")
 async def custom_moodboard_image(board_uuid: str, filename: str):
-    path = (CUSTOM_MOODBOARD_DIR / board_uuid / filename).resolve()
-    root = CUSTOM_MOODBOARD_DIR.resolve()
-    if root not in path.parents or not path.exists():
+    try:
+        path = _safe_custom_moodboard_image_path(board_uuid, filename)
+    except ValueError:
         raise HTTPException(404, "Custom moodboard image not found")
     return FileResponse(path)
 

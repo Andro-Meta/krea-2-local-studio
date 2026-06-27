@@ -97,7 +97,7 @@ class PromptExpanderTests(unittest.TestCase):
 
         class FakeOutputs:
             def __bool__(self):
-                raise RuntimeError("tensor truth value is ambiguous")
+                raise TypeError("tensor truth value is ambiguous")
 
             def __getitem__(self, index):
                 self.index = index

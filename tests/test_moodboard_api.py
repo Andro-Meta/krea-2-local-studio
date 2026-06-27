@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -16,10 +17,7 @@ if str(BACKEND) not in sys.path:
 
 os.environ.setdefault("KREA2_AUTO_CHECKPOINT", "__disabled_for_tests__")
 
-try:
-    import torch  # noqa: F401
-    inserted_torch_stub = False
-except ModuleNotFoundError:
+if importlib.util.find_spec("torch") is None:
     torch_mock = MagicMock()
     torch_mock.cuda.is_available.return_value = False
     torch_mock.bfloat16 = "bfloat16"
@@ -28,6 +26,8 @@ except ModuleNotFoundError:
     torch_mock.nn = SimpleNamespace(Module=object, Linear=object)
     sys.modules["torch"] = torch_mock
     inserted_torch_stub = True
+else:
+    inserted_torch_stub = False
 
 from fastapi.testclient import TestClient  # noqa: E402
 from backend import main  # noqa: E402
@@ -141,6 +141,23 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.json()["source"], "custom")
         self.assertEqual(created.json()["title"], "My Board")
         self.assertEqual(deleted.json(), {"ok": True})
+
+    async def test_custom_moodboard_image_route_rejects_path_traversal(self) -> None:
+        client = TestClient(main.app)
+        board_uuid = "11111111-1111-4111-8111-111111111111"
+
+        self.assertEqual(
+            client.get(f"/api/moodboards/custom-images/{board_uuid}/ref_00.png").status_code,
+            404,
+        )
+        self.assertEqual(
+            client.get(f"/api/moodboards/custom-images/{board_uuid}/..%5Cshare_auth.json").status_code,
+            404,
+        )
+        self.assertEqual(
+            client.get("/api/moodboards/custom-images/not-a-uuid/ref_00.png").status_code,
+            404,
+        )
 
     async def test_custom_moodboard_auto_authoring_failure_is_clear(self) -> None:
         client = TestClient(main.app)

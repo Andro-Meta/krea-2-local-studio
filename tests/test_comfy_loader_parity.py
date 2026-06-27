@@ -8,9 +8,8 @@ from unittest.mock import patch
 
 try:
     import torch
-    from safetensors.torch import save_file
-except ModuleNotFoundError as exc:
-    raise unittest.SkipTest("torch and safetensors are required for loader parity tests") from exc
+except ModuleNotFoundError:
+    torch = None
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -18,6 +17,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 
+@unittest.skipIf(torch is None, "torch is required for loader parity tests")
 class ComfyLoaderParityTests(unittest.TestCase):
     def test_nvidia_smi_memory_csv_is_parsed_in_gib(self) -> None:
         from system_check import parse_nvidia_smi_memory_csv
@@ -97,6 +97,7 @@ class ComfyLoaderParityTests(unittest.TestCase):
 
     def test_fp8_state_dict_loader_extracts_scales_without_extra_keys(self) -> None:
         from inference import load_fp8_scaled_state_dict
+        from safetensors.torch import save_file
 
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "tiny_fp8.safetensors"
