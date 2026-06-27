@@ -22,6 +22,10 @@ npm-debug.log*
 # Generated data
 outputs/
 logs/
+verification_outputs/
+new_inpaint_tests/lanpaint_verification/*/
+!new_inpaint_tests/lanpaint_verification/20260627_093223/
+!new_inpaint_tests/lanpaint_verification/20260627_093223/**
 *.log
 *.log.*
 install_log.txt
