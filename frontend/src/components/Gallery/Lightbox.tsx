@@ -41,6 +41,8 @@ function metadataRows(metadata?: Record<string, any>) {
   add('CFG', metadata.cfg)
   add('Size', metadata.width && metadata.height ? `${metadata.width} x ${metadata.height}` : '')
   add('Mode', metadata.mode || metadata.operation)
+  add('Sampler', metadata.sampler)
+  add('Inpaint method', metadata.inpaint?.method)
   add('Denoise', metadata.denoise)
   add('Moodboards', metadata.moodboard_ids)
   add('LoRAs', metadata.loras?.map((lora: any) => lora.name || lora.filename).filter(Boolean))

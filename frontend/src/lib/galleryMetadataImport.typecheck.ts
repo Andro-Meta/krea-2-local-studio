@@ -11,6 +11,8 @@ const imported = metadataToGenerateParams({
   cfg: 0,
   width: 1024,
   height: 768,
+  sampler: 'euler_flow',
+  inpaint: { method: 'lanpaint_experimental', lanpaint_inner_steps: 5, lanpaint_strength: 0.75 },
   loras: [{ name: 'krea2_darkbrush', filename: 'krea2_darkbrush.safetensors', strength: 0.7, enabled: true }],
   moodboard_ids: [12],
   rebalance: { enabled: true, multiplier: 5, weights: '1,2' },
@@ -21,6 +23,10 @@ const imported = metadataToGenerateParams({
 imported.mode satisfies 'redraw'
 imported.init_image_b64 satisfies string | undefined
 imported.loras?.[0].name satisfies string | undefined
+imported.sampler satisfies string | undefined
+imported.inpaint_method satisfies string | undefined
+imported.lanpaint_inner_steps satisfies number | undefined
+imported.lanpaint_strength satisfies number | undefined
 
 const importedT2i = metadataToGenerateParams({ prompt: 'x', mode: 'txt2img' }, 'txt2img', 'IMAGE_B64')
 const importedImg2Img = metadataToGenerateParams({ prompt: 'x', mode: 'txt2img' }, 'img2img', 'IMAGE_B64')

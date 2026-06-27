@@ -56,6 +56,13 @@ MOODBOARD_ITEM = {
 
 
 class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_share_auth_policy_allows_readonly_moodboard_catalog(self) -> None:
+        self.assertTrue(main._is_auth_exempt("/api/moodboards", "GET"))
+        self.assertTrue(main._is_auth_exempt("/api/moodboards/7", "GET"))
+        self.assertTrue(main._is_auth_exempt("/api/moodboards/discoveries/latest", "GET"))
+        self.assertFalse(main._is_auth_exempt("/api/moodboards/import", "POST"))
+        self.assertTrue(main._requires_admin("/api/moodboards/import", "POST"))
+
     async def test_moodboard_routes_return_catalog_data(self) -> None:
         client = TestClient(main.app)
 

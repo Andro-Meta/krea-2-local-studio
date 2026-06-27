@@ -25,6 +25,10 @@ class GenerationRequest(BaseModel):
     num_images: int = 1
     seed: int = -1
     denoise: float = 1.0
+    sampler: str = "euler_flow"       # euler_flow
+    inpaint_method: str = "native"    # native | lanpaint_experimental | flux_fill
+    lanpaint_inner_steps: int = 3
+    lanpaint_strength: float = 1.0
     edit_provider: str = "auto"       # auto | krea_native | flux_fill
     quality_preset: str = "balanced"  # fast | balanced | best | raw_benchmark
     loras: List[dict] = []

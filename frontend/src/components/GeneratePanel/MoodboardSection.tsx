@@ -14,6 +14,17 @@ function moodboardRefs(board: MoodboardItem): string[] {
   return Array.from(new Set([board.primary_image_url, ...board.image_urls].filter(Boolean))).slice(0, MAX_CATALOG_REFS)
 }
 
+function moodboardErrorMessage(error: any, fallback: string) {
+  const detail = error?.response?.data?.detail
+  if (detail === 'Authentication required') {
+    return 'Sign in to use shared moodboard actions, or run local mode for unauthenticated access.'
+  }
+  if (detail === 'Admin access required') {
+    return 'Admin login is required for this moodboard action in sharing mode.'
+  }
+  return detail ?? error?.message ?? fallback
+}
+
 export default function MoodboardSection() {
   const { params, setParam } = useStore()
   const [moods, setMoods] = useState<Mood[]>([])
@@ -62,7 +73,7 @@ export default function MoodboardSection() {
       setCatalogResults(data.items)
       if (!data.items.length) setCatalogMessage('No catalog moodboards matched that search.')
     } catch (e: any) {
-      setCatalogMessage(e?.response?.data?.detail ?? e?.message ?? 'Could not search moodboards.')
+      setCatalogMessage(moodboardErrorMessage(e, 'Could not search moodboards.'))
     } finally {
       setCatalogLoading(false)
     }
@@ -83,7 +94,7 @@ export default function MoodboardSection() {
       if (!current.prompt.trim()) setParam('prompt', moodboard.title)
       if (current.moodboard_strength < 0.55) setParam('moodboard_strength', 0.55)
     } catch (e: any) {
-      setCatalogMessage(e?.message ?? 'Could not load Krea moodboard images.')
+      setCatalogMessage(moodboardErrorMessage(e, 'Could not load Krea moodboard images.'))
     } finally {
       setCatalogLoading(false)
     }

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw
@@ -90,6 +91,10 @@ class QualityUpgradeTests(unittest.TestCase):
             steps=8,
             cfg=0.0,
             seed=42,
+            sampler="euler_flow",
+            inpaint_method="lanpaint_experimental",
+            lanpaint_inner_steps=5,
+            lanpaint_strength=0.8,
             moodboard_images=["A" * 128],
             ref_image1_b64="B" * 128,
             loras=[{"name": "krea2_darkbrush", "filename": "krea2_darkbrush.safetensors", "strength": 0.7}],
@@ -101,8 +106,36 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(metadata["seed"], 43)
         self.assertEqual(metadata["checkpoint"], "turbo")
         self.assertEqual(metadata["quantization"], "fp8")
+        self.assertEqual(metadata["sampler"], "euler_flow")
+        self.assertEqual(metadata["inpaint"]["method"], "lanpaint_experimental")
+        self.assertEqual(metadata["inpaint"]["lanpaint_inner_steps"], 5)
+        self.assertEqual(metadata["inpaint"]["lanpaint_strength"], 0.8)
         self.assertEqual(metadata["image_references"]["moodboard_count"], 1)
         self.assertNotIn("A" * 128, json.dumps(metadata))
+
+    def test_generation_request_defaults_keep_experimental_inpaint_off(self) -> None:
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(prompt="a quiet forest")
+
+        self.assertEqual(req.sampler, "euler_flow")
+        self.assertEqual(req.inpaint_method, "native")
+        self.assertEqual(req.lanpaint_inner_steps, 3)
+        self.assertEqual(req.lanpaint_strength, 1.0)
+
+    def test_lanpaint_method_rejects_non_inpaint_modes(self) -> None:
+        from inference import _resolve_native_sampler
+
+        req = SimpleNamespace(
+            mode="txt2img",
+            sampler="euler_flow",
+            inpaint_method="lanpaint_experimental",
+            init_image_b64="",
+            mask_b64="",
+        )
+
+        with self.assertRaisesRegex(ValueError, "only available for inpaint"):
+            _resolve_native_sampler(req)
 
     def test_official_lora_download_uses_loras_subfolder(self) -> None:
         import lora_manager

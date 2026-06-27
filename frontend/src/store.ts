@@ -25,6 +25,10 @@ export interface GenerateParams {
   num_images: number
   seed: number
   denoise: number
+  sampler: 'euler_flow'
+  inpaint_method: 'native' | 'lanpaint_experimental' | 'flux_fill'
+  lanpaint_inner_steps: number
+  lanpaint_strength: number
   edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   use_rebalance: boolean
@@ -123,6 +127,10 @@ const defaultParams: GenerateParams = {
   num_images: 1,
   seed: -1,
   denoise: 0.75,
+  sampler: 'euler_flow',
+  inpaint_method: 'native',
+  lanpaint_inner_steps: 3,
+  lanpaint_strength: 1.0,
   edit_provider: 'auto',
   quality_preset: 'balanced',
   use_rebalance: true,

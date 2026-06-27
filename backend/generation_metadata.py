@@ -61,6 +61,12 @@ def build_generation_metadata(
         "width": int(getattr(req, "width", 0)),
         "height": int(getattr(req, "height", 0)),
         "denoise": float(getattr(req, "denoise", 1.0)),
+        "sampler": str(getattr(req, "sampler", "euler_flow")),
+        "inpaint": {
+            "method": str(getattr(req, "inpaint_method", "native")),
+            "lanpaint_inner_steps": int(getattr(req, "lanpaint_inner_steps", 3)),
+            "lanpaint_strength": float(getattr(req, "lanpaint_strength", 1.0)),
+        },
         "mu": getattr(req, "mu", None),
         "y1": float(getattr(req, "y1", 0.0)),
         "y2": float(getattr(req, "y2", 0.0)),

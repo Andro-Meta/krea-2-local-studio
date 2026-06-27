@@ -131,6 +131,12 @@ def _is_auth_exempt(path: str, method: str = "GET") -> bool:
         return True
     if path in {"/login", "/api/auth/login", "/api/auth/logout", "/api/auth/me"}:
         return True
+    if method == "GET" and (
+        path == "/api/moodboards"
+        or path == "/api/moodboards/discoveries/latest"
+        or (path.startswith("/api/moodboards/") and path.rsplit("/", 1)[-1].isdigit())
+    ):
+        return True
     if path.startswith("/assets/"):
         return True
     return False
@@ -553,7 +559,11 @@ async def _run_generation(job_id: str, req: GenerationRequest):
         from flux_fill_provider import flux_fill_installed, generate_flux_fill
 
         flux_installed = flux_fill_installed()
-        provider = resolve_edit_provider(req.edit_provider, req.mode, flux_fill_installed=flux_installed)
+        requested_method = getattr(req, "inpaint_method", "native")
+        provider_name = "flux_fill" if requested_method == "flux_fill" else req.edit_provider
+        if requested_method in {"native", "lanpaint_experimental"}:
+            provider_name = "krea_native"
+        provider = resolve_edit_provider(provider_name, req.mode, flux_fill_installed=flux_installed)
         job["edit_provider"] = provider.name
         job["provider_warning"] = (
             provider.reason

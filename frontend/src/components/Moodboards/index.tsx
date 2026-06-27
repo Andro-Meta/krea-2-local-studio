@@ -40,6 +40,17 @@ function moodboardRefs(board: MoodboardItem): string[] {
   return Array.from(new Set([board.primary_image_url, ...board.image_urls].filter(Boolean))).slice(0, MAX_LOCAL_MOODBOARD_REFS)
 }
 
+function moodboardErrorMessage(error: any, fallback: string) {
+  const detail = error?.response?.data?.detail
+  if (detail === 'Authentication required') {
+    return 'Sign in to use shared moodboard actions, or run local mode for unauthenticated access.'
+  }
+  if (detail === 'Admin access required') {
+    return 'Admin login is required to sync or import Krea moodboards in sharing mode.'
+  }
+  return detail ?? error?.message ?? fallback
+}
+
 export default function MoodboardsPanel() {
   const [items, setItems] = useState<MoodboardItem[]>([])
   const [total, setTotal] = useState(0)
@@ -73,7 +84,7 @@ export default function MoodboardsPanel() {
       setTotal(data.total)
       setPage(pg)
     } catch (e: any) {
-      setMessage({ severity: 'error', text: e?.response?.data?.detail ?? e?.message ?? 'Could not load moodboards' })
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not load moodboards') })
     } finally {
       setLoading(false)
     }
@@ -100,7 +111,7 @@ export default function MoodboardsPanel() {
       if (result.new_count > 0) setMoodboardView('new')
       await load(1)
     } catch (e: any) {
-      setMessage({ severity: 'error', text: e?.response?.data?.detail ?? e?.message ?? 'Could not sync moodboards' })
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not sync moodboards') })
     } finally {
       setBusy(null)
     }
@@ -123,7 +134,7 @@ export default function MoodboardsPanel() {
       if (result.new_count > 0) setMoodboardView('new')
       await load(1)
     } catch (e: any) {
-      setMessage({ severity: 'error', text: e?.response?.data?.detail ?? e?.message ?? 'Could not import moodboards' })
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not import moodboards') })
     } finally {
       setBusy(null)
     }
@@ -136,7 +147,7 @@ export default function MoodboardsPanel() {
       const result = await apiFetch.exportMoodboardSeed()
       setMessage({ severity: 'success', text: `Exported ${result.exported} moodboards to ${result.path}.` })
     } catch (e: any) {
-      setMessage({ severity: 'error', text: e?.response?.data?.detail ?? e?.message ?? 'Could not export moodboard seed' })
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not export moodboard seed') })
     } finally {
       setBusy(null)
     }
@@ -160,7 +171,7 @@ export default function MoodboardsPanel() {
       setMessage({ severity: 'success', text: `Loaded ${images.length} local reference images from ${board.title}.` })
       setTab(0)
     } catch (e: any) {
-      setMessage({ severity: 'error', text: e?.message ?? 'Could not load moodboard images' })
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not load moodboard images') })
     } finally {
       setBusy(null)
     }

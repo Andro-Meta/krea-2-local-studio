@@ -55,6 +55,12 @@ export default function ParameterSection() {
       krea_enhancer_enabled: variant === 'enhancer' || variant === 'rebalance_enhancer',
     })
   }
+  const setInpaintMethod = (method: typeof params.inpaint_method) => {
+    setParams({
+      inpaint_method: method,
+      edit_provider: method === 'flux_fill' ? 'flux_fill' : params.edit_provider,
+    })
+  }
 
   return (
     <Box>
@@ -153,6 +159,52 @@ export default function ParameterSection() {
           </AccordionSummary>
           <AccordionDetails>
             <Stack spacing={2}>
+              <TextField
+                select
+                label="Sampler"
+                value={params.sampler}
+                onChange={e => setParam('sampler', e.target.value as typeof params.sampler)}
+                size="small"
+                fullWidth
+                helperText="Euler Flow is the native Krea 2 sampler. Experimental masked samplers appear through inpaint method."
+              >
+                <MenuItem value="euler_flow">Euler Flow (native)</MenuItem>
+              </TextField>
+              {(params.mode === 'inpaint' || params.mode === 'outpaint') && (
+                <TextField
+                  select
+                  label="Inpaint / outpaint method"
+                  value={params.inpaint_method}
+                  onChange={e => setInpaintMethod(e.target.value as typeof params.inpaint_method)}
+                  size="small"
+                  fullWidth
+                  helperText="Native Krea is the default. LanPaint is experimental and currently inpaint-only. FLUX Fill uses the optional strict edit provider."
+                >
+                  <MenuItem value="native">Native Krea masked sampler</MenuItem>
+                  {params.mode === 'inpaint' && <MenuItem value="lanpaint_experimental">LanPaint experimental (inpaint)</MenuItem>}
+                  <MenuItem value="flux_fill">FLUX Fill provider</MenuItem>
+                </TextField>
+              )}
+              {params.mode === 'inpaint' && params.inpaint_method === 'lanpaint_experimental' && (
+                <>
+                  <LabeledSlider
+                    label="LanPaint think steps"
+                    value={params.lanpaint_inner_steps}
+                    min={1} max={8} step={1}
+                    onChange={v => setParam('lanpaint_inner_steps', v)}
+                    tip="Extra masked-region model iterations per denoise step. Higher can improve difficult fills but increases generation time."
+                    helperText="Experimental · start with 3"
+                  />
+                  <LabeledSlider
+                    label="LanPaint strength"
+                    value={params.lanpaint_strength}
+                    min={0.1} max={2} step={0.05}
+                    onChange={v => setParam('lanpaint_strength', v)}
+                    tip="Scales the masked inner update. Lower is safer, higher is more aggressive."
+                    helperText="Experimental · start with 1.0"
+                  />
+                </>
+              )}
               <LabeledSlider
                 label="μ — flow shift (ModelSamplingFlux)"
                 value={params.mu ?? 0}

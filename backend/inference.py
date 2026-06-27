@@ -203,6 +203,18 @@ def _build_bbox_prompt(prompt: str, bboxes: list) -> str:
     return spec
 
 
+def _resolve_native_sampler(req) -> str:
+    native_sampler = getattr(req, "sampler", "euler_flow")
+    inpaint_method = getattr(req, "inpaint_method", "native")
+    if inpaint_method == "lanpaint_experimental":
+        if req.mode != "inpaint":
+            raise ValueError("lanpaint_experimental is only available for inpaint mode")
+        if not req.init_image_b64 or not req.mask_b64:
+            raise ValueError("lanpaint_experimental requires init_image_b64 and mask_b64")
+        return "lanpaint_experimental"
+    return native_sampler
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -425,6 +437,8 @@ class Krea2Pipeline:
             return self._generate_locked(request, progress_cb, sampling, save_outputs=save_outputs)
 
     def _generate_locked(self, req, progress_cb, sampling, *, save_outputs: bool = True) -> list[str]:
+        native_sampler = _resolve_native_sampler(req)
+
         # Build prompt (inject bbox JSON + LoRA trigger words)
         prompt = _build_bbox_prompt(req.prompt, req.bboxes)
         prompt = build_trigger_prompt(prompt, req.loras or [])
@@ -597,6 +611,9 @@ class Krea2Pipeline:
                 mask=mask_tensor,
                 init_latent_clean=init_latent_clean,
                 differential_mask=req.mode == "outpaint",
+                sampler=native_sampler,
+                lanpaint_inner_steps=getattr(req, "lanpaint_inner_steps", 3),
+                lanpaint_strength=getattr(req, "lanpaint_strength", 1.0),
                 progress_cb=progress_cb,
             )
 
@@ -642,6 +659,7 @@ class Krea2Pipeline:
                         denoise=0.35,
                         mask=seam_mask_tensor,
                         differential_mask=True,
+                        sampler=getattr(req, "sampler", "euler_flow"),
                         progress_cb=None,
                     )
                     images = _outpaint_stitch(images, init_img_for_stitch, mask_img_for_stitch)
@@ -677,6 +695,7 @@ class Krea2Pipeline:
                     batch_size=len(images),
                     init_latent=harmonize_latent,
                     denoise=0.12,
+                    sampler=getattr(req, "sampler", "euler_flow"),
                     progress_cb=None,
                 )
                 logger.info("Outpaint harmonization pass done.")
@@ -701,6 +720,7 @@ class Krea2Pipeline:
                     steps=int(req.refine_steps), guidance=req.cfg, seed=seed, mu=mu,
                     y1=req.y1, y2=req.y2, batch_size=len(images),
                     init_latent=rlat, denoise=float(req.refine_denoise),
+                    sampler=getattr(req, "sampler", "euler_flow"),
                     progress_cb=progress_cb,
                 )
                 logger.info(f"Detail refine pass done (denoise={req.refine_denoise}).")

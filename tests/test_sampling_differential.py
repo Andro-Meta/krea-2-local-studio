@@ -14,7 +14,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from krea2.sampling import _differential_mask_for_timestep
+from krea2.sampling import _differential_mask_for_timestep, sample
 
 
 class DifferentialMaskTests(unittest.TestCase):
@@ -33,6 +33,23 @@ class DifferentialMaskTests(unittest.TestCase):
         active = _differential_mask_for_timestep(mask, tcurr=0.5, t_start=1.0, strength=0.5)
 
         self.assertTrue(torch.allclose(active[0, :, 0], torch.tensor([0.125, 0.875])))
+
+    def test_unknown_sampler_name_fails_clearly(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown sampler"):
+            sample(
+                model=torch.nn.Identity(),
+                ae=None,
+                encoder=None,
+                prompts=None,
+                txt=torch.zeros(1, 1, 4),
+                txtmask=torch.ones(1, 1, dtype=torch.bool),
+                device="cpu",
+                dtype=torch.float32,
+                width=16,
+                height=16,
+                steps=1,
+                sampler="missing_sampler",
+            )
 
 
 if __name__ == "__main__":

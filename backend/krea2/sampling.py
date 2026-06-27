@@ -19,6 +19,8 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from PIL import Image
 
+from .lanpaint_sampler import lanpaint_masked_inner_update
+
 # Qwen-Image VAE spatial compression and MMDiT patch size.
 COMPRESSION = 8
 PATCH = 2
@@ -91,6 +93,15 @@ def _differential_mask_for_timestep(
     return binary_mask
 
 
+def euler_flow_step(img: torch.Tensor, velocity: torch.Tensor, *, tcurr: float, tprev: float) -> torch.Tensor:
+    return img + (tprev - tcurr) * velocity
+
+
+def _validate_sampler(sampler: str) -> None:
+    if sampler not in {"euler_flow", "lanpaint_experimental"}:
+        raise ValueError(f"Unknown sampler: {sampler}")
+
+
 @torch.no_grad()
 def sample(
     model: torch.nn.Module,
@@ -125,8 +136,12 @@ def sample(
     init_latent_clean: Optional[torch.Tensor] = None,
     differential_mask: bool = False,
     differential_strength: float = 1.0,
+    sampler: str = "euler_flow",
+    lanpaint_inner_steps: int = 3,
+    lanpaint_strength: float = 1.0,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> list[Image.Image]:
+    _validate_sampler(sampler)
     align = COMPRESSION * PATCH
     # Round up to a valid patch grid.
     width = ((width + align - 1) // align) * align
@@ -234,16 +249,35 @@ def sample(
                 else mask_tok
             )
             img = active_mask * img + (1.0 - active_mask) * _traj(tcurr)
-        t = torch.full((len(img),), tcurr, dtype=img.dtype, device=img.device)
-        cond = model(img=img, context=txt, t=t, pos=pos, mask=seq_mask)
-        if cfg:
-            if neg_context is None or unpos is None:
-                raise ValueError("negative conditioning is required when guidance is enabled")
-            uncond = model(img=img, context=neg_context, t=t, pos=unpos, mask=unmask)
-            v = uncond + guidance * (cond - uncond)
         else:
-            v = cond
-        img = img + (tprev - tcurr) * v
+            active_mask = None
+        def _velocity(latent: torch.Tensor, local_t: float) -> torch.Tensor:
+            t_local = torch.full((len(latent),), local_t, dtype=latent.dtype, device=latent.device)
+            cond_local = model(img=latent, context=txt, t=t_local, pos=pos, mask=seq_mask)
+            if cfg:
+                if neg_context is None or unpos is None:
+                    raise ValueError("negative conditioning is required when guidance is enabled")
+                uncond_local = model(img=latent, context=neg_context, t=t_local, pos=unpos, mask=unmask)
+                return uncond_local + guidance * (cond_local - uncond_local)
+            return cond_local
+
+        if sampler == "lanpaint_experimental":
+            if active_mask is None:
+                raise ValueError("lanpaint_experimental requires an inpaint mask")
+            img = lanpaint_masked_inner_update(
+                img,
+                _traj(tcurr),
+                active_mask,
+                tcurr=tcurr,
+                tprev=tprev,
+                velocity_fn=_velocity,
+                inner_steps=lanpaint_inner_steps,
+                strength=lanpaint_strength,
+            )
+            continue
+
+        v = _velocity(img, tcurr)
+        img = euler_flow_step(img, v, tcurr=tcurr, tprev=tprev)
     if progress_cb is not None:
         progress_cb(n_steps, n_steps)
 
