@@ -45,7 +45,7 @@ def normalize_region_masks(regions: list[dict[str, Any]], *, size: tuple[int, in
             if total <= 255:
                 for idx, value in enumerate(values):
                     dst[idx][x, y] = value
-            elif total > 0:
+            else:
                 for idx, value in enumerate(values):
                     dst[idx][x, y] = int(value * 255 / total)
     return normalized

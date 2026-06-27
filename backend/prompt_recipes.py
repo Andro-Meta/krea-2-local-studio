@@ -59,7 +59,7 @@ def save_recipe(recipe: dict[str, Any], *, path: Path = RECIPE_PATH) -> dict[str
     cleaned = _clean_recipe(recipe)
     recipes = [item for item in _read(path) if item.get("id") != cleaned["id"]]
     recipes.append(cleaned)
-    _write(list_recipes(path=path) if False else recipes, path)
+    _write(recipes, path)
     return cleaned
 
 
