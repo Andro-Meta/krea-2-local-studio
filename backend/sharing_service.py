@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import re
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
-PORT = 8200
+PORT = int(os.environ.get("KREA_SERVER_PORT", "8200"))
 PUBLIC_PATH = "/krea"
 TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download/windows"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -42,6 +43,31 @@ def _run_tailscale(args: list[str], timeout: int = 30) -> subprocess.CompletedPr
         creationflags=NO_WINDOW,
         timeout=timeout,
     )
+
+
+def foreground_funnel_ports() -> list[tuple[int, int]]:
+    cmd = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { ([string]$_.CommandLine) -match 'tailscale(\\.exe)?\"?\\s+funnel\\s+\\d+' } | "
+        "ForEach-Object { if (([string]$_.CommandLine) -match 'funnel\\s+(\\d+)') { "
+        "('{0}:{1}' -f $_.ProcessId,$Matches[1]) } }"
+    )
+    try:
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            creationflags=NO_WINDOW,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    found: list[tuple[int, int]] = []
+    for line in res.stdout.splitlines():
+        pid, _, port = line.partition(":")
+        if pid.strip().isdigit() and port.strip().isdigit():
+            found.append((int(pid), int(port)))
+    return found
 
 
 def tailscale_status() -> dict:
@@ -95,8 +121,22 @@ def funnel_status() -> dict:
 
 
 def start_funnel(port: int = PORT) -> dict:
-    res = _run_tailscale(["funnel", f"--set-path={PUBLIC_PATH}", "--bg", "--yes", f"127.0.0.1:{port}"], timeout=45)
+    args = ["funnel", f"--set-path={PUBLIC_PATH}", "--bg", "--yes", f"127.0.0.1:{port}"]
+    res = _run_tailscale(args, timeout=45)
     output = (res.stdout + res.stderr).strip()
+    if res.returncode != 0 and "foreground listener already exists for port 443" in output:
+        messages = [output] if output else []
+        for pid, existing_port in foreground_funnel_ports():
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, creationflags=NO_WINDOW)
+            root_res = _run_tailscale(["funnel", "--set-path=/", "--bg", "--yes", f"127.0.0.1:{existing_port}"], timeout=45)
+            root_output = (root_res.stdout + root_res.stderr).strip()
+            if root_output:
+                messages.append(root_output)
+        res = _run_tailscale(args, timeout=45)
+        retry_output = (res.stdout + res.stderr).strip()
+        if retry_output:
+            messages.append(retry_output)
+        output = "\n".join(messages)
     if res.returncode != 0:
         return {"ok": False, "url": "", "message": output or "Tailscale Funnel failed to start."}
     url = ""

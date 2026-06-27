@@ -25,6 +25,7 @@ class AppSettings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "google/gemma-4-31b-it:free"
     openrouter_free_only: bool = True
+    krea_share_auto_funnel: bool = False
     krea2_auto_checkpoint: str = ""   # path to auto-load on startup
     krea2_auto_quant: str = "bf16"    # bf16 or fp8
 

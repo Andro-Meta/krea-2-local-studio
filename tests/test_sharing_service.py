@@ -44,6 +44,40 @@ class SharingServiceTests(unittest.TestCase):
         self.assertFalse(status["installed"])
         self.assertFalse(status["connected"])
 
+    def test_start_funnel_preserves_existing_root_funnel(self) -> None:
+        calls = []
+
+        class Result:
+            def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        results = [
+            Result(1, stderr="foreground listener already exists for port 443"),
+            Result(0, stdout="https://machine.tail.ts.net\n"),
+            Result(0, stdout="https://machine.tail.ts.net\n"),
+        ]
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0] == "taskkill":
+                return Result(0)
+            return results.pop(0)
+
+        with (
+            patch("sharing_service.find_tailscale", return_value="tailscale"),
+            patch("sharing_service.foreground_funnel_ports", return_value=[(1234, 9000)]),
+            patch("sharing_service.subprocess.run", side_effect=fake_run),
+        ):
+            result = sharing_service.start_funnel(port=45678)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls[0], ["tailscale", "funnel", "--set-path=/krea", "--bg", "--yes", "127.0.0.1:45678"])
+        self.assertEqual(calls[1], ["taskkill", "/PID", "1234", "/F"])
+        self.assertEqual(calls[2], ["tailscale", "funnel", "--set-path=/", "--bg", "--yes", "127.0.0.1:9000"])
+        self.assertEqual(calls[3], ["tailscale", "funnel", "--set-path=/krea", "--bg", "--yes", "127.0.0.1:45678"])
+
 
 if __name__ == "__main__":
     unittest.main()

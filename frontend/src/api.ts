@@ -177,6 +177,7 @@ export interface AppSettings {
   prompt_expander_backend: 'local' | 'openrouter' | 'ideogram-json'
   openrouter_model: string
   openrouter_free_only: boolean
+  krea_share_auto_funnel: boolean
   has_hf_token: boolean
   has_civitai_token: boolean
   has_ideogram_api_key: boolean

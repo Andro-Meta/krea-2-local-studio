@@ -236,3 +236,4 @@ class SettingsUpdate(BaseModel):
     openrouter_api_key: Optional[str] = None
     openrouter_model: Optional[str] = None
     openrouter_free_only: Optional[bool] = None
+    krea_share_auto_funnel: Optional[bool] = None

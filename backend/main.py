@@ -1032,6 +1032,7 @@ async def get_settings():
         "prompt_expander_backend": env.get("PROMPT_EXPANDER_BACKEND", settings.prompt_expander_backend),
         "openrouter_model": env.get("OPENROUTER_MODEL", settings.openrouter_model),
         "openrouter_free_only": env.get("OPENROUTER_FREE_ONLY", str(settings.openrouter_free_only)).lower() in {"1", "true", "yes"},
+        "krea_share_auto_funnel": env.get("KREA_SHARE_AUTO_FUNNEL", str(settings.krea_share_auto_funnel)).lower() in {"1", "true", "yes", "on"},
         "has_hf_token": bool(env.get("HF_TOKEN", settings.hf_token)),
         "has_civitai_token": bool(env.get("CIVITAI_TOKEN", settings.civitai_token)),
         "has_ideogram_api_key": bool(env.get("IDEOGRAM_API_KEY", settings.ideogram_api_key)),
@@ -1065,6 +1066,9 @@ async def update_settings(req: SettingsUpdate):
     if req.openrouter_free_only is not None:
         env["OPENROUTER_FREE_ONLY"] = "true" if req.openrouter_free_only else "false"
         settings.openrouter_free_only = req.openrouter_free_only
+    if req.krea_share_auto_funnel is not None:
+        env["KREA_SHARE_AUTO_FUNNEL"] = "true" if req.krea_share_auto_funnel else "false"
+        settings.krea_share_auto_funnel = req.krea_share_auto_funnel
     _write_env(env)
     return {"ok": True}
 

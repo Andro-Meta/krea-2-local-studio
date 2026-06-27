@@ -27,10 +27,10 @@ if not exist "backend\krea2\mmdit.py" (
 
 echo Stopping any old Krea sharing/server process...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$root=(Resolve-Path '.').Path.ToLower(); Get-CimInstance Win32_Process | Where-Object { $cmd=[string]$_.CommandLine; ($cmd -like '*krea_share_control.pyw*') -or (($cmd.ToLower() -like ('*' + $root + '*')) -and ($cmd -like '*backend.main:app*')) -or (($cmd -like '*backend.main:app*') -and ($cmd -like '*--port 8200*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "Get-NetTCPConnection -LocalPort 8200 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+    "$root=(Resolve-Path '.').Path.ToLower(); Get-CimInstance Win32_Process | Where-Object { $cmd=[string]$_.CommandLine; ($cmd -like '*krea_share_control.pyw*') -or (($cmd.ToLower() -like ('*' + $root + '*')) -and ($cmd -like '*backend.main:app*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 timeout /t 1 /nobreak >nul
+
+for /f "usebackq tokens=*" %%a in (`python -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"`) do set "KREA_SERVER_PORT=%%a"
 
 python scripts\download_support_models.py --check >nul 2>&1
 if errorlevel 1 (
@@ -56,8 +56,19 @@ echo.
 echo For local-only mode, run:
 echo   run.bat local
 echo.
-start "" /b cmd /c "timeout /t 2 /nobreak >nul && start http://localhost:8200/krea"
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8200 --log-level info
+set "KREA_SHARE_AUTO_FUNNEL=false"
+if exist ".env" (
+    for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+        if /I "%%a"=="KREA_SHARE_AUTO_FUNNEL" set "KREA_SHARE_AUTO_FUNNEL=%%b"
+    )
+)
+set "KREA_SHARE_STARTUP_ARGS=--ready-url http://127.0.0.1:%KREA_SERVER_PORT%/krea/api/auth/me --open-url http://localhost:%KREA_SERVER_PORT%/krea --timeout 180"
+if /I "%KREA_SHARE_AUTO_FUNNEL%"=="true" set "KREA_SHARE_STARTUP_ARGS=%KREA_SHARE_STARTUP_ARGS% --auto-funnel"
+if /I "%KREA_SHARE_AUTO_FUNNEL%"=="yes" set "KREA_SHARE_STARTUP_ARGS=%KREA_SHARE_STARTUP_ARGS% --auto-funnel"
+if "%KREA_SHARE_AUTO_FUNNEL%"=="1" set "KREA_SHARE_STARTUP_ARGS=%KREA_SHARE_STARTUP_ARGS% --auto-funnel"
+start "" /b python scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
+echo Local sharing server: http://localhost:%KREA_SERVER_PORT%/krea
+python -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info
 exit /b %ERRORLEVEL%
 
 :local
@@ -140,8 +151,8 @@ echo  Press Ctrl+C to stop the server.
 echo ====================================
 echo.
 
-:: -- Open browser (after 2s delay) --------------------------------------------
-start "" /b cmd /c "timeout /t 2 /nobreak >nul && start http://localhost:8200"
+:: -- Open browser when the server is ready ------------------------------------
+start "" /b python scripts\share_startup.py --ready-url http://127.0.0.1:8200/api/system --open-url http://localhost:8200 --timeout 120
 
 :: -- Start server -------------------------------------------------------------
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info

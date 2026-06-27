@@ -47,6 +47,7 @@ export default function SystemStatus() {
   const [sharing, setSharing] = useState<SharingStatus | null>(null)
   const [sharingBusy, setSharingBusy] = useState(false)
   const [sharingMessage, setSharingMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
+  const [sharingAutoSaving, setSharingAutoSaving] = useState(false)
   const [userMessage, setUserMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'admin' | 'user' })
   const [qualityAssets, setQualityAssets] = useState<{ has_hf_token: boolean; items: QualityAsset[] } | null>(null)
@@ -274,6 +275,25 @@ export default function SystemStatus() {
       setSharingMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not stop sharing.' })
     } finally {
       setSharingBusy(false)
+    }
+  }
+
+  const setAutoFunnel = async (enabled: boolean) => {
+    setSharingAutoSaving(true)
+    setSharingMessage(null)
+    try {
+      await apiFetch.updateSettings({ krea_share_auto_funnel: enabled })
+      await loadSettings()
+      setSharingMessage({
+        severity: 'success',
+        text: enabled
+          ? 'run.bat will start Tailscale and the /krea Funnel automatically.'
+          : 'run.bat will start local sharing controls only.',
+      })
+    } catch (e: any) {
+      setSharingMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not save sharing startup setting.' })
+    } finally {
+      setSharingAutoSaving(false)
     }
   }
 
@@ -656,6 +676,16 @@ export default function SystemStatus() {
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               Public sharing always uses the `/krea` path so other Tailscale funnels can keep their own root URLs.
             </Typography>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={!!settings?.krea_share_auto_funnel}
+                  onChange={e => setAutoFunnel(e.target.checked)}
+                  disabled={sharingAutoSaving}
+                />
+              }
+              label="Start Tailscale and /krea Funnel automatically when run.bat starts"
+            />
             <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', wordBreak: 'break-all' }}>
               {sharing?.funnel.url || 'No public Krea URL yet.'}
             </Typography>
