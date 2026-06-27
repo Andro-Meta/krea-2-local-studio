@@ -797,7 +797,7 @@ class Krea2Pipeline:
                     else:
                         txt, txtmask = self.encoder([prompt] * req.num_images)
 
-                    if req.use_rebalance and weights is not None:
+                    if req.use_rebalance and weights is not None and not edit_rebalance_enabled:
                         txt = rebalance(txt, multiplier=mult, layer_weights=weights)
                     self._put_conditioning_cache(positive_key, txt, txtmask)
 

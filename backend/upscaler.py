@@ -135,7 +135,7 @@ def upscale_model_refine(
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         req.init_image_b64 = base64.b64encode(buf.getvalue()).decode()
-        results, _seed, _files, _lora = pipeline.generate(req)
+        results = pipeline.generate(req)[0]
         return Image.open(io.BytesIO(base64.b64decode(results[0])))
 
     # Tiled: use Lanczos upscale only when model refine is not feasible for large sizes
@@ -262,7 +262,7 @@ def upscale_ultimate(
             sampler=sampler,
             init_image_b64=base64.b64encode(buf.getvalue()).decode(),
         )
-        results, _seed, _files, _lora = pipeline.generate(req)
+        results = pipeline.generate(req)[0]
         gen_out = Image.open(io.BytesIO(base64.b64decode(results[0]))).convert("RGB")
         gen_out = gen_out.resize((cw, ch), Image.LANCZOS)
 

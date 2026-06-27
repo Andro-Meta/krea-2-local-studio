@@ -224,7 +224,7 @@ const defaultRealtime: RealtimeState = {
     previewSize: 512,
     previewSteps: 5,
     finalSteps: 8,
-    canvasInfluence: 0.6,
+    canvasInfluence: 0.45,
     seed: -1,
     lockSeed: false,
     autoPreview: true,

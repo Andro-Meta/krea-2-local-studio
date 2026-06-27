@@ -117,7 +117,7 @@ export function presetFor(task: RedrawTaskKind, qualityMode: RedrawQualityMode):
     ...preset,
     qualityMode,
     checkpoint: raw ? 'raw' : 'turbo',
-    quantization: raw ? 'bf16' : 'bf16',
+    quantization: raw ? 'bf16' : 'fp8',
     steps: boost.steps,
     cfg: raw ? 3.5 : 0,
     mu: raw ? null : 1.15,
