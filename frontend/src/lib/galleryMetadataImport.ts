@@ -35,6 +35,20 @@ function lorasFromMetadata(value: unknown): GenerateParams['loras'] {
     .filter(item => item.name || item.filename)
 }
 
+function styleRefsFromMetadata(value: unknown): GenerateParams['style_references'] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is Record<string, unknown> => item && typeof item === 'object')
+    .map(item => ({
+      image_b64: String(item.image_b64 || ''),
+      strength: numberValue(item.strength) ?? 1,
+      role: String(item.role || 'style'),
+      token_size: oneOf(item.token_size, ['low', 'normal', 'high', 'max'] as const) ?? 'normal',
+    }))
+    .filter(item => item.image_b64)
+    .slice(0, 10)
+}
+
 function enhancerVariant(enabled: boolean, rebalanceEnabled: boolean): GenerateParams['krea_enhancer_variant'] {
   if (enabled && rebalanceEnabled) return 'rebalance_enhancer'
   if (enabled) return 'enhancer'
@@ -70,14 +84,22 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     lanpaint_strength: numberValue(metadata.inpaint?.lanpaint_strength),
     edit_provider: oneOf(metadata.edit_provider || metadata.resolved_provider, ['auto', 'krea_native', 'flux_fill'] as const),
     quality_preset: oneOf(metadata.quality_preset, ['fast', 'balanced', 'best', 'raw_benchmark'] as const),
+    creativity: oneOf(metadata.creativity, ['raw', 'low', 'medium', 'high'] as const),
+    style_references: styleRefsFromMetadata(metadata.image_references?.style_references),
     loras: lorasFromMetadata(metadata.loras),
     bboxes: Array.isArray(metadata.bboxes) ? metadata.bboxes : [],
     mood: String(metadata.mood || ''),
     selected_moodboard_ids: numberArray(metadata.moodboard_ids),
+    moodboard_uuids: stringArray(metadata.moodboard_uuids),
     moodboard_strength: numberValue(metadata.moodboard_strength),
+    seed_variance_preset: oneOf(metadata.seed_variance?.preset, ['off', 'subtle', 'balanced', 'creative', 'bold', 'custom'] as const),
+    seed_variance_strength: numberValue(metadata.seed_variance?.strength),
+    seed_variance_protection: oneOf(metadata.seed_variance?.protection, ['none', 'first_quarter', 'first_half'] as const),
     use_rebalance: rebalanceEnabled,
     rebalance_multiplier: numberValue(metadata.rebalance?.multiplier),
     rebalance_weights: typeof metadata.rebalance?.weights === 'string' ? metadata.rebalance.weights : undefined,
+    edit_rebalance_enabled: booleanValue(metadata.rebalance?.edit_enabled),
+    edit_rebalance_profile: oneOf(metadata.rebalance?.edit_profile, ['default', 'edit', 'conservative'] as const),
     krea_enhancer_enabled: enhancerEnabled,
     krea_enhancer_strength: numberValue(metadata.krea_enhancer?.strength),
     krea_enhancer_variant: enhancerVariant(enhancerEnabled, rebalanceEnabled),

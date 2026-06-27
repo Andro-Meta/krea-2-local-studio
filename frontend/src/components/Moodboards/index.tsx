@@ -164,7 +164,8 @@ export default function MoodboardsPanel() {
         mode: 'txt2img',
         mood: '',
         selected_moodboard_ids: [board.id],
-        moodboard_strength: 0.55,
+        moodboard_uuids: board.uuid ? [board.uuid] : [],
+        moodboard_strength: 0.35,
         moodboard_images: images,
         prompt: basePrompt || board.title,
       })

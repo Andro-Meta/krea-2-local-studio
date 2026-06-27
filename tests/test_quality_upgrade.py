@@ -122,6 +122,75 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(req.inpaint_method, "native")
         self.assertEqual(req.lanpaint_inner_steps, 3)
         self.assertEqual(req.lanpaint_strength, 1.0)
+        self.assertEqual(req.creativity, "medium")
+        self.assertEqual(req.moodboard_strength, 0.35)
+        self.assertEqual(req.quantization, "fp8")
+
+    def test_raw_checkpoint_defaults_are_normalized_for_direct_api_requests(self) -> None:
+        from inference import normalize_generation_defaults
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(prompt="a quiet forest", checkpoint="raw")
+
+        normalize_generation_defaults(req)
+
+        self.assertEqual(req.steps, 52)
+        self.assertEqual(req.cfg, 3.5)
+        self.assertIsNone(req.mu)
+        self.assertEqual(req.quantization, "bf16")
+
+    def test_raw_defaults_do_not_override_explicit_user_values(self) -> None:
+        from inference import normalize_generation_defaults
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(prompt="a quiet forest", checkpoint="raw", steps=24, cfg=2.0, mu=0.9)
+
+        normalize_generation_defaults(req)
+
+        self.assertEqual(req.steps, 24)
+        self.assertEqual(req.cfg, 2.0)
+        self.assertEqual(req.mu, 0.9)
+
+    def test_turbo_defaults_are_normalized_for_direct_api_requests(self) -> None:
+        from inference import normalize_generation_defaults
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(prompt="a quiet forest", checkpoint="turbo")
+
+        normalize_generation_defaults(req)
+
+        self.assertEqual(req.steps, 8)
+        self.assertEqual(req.cfg, 0.0)
+        self.assertEqual(req.mu, 1.15)
+        self.assertEqual(req.quantization, "fp8")
+
+    def test_creativity_high_raises_unset_style_influence(self) -> None:
+        from inference import normalize_generation_defaults
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(prompt="a quiet forest", creativity="high")
+
+        normalize_generation_defaults(req)
+
+        self.assertEqual(req.creativity, "high")
+        self.assertEqual(req.moodboard_strength, 0.5)
+        self.assertEqual(req.rebalance_multiplier, 5.5)
+
+    def test_creativity_preserves_explicit_user_values(self) -> None:
+        from inference import normalize_generation_defaults
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(
+            prompt="a quiet forest",
+            creativity="low",
+            moodboard_strength=0.9,
+            rebalance_multiplier=7.0,
+        )
+
+        normalize_generation_defaults(req)
+
+        self.assertEqual(req.moodboard_strength, 0.9)
+        self.assertEqual(req.rebalance_multiplier, 7.0)
 
     def test_lanpaint_method_rejects_non_inpaint_modes(self) -> None:
         from inference import _resolve_native_sampler

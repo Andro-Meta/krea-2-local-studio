@@ -26,21 +26,124 @@ os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 import torch
 from PIL import Image
 
-from conditioning import parse_weights, rebalance
+from conditioning import blend_split_conditioning, parse_weights, rebalance
 from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
 from lora_manager import apply_loras, build_trigger_prompt
 from moodboards_catalog import moodboard_generation_context
+from memory_manager import clear_cuda_cache
 from output_saver import encode_images
+from seed_variance import apply_seed_variance
 from settings import OUTPUTS_DIR, settings
 from support_models import support_model_path
-from system_check import get_ram_gb, mem_snapshot
+from system_check import get_gpu_info, get_gpu_process_details, get_ram_gb, mem_snapshot
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+
+def _request_field_was_set(req, field: str) -> bool:
+    fields = getattr(req, "model_fields_set", None)
+    if fields is None:
+        fields = getattr(req, "__fields_set__", set())
+    return field in fields
+
+
+def _apply_creativity_defaults(req) -> None:
+    creativity = str(getattr(req, "creativity", "medium") or "medium").lower()
+    presets = {
+        "raw": {"moodboard_strength": 0.15, "rebalance_multiplier": 2.0},
+        "low": {"moodboard_strength": 0.25, "rebalance_multiplier": 3.0},
+        "medium": {"moodboard_strength": 0.35, "rebalance_multiplier": 4.0},
+        "high": {"moodboard_strength": 0.5, "rebalance_multiplier": 5.5},
+    }
+    preset = presets.get(creativity, presets["medium"])
+    if not _request_field_was_set(req, "moodboard_strength"):
+        req.moodboard_strength = preset["moodboard_strength"]
+    if not _request_field_was_set(req, "rebalance_multiplier"):
+        req.rebalance_multiplier = preset["rebalance_multiplier"]
+
+
+def normalize_generation_defaults(req) -> None:
+    """Apply model-family defaults for callers that bypass the frontend presets."""
+    checkpoint = str(getattr(req, "checkpoint", "") or "").lower()
+    quality_preset = str(getattr(req, "quality_preset", "") or "").lower()
+    _apply_creativity_defaults(req)
+    raw_defaults = checkpoint == "raw" or quality_preset == "raw_benchmark"
+    force_raw_benchmark = quality_preset == "raw_benchmark"
+    if raw_defaults:
+        if force_raw_benchmark or not _request_field_was_set(req, "steps"):
+            req.steps = 52
+        if force_raw_benchmark or not _request_field_was_set(req, "cfg"):
+            req.cfg = 3.5
+        if force_raw_benchmark or not _request_field_was_set(req, "mu"):
+            req.mu = None
+        if force_raw_benchmark or not _request_field_was_set(req, "quantization"):
+            req.quantization = "bf16"
+        return
+
+    if checkpoint == "turbo":
+        if not _request_field_was_set(req, "steps"):
+            req.steps = 8
+        if not _request_field_was_set(req, "cfg"):
+            req.cfg = 0.0
+        if not _request_field_was_set(req, "mu"):
+            req.mu = 1.15
+        if not _request_field_was_set(req, "quantization"):
+            req.quantization = "fp8"
+
+
+def resolve_style_references(req, *, limit: int = 10) -> list[dict]:
+    """Return structured style refs, preserving legacy ref_image1..3 inputs."""
+    refs: list[dict] = []
+    for item in list(getattr(req, "style_references", []) or []):
+        if hasattr(item, "model_dump"):
+            item = item.model_dump()
+        if not isinstance(item, dict):
+            continue
+        image_b64 = str(item.get("image_b64", "") or "")
+        if not image_b64:
+            continue
+        refs.append({
+            "image_b64": image_b64,
+            "strength": float(item.get("strength", 1.0)),
+            "role": str(item.get("role", "style") or "style"),
+            "token_size": str(item.get("token_size", "normal") or "normal"),
+        })
+
+    for image_b64 in (
+        getattr(req, "ref_image1_b64", None),
+        getattr(req, "ref_image2_b64", None),
+        getattr(req, "ref_image3_b64", None),
+    ):
+        if image_b64:
+            refs.append({
+                "image_b64": image_b64,
+                "strength": 1.0,
+                "role": "style",
+                "token_size": "normal",
+            })
+        if len(refs) >= limit:
+            break
+    return refs[:limit]
+
+
+def _align_conditioning_pair(text_txt, text_mask, image_txt, image_mask):
+    seq = min(text_txt.shape[1], image_txt.shape[1])
+    text_txt = text_txt[:, :seq]
+    image_txt = image_txt[:, :seq]
+    text_mask = text_mask[:, :seq] if text_mask is not None else None
+    image_mask = image_mask[:, :seq] if image_mask is not None else None
+    if text_mask is None:
+        mask = image_mask
+    elif image_mask is None:
+        mask = text_mask
+    else:
+        mask = text_mask | image_mask
+    return text_txt, mask, image_txt
+
 
 def _patch_fp8_linears(model: torch.nn.Module, scales: dict[str, float]) -> None:
     """Patch fp8 Linear layers to dequantize weights on-the-fly using stored scales.
@@ -63,6 +166,82 @@ def _patch_fp8_linears(model: torch.nn.Module, scales: dict[str, float]) -> None
             s = torch.tensor(scales[name], dtype=torch.float32)
             mod.register_buffer("_fp8_scale", s)
             mod.forward = _make_fwd(mod, mod._fp8_scale)
+
+
+def load_fp8_scaled_state_dict(checkpoint_path: str | Path) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+    """Load a scaled-FP8 safetensors state dict without retaining scale keys.
+
+    `safetensors.safe_open` lets us iterate keys and pull tensors directly from
+    the file mapping. The returned state dict excludes `*.weight_scale` keys so
+    strict module loading can stay enabled.
+    """
+    from safetensors import safe_open
+
+    sd: dict[str, torch.Tensor] = {}
+    fp8_scales: dict[str, float] = {}
+    with safe_open(str(checkpoint_path), framework="pt", device="cpu") as handle:
+        for key in handle.keys():
+            tensor = handle.get_tensor(key)
+            if key.endswith(".weight_scale"):
+                fp8_scales[key[: -len(".weight_scale")]] = float(tensor.item())
+            else:
+                sd[key] = tensor
+    return sd, fp8_scales
+
+
+def preflight_model_load(checkpoint_path: str | Path, quantization: str) -> None:
+    """Fail early when the current machine cannot fit the requested load."""
+    name = Path(checkpoint_path).name.lower()
+    is_turbo_fp8 = quantization == "fp8" and "fp8" in name
+    is_raw_or_bf16 = quantization == "bf16" or "raw" in name or "bf16" in name
+    if not is_turbo_fp8 and not is_raw_or_bf16:
+        return
+
+    ram_total, ram_free = get_ram_gb()
+    gpu_name, vram_total, vram_free = get_gpu_info()
+    gpu_processes = get_gpu_process_details()
+    process_hint = ""
+    if gpu_processes:
+        formatted = ", ".join(
+            f"{proc.get('name', 'process')} pid {proc.get('pid')}"
+            for proc in gpu_processes[:5]
+        )
+        process_hint = f" Other GPU Python/app processes: {formatted}."
+
+    if is_raw_or_bf16:
+        if ram_total is not None and ram_total < 48.0:
+            raise RuntimeError(
+                f"RAW/BF16 variants need at least ~48GB system RAM with this loader; system has {ram_total:.1f}GB. "
+                "Use Turbo FP8 here, or run RAW/BF16 on a higher-RAM/offloaded loader."
+            )
+        if ram_free is not None and ram_free < 32.0:
+            raise RuntimeError(
+                f"Only {ram_free:.1f}GB system RAM free; RAW/BF16 variants need ~32GB free before loading. "
+                "Close other apps or duplicate Krea/ComfyUI servers and retry."
+            )
+        if vram_total is not None and vram_total + 0.5 < 20.0:
+            raise RuntimeError(f"{gpu_name or 'GPU'} has {vram_total:.1f}GB VRAM; RAW/BF16 variants need ~20GB.")
+        if vram_free is not None and vram_free + 0.5 < 20.0:
+            raise RuntimeError(
+                f"Only {vram_free:.1f}GB VRAM free; RAW/BF16 variants need ~20GB free before loading."
+                f"{process_hint}"
+            )
+        return
+
+    if vram_total is not None and vram_total + 0.5 < 13.0:
+        raise RuntimeError(f"{gpu_name or 'GPU'} has {vram_total:.1f}GB VRAM; Turbo FP8 needs ~13GB.")
+    if vram_free is not None and vram_free + 0.5 < 13.0:
+        raise RuntimeError(
+            f"Only {vram_free:.1f}GB VRAM free; Turbo FP8 needs ~13GB free before loading."
+            f"{process_hint}"
+        )
+    if ram_free is not None and ram_free < 10.0:
+        raise RuntimeError(
+            f"Only {ram_free:.1f}GB system RAM free; this loader needs ~10GB free for Turbo FP8. "
+            "Close other apps or duplicate Krea/ComfyUI servers and retry."
+        )
+    if ram_total is not None and ram_total < 16.0:
+        raise RuntimeError(f"System has {ram_total:.1f}GB RAM; Turbo FP8 needs at least ~16GB total.")
 
 
 @contextlib.contextmanager
@@ -228,6 +407,7 @@ class Krea2Pipeline:
         self.encoder = None
         self._loaded_checkpoint: Optional[str] = None
         self._loaded_quant: Optional[str] = None
+        self._text_encoder_source: Optional[dict] = None
         self._conditioning_cache: OrderedDict[tuple, tuple[torch.Tensor, torch.Tensor | None]] = OrderedDict()
         self._lock = threading.Lock()
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -243,13 +423,38 @@ class Krea2Pipeline:
         self._conditioning_cache.clear()
         self._loaded_checkpoint = None
         self._loaded_quant = None
+        self._text_encoder_source = None
         if not hasattr(self, "_last_load_error"):
             self._last_load_error = None
         if not hasattr(self, "_loading"):
             self._loading = False
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clear_cuda_cache()
+
+    def release_transient_memory(self, *, clear_conditioning_cache: bool = True) -> dict:
+        if self.encoder is not None:
+            self.encoder.cpu()
+        cleared = len(self._conditioning_cache) if clear_conditioning_cache else 0
+        if clear_conditioning_cache:
+            self._conditioning_cache.clear()
+        clear_cuda_cache()
+        return {
+            "released": True,
+            "encoder_loaded": self.encoder is not None,
+            "cleared_conditioning_entries": cleared,
+            "memory": mem_snapshot(),
+        }
+
+    def memory_status(self) -> dict:
+        return {
+            "loaded": self.is_loaded(),
+            "components": {
+                "dit": self.mmdit is not None,
+                "vae": self.ae is not None,
+                "encoder": self.encoder is not None,
+            },
+            "conditioning_cache_size": len(self._conditioning_cache),
+            "memory": mem_snapshot(),
+        }
 
     def load(self, checkpoint_path: str, quantization: str = "bf16") -> None:
         backend_dir = str(Path(__file__).parent)
@@ -270,6 +475,7 @@ class Krea2Pipeline:
 
         if not Path(checkpoint_path).exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        preflight_model_load(checkpoint_path, quantization)
         checkpoint_size_gb = Path(checkpoint_path).stat().st_size / (1024 ** 3)
         total_ram_gb, _ = get_ram_gb()
         if quantization == "bf16" and checkpoint_size_gb > 20 and total_ram_gb is not None and total_ram_gb < 48:
@@ -298,18 +504,16 @@ class Krea2Pipeline:
                             layers=28, patch=2, channels=16,
                             txtlayers=12,
                         ))
-                    sd = load_file(checkpoint_path, device="cpu") if quantization == "fp8" else None
+                    sd = None
+                    fp8_scales: dict[str, float] = {}
+                    if quantization == "fp8":
+                        sd, fp8_scales = load_fp8_scaled_state_dict(checkpoint_path)
                     # Detect pre-quantized fp8 checkpoint (krea2_turbo_fp8_scaled).
                     # Must scan ALL tensors: the file's first key is a float32
                     # weight_scale, so checking only sd[0] gives a false negative.
                     checkpoint_is_fp8 = bool(sd) and any("float8" in str(v.dtype) for v in sd.values())
 
                     if checkpoint_is_fp8:
-                        # Extract per-tensor scales before load (strict=True would reject them)
-                        fp8_scales: dict[str, float] = {}
-                        for k in list(sd.keys()):
-                            if k.endswith(".weight_scale"):
-                                fp8_scales[k[: -len(".weight_scale")]] = sd.pop(k).item()
                         mmdit.load_state_dict(sd, strict=True, assign=True)
                         del sd
                         # Patch each fp8 Linear to dequantize on-the-fly:
@@ -354,6 +558,7 @@ class Krea2Pipeline:
                 watchdog.check()
                 gc.collect()
                 encoder = Qwen3VLConditioner(str(support_model_path("qwen3_vl"))).eval()
+                self._text_encoder_source = getattr(encoder, "source", None)
                 logger.info(f"Encoder loaded. {mem_snapshot()}")
 
             except Exception as e:
@@ -377,6 +582,7 @@ class Krea2Pipeline:
             self.encoder = encoder
             self._loaded_checkpoint = checkpoint_path
             self._loaded_quant = quantization
+            self._text_encoder_source = getattr(encoder, "source", None)
             self._last_load_error = None
             logger.info(f"Model ready. {mem_snapshot()}")
 
@@ -437,6 +643,7 @@ class Krea2Pipeline:
             return self._generate_locked(request, progress_cb, sampling, save_outputs=save_outputs)
 
     def _generate_locked(self, req, progress_cb, sampling, *, save_outputs: bool = True) -> list[str]:
+        normalize_generation_defaults(req)
         native_sampler = _resolve_native_sampler(req)
 
         # Build prompt (inject bbox JSON + LoRA trigger words)
@@ -450,17 +657,26 @@ class Krea2Pipeline:
             from moods import apply_mood
             prompt, negative_prompt = apply_mood(prompt, negative_prompt, mood_id)
 
-        catalog_context = moodboard_generation_context(list(getattr(req, "moodboard_ids", []) or []))
+        catalog_context = moodboard_generation_context(
+            list(getattr(req, "moodboard_ids", []) or []),
+            moodboard_uuids=list(getattr(req, "moodboard_uuids", []) or []),
+        )
+        if catalog_context["uuids"]:
+            req.moodboard_uuids = catalog_context["uuids"]
         if catalog_context["style_text"]:
             prompt = f"{prompt}\n\n{catalog_context['style_text']}" if prompt.strip() else catalog_context["style_text"]
 
         # Encode text. Conditioning is cheap to reuse; moving the 4B Qwen encoder
         # CPU→GPU is not, so cache final CPU tensors by prompt/reference settings.
+        style_refs = resolve_style_references(req)
+        style_ref_b64s = [ref["image_b64"] for ref in style_refs]
+        style_ref_settings = tuple(
+            (self._hash_ref_images([ref["image_b64"]])[0], float(ref["strength"]), ref["role"], ref["token_size"])
+            for ref in style_refs
+        )
         ref_b64s = [
             b64
-            for b64 in list(getattr(req, "moodboard_images", []) or []) + [
-                req.ref_image1_b64, req.ref_image2_b64, req.ref_image3_b64
-            ]
+            for b64 in list(getattr(req, "moodboard_images", []) or []) + style_ref_b64s
             if b64
         ]
         ref_hashes = self._hash_ref_images(ref_b64s)
@@ -468,6 +684,12 @@ class Krea2Pipeline:
         mult = req.rebalance_multiplier
         if req.use_rebalance and (mood_id or ref_b64s or catalog_context["items"]):
             mult = mult * (0.5 + float(getattr(req, "moodboard_strength", 0.5)))
+        edit_rebalance_enabled = (
+            bool(getattr(req, "edit_rebalance_enabled", True))
+            and str(getattr(req, "mode", "")) in {"redraw", "img2img", "inpaint", "outpaint"}
+            and bool(ref_b64s)
+        )
+        edit_rebalance_profile = str(getattr(req, "edit_rebalance_profile", "conservative") or "conservative")
 
         positive_key = (
             "positive",
@@ -477,6 +699,9 @@ class Krea2Pipeline:
             bool(req.use_rebalance),
             req.rebalance_weights,
             float(mult),
+            style_ref_settings,
+            bool(edit_rebalance_enabled),
+            edit_rebalance_profile,
         )
         negative_key = (
             "negative",
@@ -495,9 +720,30 @@ class Krea2Pipeline:
                 if cached_positive is None:
                     if ref_b64s:
                         ref_images = [_b64_to_pil(b64).convert("RGB") for b64 in ref_b64s]
-                        txt, txtmask = self.encoder.forward_with_images(
-                            [prompt] * req.num_images, images=ref_images
+                        token_order = {"low": 0, "normal": 1, "high": 2, "max": 3}
+                        token_size = max(
+                            (ref.get("token_size", "normal") for ref in style_refs),
+                            key=lambda value: token_order.get(value, 1),
+                            default="normal",
                         )
+                        if edit_rebalance_enabled:
+                            text_txt, text_mask = self.encoder([prompt] * req.num_images)
+                            image_txt, image_mask = self.encoder.forward_with_images(
+                                [prompt] * req.num_images, images=ref_images, token_size=token_size
+                            )
+                            text_txt, txtmask, image_txt = _align_conditioning_pair(
+                                text_txt, text_mask, image_txt, image_mask
+                            )
+                            txt = blend_split_conditioning(
+                                text_txt,
+                                image_txt,
+                                position=0.5,
+                                profile=edit_rebalance_profile,
+                            )
+                        else:
+                            txt, txtmask = self.encoder.forward_with_images(
+                                [prompt] * req.num_images, images=ref_images, token_size=token_size
+                            )
                     else:
                         txt, txtmask = self.encoder([prompt] * req.num_images)
 
@@ -511,9 +757,7 @@ class Krea2Pipeline:
             finally:
                 # Offload encoder to CPU before DiT forward pass.
                 self.encoder.cpu()
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                clear_cuda_cache()
 
         if cached_positive is not None:
             txt, txtmask = self._conditioning_to_device(cached_positive)
@@ -567,6 +811,17 @@ class Krea2Pipeline:
 
         # Resolve seed
         seed = req.seed if req.seed >= 0 else int(torch.randint(0, 2**31, (1,)).item())
+        txt = apply_seed_variance(
+            txt,
+            seed=seed,
+            preset=str(getattr(req, "seed_variance_preset", "off")),
+            strength=(
+                float(getattr(req, "seed_variance_strength", 0.0))
+                if str(getattr(req, "seed_variance_preset", "off")) == "custom"
+                else None
+            ),
+            protection=str(getattr(req, "seed_variance_protection", "first_half")),
+        )
 
         # Resolve mu (the ModelSamplingFlux shift). 0 or None = auto-resolve:
         # turbo pins 1.15, RAW uses resolution-adaptive (None).

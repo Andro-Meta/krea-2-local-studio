@@ -27,6 +27,67 @@ VARIANT_REQS: dict[str, dict[str, Any]] = {
 }
 
 
+def _parse_mib(value: str) -> float:
+    return float(value.strip().replace("MiB", "").strip()) / 1024
+
+
+def parse_nvidia_smi_memory_csv(output: str) -> dict[str, float | str] | None:
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 4:
+            continue
+        try:
+            return {
+                "name": parts[0],
+                "total_gb": _parse_mib(parts[1]),
+                "free_gb": _parse_mib(parts[2]),
+                "used_gb": _parse_mib(parts[3]),
+            }
+        except ValueError:
+            continue
+    return None
+
+
+def parse_nvidia_smi_process_csv(output: str, *, current_pid: int | None = None) -> list[dict[str, Any]]:
+    me = os.getpid() if current_pid is None else int(current_pid)
+    processes: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2 or not parts[0].isdigit():
+            continue
+        pid = int(parts[0])
+        if pid == me:
+            continue
+        item: dict[str, Any] = {
+            "pid": pid,
+            "name": Path(parts[1]).name or parts[1],
+        }
+        if len(parts) >= 3:
+            try:
+                item["used_memory_gb"] = _parse_mib(parts[2])
+            except ValueError:
+                pass
+        processes.append(item)
+    return processes
+
+
+def get_nvidia_smi_gpu_info() -> dict[str, Any] | None:
+    try:
+        out = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.total,memory.free,memory.used",
+                "--format=csv,noheader",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except Exception:
+        return None
+    return parse_nvidia_smi_memory_csv(out)
+
+
 def get_ram_gb() -> tuple[float | None, float | None]:
     """Returns (total_gb, available_gb)."""
     try:
@@ -62,6 +123,9 @@ def get_ram_gb() -> tuple[float | None, float | None]:
 
 def get_gpu_info() -> tuple[str | None, float | None, float | None]:
     """Returns (name, total_gb, free_gb)."""
+    smi = get_nvidia_smi_gpu_info()
+    if smi is not None:
+        return str(smi["name"]), float(smi["total_gb"]), float(smi["free_gb"])
     try:
         import torch
         if not torch.cuda.is_available():
@@ -80,11 +144,9 @@ def mem_snapshot() -> str:
     if ram_avail is not None:
         parts.append(f"RAM {ram_avail:.1f}GB free")
     try:
-        import torch
-        if torch.cuda.is_available():
-            free_b, total_b = torch.cuda.mem_get_info(0)
-            gib = 1024 ** 3
-            parts.append(f"VRAM {free_b / gib:.1f}/{total_b / gib:.1f}GB")
+        _, total_gb, free_gb = get_gpu_info()
+        if total_gb is not None and free_gb is not None:
+            parts.append(f"VRAM {free_gb:.1f}/{total_gb:.1f}GB")
     except Exception as exc:
         logger.debug("CUDA memory snapshot unavailable: %s", exc)
     return " | ".join(parts) if parts else "memory info unavailable"
@@ -102,25 +164,26 @@ def get_disk_free_gb(path: Path | None = None) -> float | None:
 
 
 def get_gpu_processes() -> list[str]:
+    details = get_gpu_process_details()
+    if details:
+        names: list[str] = []
+        for proc in details:
+            name = str(proc.get("name") or "")
+            if name and name not in names:
+                names.append(name)
+        return names
+    return []
+
+
+def get_gpu_process_details() -> list[dict[str, Any]]:
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid,process_name", "--format=csv,noheader"],
+            ["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=10,
         ).stdout
     except Exception:
         return []
-    me = os.getpid()
-    names: list[str] = []
-    for line in out.splitlines():
-        parts = [p.strip() for p in line.split(",", 1)]
-        if len(parts) != 2 or not parts[0].isdigit():
-            continue
-        if int(parts[0]) == me:
-            continue
-        name = Path(parts[1]).name or parts[1]
-        if name not in names:
-            names.append(name)
-    return names
+    return parse_nvidia_smi_process_csv(out)
 
 
 def get_system_report() -> dict[str, Any]:
@@ -130,6 +193,7 @@ def get_system_report() -> dict[str, Any]:
     ram_total, ram_avail = get_ram_gb()
     disk_free = get_disk_free_gb()
     gpu_procs = get_gpu_processes()
+    gpu_proc_details = get_gpu_process_details()
 
     # Adjust vram_free for memory already reserved by our own process
     vram_free_eff = vram_free
@@ -180,6 +244,7 @@ def get_system_report() -> dict[str, Any]:
         "ram_available_gb": round(ram_avail, 1) if ram_avail is not None else None,
         "disk_free_gb": round(disk_free, 1) if disk_free is not None else None,
         "gpu_processes": gpu_procs,
+        "gpu_process_details": gpu_proc_details,
         "models_dir": str(MODELS_DIR),
         "model_status": {"loaded": False},  # populated by main.py
         "variants": variants,

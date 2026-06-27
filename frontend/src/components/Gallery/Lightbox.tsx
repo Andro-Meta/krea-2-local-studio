@@ -44,10 +44,15 @@ function metadataRows(metadata?: Record<string, any>) {
   add('Sampler', metadata.sampler)
   add('Inpaint method', metadata.inpaint?.method)
   add('Denoise', metadata.denoise)
+  add('Creativity', metadata.creativity)
   add('Moodboards', metadata.moodboard_ids)
+  add('Moodboard UUIDs', metadata.moodboard_uuids)
+  add('Style refs', metadata.image_references?.style_reference_count)
+  add('Seed variance', metadata.seed_variance?.preset ? `${metadata.seed_variance.preset} (${metadata.seed_variance.strength ?? 0})` : '')
   add('LoRAs', metadata.loras?.map((lora: any) => lora.name || lora.filename).filter(Boolean))
   add('Enhancer', metadata.krea_enhancer?.enabled ? `on (${metadata.krea_enhancer.strength})` : '')
   add('Rebalance', metadata.rebalance?.enabled ? `on (${metadata.rebalance.multiplier})` : '')
+  add('Edit rebalance', metadata.rebalance?.edit_enabled ? metadata.rebalance.edit_profile || 'on' : '')
   return rows
 }
 

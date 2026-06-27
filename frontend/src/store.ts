@@ -9,6 +9,13 @@ export interface ActiveLora {
   enabled: boolean
 }
 
+export interface StyleReference {
+  image_b64: string
+  strength: number
+  role: string
+  token_size: 'low' | 'normal' | 'high' | 'max'
+}
+
 export interface GenerateParams {
   prompt: string
   negative_prompt: string
@@ -31,9 +38,13 @@ export interface GenerateParams {
   lanpaint_strength: number
   edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
+  creativity: 'raw' | 'low' | 'medium' | 'high'
+  style_references: StyleReference[]
   use_rebalance: boolean
   rebalance_multiplier: number
   rebalance_weights: string
+  edit_rebalance_enabled: boolean
+  edit_rebalance_profile: 'default' | 'edit' | 'conservative'
   krea_enhancer_variant: 'off' | 'rebalance' | 'enhancer' | 'rebalance_enhancer'
   krea_enhancer_enabled: boolean
   krea_enhancer_strength: number
@@ -50,8 +61,12 @@ export interface GenerateParams {
   refine_steps: number
   mood: string
   selected_moodboard_ids: number[]
+  moodboard_uuids: string[]
   moodboard_strength: number
   moodboard_images: string[]
+  seed_variance_preset: 'off' | 'subtle' | 'balanced' | 'creative' | 'bold' | 'custom'
+  seed_variance_strength: number
+  seed_variance_protection: 'none' | 'first_quarter' | 'first_half'
 }
 
 export interface LightboxItem {
@@ -116,7 +131,7 @@ const defaultParams: GenerateParams = {
   negative_prompt: '',
   mode: 'txt2img',
   checkpoint: 'turbo',
-  quantization: 'bf16',
+  quantization: 'fp8',
   steps: 8,
   cfg: 0.0,
   mu: 1.15,
@@ -133,9 +148,13 @@ const defaultParams: GenerateParams = {
   lanpaint_strength: 1.0,
   edit_provider: 'auto',
   quality_preset: 'balanced',
+  creativity: 'medium',
+  style_references: [],
   use_rebalance: true,
   rebalance_multiplier: 4.0,
   rebalance_weights: '1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0',
+  edit_rebalance_enabled: true,
+  edit_rebalance_profile: 'conservative',
   krea_enhancer_variant: 'rebalance',
   krea_enhancer_enabled: false,
   krea_enhancer_strength: 1.0,
@@ -152,8 +171,12 @@ const defaultParams: GenerateParams = {
   refine_steps: 6,
   mood: '',
   selected_moodboard_ids: [],
-  moodboard_strength: 0.5,
+  moodboard_uuids: [],
+  moodboard_strength: 0.35,
   moodboard_images: [],
+  seed_variance_preset: 'off',
+  seed_variance_strength: 0.0,
+  seed_variance_protection: 'first_half',
 }
 
 const defaultRealtime: RealtimeState = {

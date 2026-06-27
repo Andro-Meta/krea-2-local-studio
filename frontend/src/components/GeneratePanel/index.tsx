@@ -10,6 +10,7 @@ import DimensionSection from './DimensionSection'
 import ParameterSection from './ParameterSection'
 import LoraSection from './LoraSection'
 import MoodboardSection from './MoodboardSection'
+import StyleReferenceSection from './StyleReferenceSection'
 import CanvasControl from './CanvasControl'
 import ResultsView from './ResultsView'
 
@@ -63,9 +64,13 @@ export default function GeneratePanel() {
         lanpaint_strength: params.lanpaint_strength,
         edit_provider: params.edit_provider,
         quality_preset: params.quality_preset,
+        creativity: params.creativity,
+        style_references: params.style_references,
         use_rebalance: params.use_rebalance,
         rebalance_multiplier: params.rebalance_multiplier,
         rebalance_weights: params.rebalance_weights,
+        edit_rebalance_enabled: params.edit_rebalance_enabled,
+        edit_rebalance_profile: params.edit_rebalance_profile,
         krea_enhancer_enabled: params.krea_enhancer_enabled,
         krea_enhancer_strength: params.krea_enhancer_strength,
         loras: params.loras,
@@ -81,8 +86,12 @@ export default function GeneratePanel() {
         refine_steps: params.refine_steps,
         mood: params.mood,
         moodboard_ids: params.selected_moodboard_ids,
+        moodboard_uuids: params.moodboard_uuids,
         moodboard_strength: params.moodboard_strength,
         moodboard_images: params.moodboard_images,
+        seed_variance_preset: params.seed_variance_preset,
+        seed_variance_strength: params.seed_variance_strength,
+        seed_variance_protection: params.seed_variance_protection,
       })
       setJobId(job_id)
 
@@ -136,6 +145,7 @@ export default function GeneratePanel() {
         <PromptSection />
         <ModelSection />
         <DimensionSection />
+        {!inRedrawStudio && <StyleReferenceSection />}
         {!inRedrawStudio && <MoodboardSection />}
         <LoraSection />
         {!inRedrawStudio && <CanvasControl />}

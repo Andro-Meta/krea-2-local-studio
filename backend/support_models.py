@@ -18,6 +18,16 @@ SUPPORT_MODELS = [
         "optional": False,
     },
     {
+        "id": "qwen3_vl_fp8",
+        "label": "Qwen3-VL FP8 text encoder (ComfyUI Krea 2)",
+        "repo_id": "Comfy-Org/Krea-2",
+        "local_dir": LOCAL_AI_DIR / "qwen3_vl_4b_fp8_krea2",
+        "purpose": "Lower-memory Krea text conditioning asset compatible with ComfyUI Krea 2",
+        "required": ["text_encoders/qwen3vl_4b_fp8_scaled.safetensors"],
+        "allow_patterns": ["text_encoders/qwen3vl_4b_fp8_scaled.safetensors"],
+        "optional": True,
+    },
+    {
         "id": "qwen_image_vae",
         "label": "Qwen-Image VAE",
         "repo_id": "Qwen/Qwen-Image",
@@ -117,7 +127,7 @@ def download_support_models() -> list[dict[str, Any]]:
     token = settings.hf_token or os.environ.get("HF_TOKEN") or None
     results: list[dict[str, Any]] = []
     for model in SUPPORT_MODELS:
-        if model.get("optional"):
+        if model.get("optional") and model.get("id") != "qwen3_vl_fp8":
             continue
         path = snapshot_download(
             repo_id=model["repo_id"],

@@ -38,8 +38,8 @@ export default function ModelSection() {
                 color={params.checkpoint === c.id ? 'primary' : 'default'}
                 onClick={() => {
                   setParam('checkpoint', c.id as 'turbo' | 'raw')
-                  if (c.id === 'turbo') setParams({ steps: 8, cfg: 0.0, mu: 1.15 })
-                  else setParams({ steps: 52, cfg: 3.5, mu: 0 })
+                  if (c.id === 'turbo') setParams({ steps: 8, cfg: 0.0, mu: 1.15, quantization: 'fp8' })
+                  else setParams({ steps: 52, cfg: 3.5, mu: null, quantization: 'bf16' })
                 }}
                 clickable
               />

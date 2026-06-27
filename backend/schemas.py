@@ -1,11 +1,18 @@
 from __future__ import annotations
-from typing import Optional, List
-from pydantic import BaseModel
+from typing import Literal, Optional, List
+from pydantic import BaseModel, Field
 
 
 class BoundingBox(BaseModel):
     label: str
     bbox: List[float]  # [x1, y1, x2, y2] normalized 0-1
+
+
+class StyleReferenceInput(BaseModel):
+    image_b64: str
+    strength: float = Field(default=1.0, ge=-2.0, le=2.0)
+    role: str = "style"
+    token_size: Literal["low", "normal", "high", "max"] = "normal"
 
 
 class GenerationRequest(BaseModel):
@@ -14,7 +21,7 @@ class GenerationRequest(BaseModel):
     mode: str = "txt2img"           # txt2img | redraw | img2img | inpaint | outpaint
     checkpoint: str = "turbo"       # turbo | raw | custom
     checkpoint_path: str = ""       # custom path override
-    quantization: str = "bf16"      # bf16 | fp8
+    quantization: str = "fp8"       # bf16 | fp8
     steps: int = 8
     cfg: float = 0.0
     mu: Optional[float] = None  # None → inference resolves (turbo=1.15, RAW=adaptive)
@@ -31,10 +38,14 @@ class GenerationRequest(BaseModel):
     lanpaint_strength: float = 1.0
     edit_provider: str = "auto"       # auto | krea_native | flux_fill
     quality_preset: str = "balanced"  # fast | balanced | best | raw_benchmark
+    creativity: Literal["raw", "low", "medium", "high"] = "medium"
+    style_references: List[StyleReferenceInput] = Field(default_factory=list, max_length=10)
     loras: List[dict] = []
     use_rebalance: bool = True
     rebalance_multiplier: float = 4.0
     rebalance_weights: str = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
+    edit_rebalance_enabled: bool = True
+    edit_rebalance_profile: Literal["default", "edit", "conservative"] = "conservative"
     krea_enhancer_enabled: bool = False
     krea_enhancer_strength: float = 1.0
     bboxes: List[BoundingBox] = []
@@ -51,8 +62,12 @@ class GenerationRequest(BaseModel):
     # Moodboard: preset mood id + custom reference-image board + influence strength
     mood: str = ""
     moodboard_ids: List[int] = []
-    moodboard_strength: float = 0.5
+    moodboard_uuids: List[str] = []
+    moodboard_strength: float = 0.35
     moodboard_images: List[str] = []
+    seed_variance_preset: Literal["off", "subtle", "balanced", "creative", "bold", "custom"] = "off"
+    seed_variance_strength: float = 0.0
+    seed_variance_protection: Literal["none", "first_quarter", "first_half"] = "first_half"
 
 
 class RealtimePreviewRequest(BaseModel):
@@ -143,6 +158,7 @@ class SystemInfoResponse(BaseModel):
     ram_available_gb: Optional[float] = None
     disk_free_gb: Optional[float] = None
     gpu_processes: List[str] = []
+    gpu_process_details: List[dict] = []
     model_status: ModelStatusResponse
     variants: List[dict] = []
 
@@ -150,6 +166,10 @@ class SystemInfoResponse(BaseModel):
 class LoadModelRequest(BaseModel):
     checkpoint_path: str
     quantization: str = "bf16"
+
+
+class MemoryStopProcessRequest(BaseModel):
+    pid: int
 
 
 class ExpandPromptRequest(BaseModel):

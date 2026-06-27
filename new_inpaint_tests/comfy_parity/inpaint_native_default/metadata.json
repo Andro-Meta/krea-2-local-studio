@@ -1,0 +1,71 @@
+[
+  {
+    "schema_version": 1,
+    "app": "Krea 2 Studio",
+    "created_at": "2026-06-27T06:44:06Z",
+    "filename": "1782542646569_867137a1.png",
+    "prompt": "replace the blue circle with a small brass lantern",
+    "original_prompt": "replace the blue circle with a small brass lantern",
+    "negative_prompt": "",
+    "seed": 103,
+    "base_seed": 103,
+    "image_index": 0,
+    "mode": "inpaint",
+    "checkpoint": "turbo",
+    "checkpoint_path": "",
+    "quantization": "fp8",
+    "steps": 8,
+    "cfg": 0.0,
+    "width": 1024,
+    "height": 1024,
+    "denoise": 1.0,
+    "sampler": "euler_flow",
+    "inpaint": {
+      "method": "native",
+      "lanpaint_inner_steps": 3,
+      "lanpaint_strength": 1.0
+    },
+    "mu": 1.15,
+    "y1": 0.5,
+    "y2": 1.15,
+    "edit_provider": "auto",
+    "resolved_provider": "",
+    "quality_preset": "balanced",
+    "creativity": "medium",
+    "loras": [],
+    "mood": "",
+    "moodboard_ids": [],
+    "moodboard_uuids": [],
+    "moodboard_strength": 0.35,
+    "image_references": {
+      "moodboard_count": 0,
+      "ref_image_count": 0,
+      "style_reference_count": 0,
+      "style_references": [],
+      "hashes": []
+    },
+    "seed_variance": {
+      "preset": "off",
+      "strength": 0.0,
+      "protection": "first_half"
+    },
+    "rebalance": {
+      "enabled": true,
+      "multiplier": 4.0,
+      "weights": "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0",
+      "edit_enabled": true,
+      "edit_profile": "conservative"
+    },
+    "krea_enhancer": {
+      "enabled": false,
+      "strength": 1.0
+    },
+    "refine": {
+      "enabled": false,
+      "denoise": 0.3,
+      "steps": 6
+    },
+    "bboxes": [],
+    "use_prompt_expander": false
+  }
+]

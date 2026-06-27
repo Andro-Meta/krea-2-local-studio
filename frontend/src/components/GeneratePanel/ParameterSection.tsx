@@ -68,6 +68,21 @@ export default function ParameterSection() {
         Parameters
       </Typography>
       <Stack spacing={2}>
+        <TextField
+          select
+          label="Creativity"
+          value={params.creativity}
+          onChange={e => setParam('creativity', e.target.value as typeof params.creativity)}
+          size="small"
+          fullWidth
+          helperText="Comfy-style Krea control: higher adds aesthetic interpretation; lower keeps tighter prompt adherence."
+        >
+          <MenuItem value="raw">Raw / literal</MenuItem>
+          <MenuItem value="low">Low</MenuItem>
+          <MenuItem value="medium">Medium (default)</MenuItem>
+          <MenuItem value="high">High</MenuItem>
+        </TextField>
+
         <LabeledSlider
           label="Steps"
           value={params.steps}
@@ -246,6 +261,83 @@ export default function ParameterSection() {
                 fullWidth
                 helperText="Layers 1–12 of Qwen3-VL. Default: 1,1,1,1,1,1,1,2.5,5,1.1,4,1"
               />
+              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', mt: 0.5 }}>
+                Seed Variance
+                <InfoTip text="Adds deterministic, bounded noise to unprotected conditioning tokens. Off is bitwise-equivalent to the normal seed path; high values can reduce prompt fidelity." />
+              </Typography>
+              <Grid container spacing={1.5}>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    select
+                    label="Seed variance preset"
+                    value={params.seed_variance_preset}
+                    onChange={e => setParam('seed_variance_preset', e.target.value as typeof params.seed_variance_preset)}
+                    size="small"
+                    fullWidth
+                    helperText="Default: off"
+                  >
+                    <MenuItem value="off">Off</MenuItem>
+                    <MenuItem value="subtle">Subtle</MenuItem>
+                    <MenuItem value="balanced">Balanced</MenuItem>
+                    <MenuItem value="creative">Creative</MenuItem>
+                    <MenuItem value="bold">Bold</MenuItem>
+                    <MenuItem value="custom">Custom</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    select
+                    label="Protected prompt tokens"
+                    value={params.seed_variance_protection}
+                    onChange={e => setParam('seed_variance_protection', e.target.value as typeof params.seed_variance_protection)}
+                    size="small"
+                    fullWidth
+                    disabled={params.seed_variance_preset === 'off'}
+                    helperText="Preserves prompt anchors"
+                  >
+                    <MenuItem value="first_half">First half</MenuItem>
+                    <MenuItem value="first_quarter">First quarter</MenuItem>
+                    <MenuItem value="none">None</MenuItem>
+                  </TextField>
+                </Grid>
+              </Grid>
+              {params.seed_variance_preset === 'custom' && (
+                <LabeledSlider
+                  label="Custom seed variance"
+                  value={params.seed_variance_strength}
+                  min={0} max={0.1} step={0.005}
+                  onChange={v => setParam('seed_variance_strength', v)}
+                  tip="Custom conditioning-noise strength. Keep low; 0.01–0.03 is subtle, 0.08+ is aggressive."
+                  helperText="Higher = more variation with the same seed, lower prompt fidelity"
+                />
+              )}
+              {(params.mode === 'redraw' || params.mode === 'img2img' || params.mode === 'inpaint' || params.mode === 'outpaint') && (
+                <>
+                  <FormControlLabel
+                    control={<Switch checked={params.edit_rebalance_enabled} onChange={e => setParam('edit_rebalance_enabled', e.target.checked)} size="small" />}
+                    label={
+                      <Typography variant="body2" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
+                        Edit rebalance split conditioning
+                        <InfoTip text="Builds separate text and reference-image conditioning for edit modes, then blends them conservatively. Disable if references overpower the edit." />
+                      </Typography>
+                    }
+                  />
+                  <TextField
+                    select
+                    label="Edit rebalance profile"
+                    value={params.edit_rebalance_profile}
+                    onChange={e => setParam('edit_rebalance_profile', e.target.value as typeof params.edit_rebalance_profile)}
+                    size="small"
+                    fullWidth
+                    helperText="Conservative is the default first-release profile; edit is stronger, default is balanced."
+                    disabled={!params.edit_rebalance_enabled}
+                  >
+                    <MenuItem value="conservative">Conservative</MenuItem>
+                    <MenuItem value="default">Default</MenuItem>
+                    <MenuItem value="edit">Edit</MenuItem>
+                  </TextField>
+                </>
+              )}
               <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', mt: 0.5 }}>
                 Experimental Krea 2 Enhancer
                 <InfoTip text="Runtime patch based on the ComfyUI Krea2T enhancer. It runs Krea's text-fusion normally, compares it with a boosted pass, then applies a capped delta. Default is off." />

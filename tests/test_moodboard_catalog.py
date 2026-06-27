@@ -227,6 +227,55 @@ class MoodboardCatalogTests(unittest.TestCase):
                     "https://optim-images.krea.ai/ref-2.webp",
                 ],
             )
+            self.assertEqual(context["uuids"], ["4e938f5c-ff17-539b-bdb2-ad7884cdb369"])
+
+    def test_generation_context_resolves_uuid_moodboards(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def seed() -> int:
+                await init_moodboard_db(db_path)
+                await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        slug="gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        uuid="4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        title="Gritty Cinematic Realism",
+                        taste_profile="Somber urban documentary suspense.",
+                        keywords=["cinematic realism"],
+                        primary_image_url="https://optim-images.krea.ai/primary.webp",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                return await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/neon-product-studio-a057f657-b26a-5768-a134-3e21474484fe",
+                        slug="neon-product-studio-a057f657-b26a-5768-a134-3e21474484fe",
+                        uuid="a057f657-b26a-5768-a134-3e21474484fe",
+                        title="Neon Product Studio",
+                        taste_profile="Glossy product lighting.",
+                        keywords=["neon", "product"],
+                        primary_image_url="https://optim-images.krea.ai/neon.webp",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+
+            board_id = asyncio.run(seed())
+            context = moodboard_generation_context(
+                [board_id],
+                moodboard_uuids=["4e938f5c-ff17-539b-bdb2-ad7884cdb369"],
+                db_path=db_path,
+            )
+
+            self.assertEqual([item["title"] for item in context["items"]], ["Neon Product Studio", "Gritty Cinematic Realism"])
+            self.assertEqual(
+                context["uuids"],
+                ["a057f657-b26a-5768-a134-3e21474484fe", "4e938f5c-ff17-539b-bdb2-ad7884cdb369"],
+            )
 
     def test_sync_throttle_uses_daily_interval(self) -> None:
         with tempfile.TemporaryDirectory() as td:

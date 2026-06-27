@@ -26,9 +26,10 @@ if not exist "backend\krea2\mmdit.py" (
 )
 
 echo Stopping any old Krea sharing/server process...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$root=(Resolve-Path '.').Path.ToLower(); Get-CimInstance Win32_Process | Where-Object { $cmd=[string]$_.CommandLine; ($cmd -like '*krea_share_control.pyw*') -or (($cmd.ToLower() -like ('*' + $root + '*')) -and ($cmd -like '*backend.main:app*')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-timeout /t 1 /nobreak >nul
+python scripts\startup_cleanup.py --wait-seconds 20
+if errorlevel 1 (
+    echo WARNING: Some old Krea processes could not be stopped. Startup may still fail or memory may remain in use.
+)
 
 for /f "usebackq tokens=*" %%a in (`python -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"`) do set "KREA_SERVER_PORT=%%a"
 
@@ -41,16 +42,25 @@ if errorlevel 1 (
     echo.
 )
 
-set "KREA_SHARE_AUTH=1"
 set "KREA_PUBLIC_BASE_PATH=/krea"
 set "KREA_SHARE_AUTH_FILE=%ROOT%share_auth.json"
 set "KREA_SHARE_SECRET=%RANDOM%%RANDOM%%RANDOM%%RANDOM%%RANDOM%"
-for /f "usebackq tokens=*" %%a in (`python -c "import secrets,sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); users=share_auth.load_users(p); print('') if users else (lambda pw: (share_auth.add_user(p,'admin',pw,role='admin'), print('FIRST_ADMIN_PASSWORD='+pw)))(secrets.token_urlsafe(10))"`) do set "BOOTSTRAP_LOGIN=%%a"
+set "KREA_SHARE_AUTH_CONFIG="
+if exist ".env" (
+    for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+        if /I "%%a"=="KREA_SHARE_AUTH" set "KREA_SHARE_AUTH_CONFIG=%%b"
+    )
+)
+for /f "usebackq tokens=*" %%a in (`python -c "import sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); cfg=r'%KREA_SHARE_AUTH_CONFIG%' or None; print('1' if share_auth.resolve_auth_enabled(cfg, has_users=bool(share_auth.load_users(p))) else '0')"`) do set "KREA_SHARE_AUTH=%%a"
+if "%KREA_SHARE_AUTH%"=="1" (
+    for /f "usebackq tokens=*" %%a in (`python -c "import secrets,sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); users=share_auth.load_users(p); print('') if users else (lambda pw: (share_auth.add_user(p,'admin',pw,role='admin'), print('FIRST_ADMIN_PASSWORD='+pw)))(secrets.token_urlsafe(10))"`) do set "BOOTSTRAP_LOGIN=%%a"
+)
 
 echo Starting Krea 2 Studio web sharing mode...
 echo.
 echo Admin sharing controls are in System ^> Tailscale Sharing.
 echo Public Funnel path is always /krea.
+if "%KREA_SHARE_AUTH%"=="0" echo Login gate is off because no users are configured.
 if defined BOOTSTRAP_LOGIN echo %BOOTSTRAP_LOGIN%
 echo.
 echo For local-only mode, run:
@@ -63,9 +73,9 @@ if exist ".env" (
     )
 )
 set "KREA_SHARE_STARTUP_ARGS=--ready-url http://127.0.0.1:%KREA_SERVER_PORT%/krea/api/auth/me --open-url http://localhost:%KREA_SERVER_PORT%/krea --timeout 180"
-if /I "%KREA_SHARE_AUTO_FUNNEL%"=="true" set "KREA_SHARE_STARTUP_ARGS=%KREA_SHARE_STARTUP_ARGS% --auto-funnel"
-if /I "%KREA_SHARE_AUTO_FUNNEL%"=="yes" set "KREA_SHARE_STARTUP_ARGS=%KREA_SHARE_STARTUP_ARGS% --auto-funnel"
-if "%KREA_SHARE_AUTO_FUNNEL%"=="1" set "KREA_SHARE_STARTUP_ARGS=%KREA_SHARE_STARTUP_ARGS% --auto-funnel"
+for /f "usebackq tokens=*" %%a in (`python -c "import sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%KREA_SHARE_AUTH_FILE%'); print('1' if share_auth.resolve_auto_funnel_enabled(r'%KREA_SHARE_AUTO_FUNNEL%', auth_enabled=('%KREA_SHARE_AUTH%'=='1'), has_admin=share_auth.has_admin(p)) else '0')"`) do set "KREA_SHARE_AUTO_FUNNEL_ENABLED=%%a"
+if "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" set "KREA_SHARE_STARTUP_ARGS=%KREA_SHARE_STARTUP_ARGS% --auto-funnel"
+if not "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" if /I not "%KREA_SHARE_AUTO_FUNNEL%"=="false" echo Public Funnel auto-start is off because login gate is off or no admin exists.
 start "" /b python scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
 echo Local sharing server: http://localhost:%KREA_SERVER_PORT%/krea
 python -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info
@@ -87,6 +97,12 @@ if not exist "backend\krea2\mmdit.py" (
         echo ERROR: Could not download krea2/mmdit.py. Check internet connection.
         exit /b 1
     )
+)
+
+echo Stopping any old Krea sharing/server process...
+python scripts\startup_cleanup.py --wait-seconds 20
+if errorlevel 1 (
+    echo WARNING: Some old Krea processes could not be stopped. Startup may still fail or memory may remain in use.
 )
 
 :: -- Preflight: Krea support models --------------------------------------------
@@ -144,7 +160,7 @@ if defined TAILSCALE_IP (
 )
 echo.
 echo  Public sharing:
-echo    Default run.bat now opens the login-gated Tailscale sharing GUI.
+echo    Default run.bat opens the sharing UI. Public Funnel auto-start requires login to be enabled.
 echo    This local-only mode is available as: run.bat local
 echo.
 echo  Press Ctrl+C to stop the server.

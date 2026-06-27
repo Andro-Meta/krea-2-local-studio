@@ -36,10 +36,14 @@ export interface GenerationRequest {
   lanpaint_strength?: number
   edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
+  creativity?: 'raw' | 'low' | 'medium' | 'high'
+  style_references?: Array<{ image_b64: string; strength?: number; role?: string; token_size?: 'low' | 'normal' | 'high' | 'max' }>
   loras?: Array<{ name: string; filename?: string; strength?: number; enabled?: boolean }>
   use_rebalance?: boolean
   rebalance_multiplier?: number
   rebalance_weights?: string
+  edit_rebalance_enabled?: boolean
+  edit_rebalance_profile?: 'default' | 'edit' | 'conservative'
   krea_enhancer_enabled?: boolean
   krea_enhancer_strength?: number
   bboxes?: Array<{ label: string; bbox: number[] }>
@@ -54,8 +58,12 @@ export interface GenerationRequest {
   refine_steps?: number
   mood?: string
   moodboard_ids?: number[]
+  moodboard_uuids?: string[]
   moodboard_strength?: number
   moodboard_images?: string[]
+  seed_variance_preset?: 'off' | 'subtle' | 'balanced' | 'creative' | 'bold' | 'custom'
+  seed_variance_strength?: number
+  seed_variance_protection?: 'none' | 'first_quarter' | 'first_half'
 }
 
 export interface RealtimePreviewRequest {
@@ -151,9 +159,18 @@ export interface SystemReport {
   ram_available_gb?: number
   disk_free_gb?: number
   gpu_processes: string[]
-  model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null }
+  gpu_process_details?: Array<{ pid: number; name: string; used_memory_gb?: number }>
+  model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null; text_encoder_source?: { kind: string; path: string; runtime?: string; status?: string } | null; memory?: Record<string, any> }
   support_models?: Array<{ id: string; label: string; repo_id: string; purpose: string; installed: boolean; optional?: boolean; cache_dir: string }>
   variants: Array<{ id: string; label: string; vram_gb: number; ram_gb: number; blockers: string[]; warnings: string[]; ok: boolean }>
+}
+
+export interface KreaServerProcess {
+  pid: number
+  port?: number | null
+  command_line: string
+  used_memory_gb?: number
+  can_stop: boolean
 }
 
 export interface AuthSession {
@@ -233,6 +250,11 @@ export const apiFetch = {
     api.post('/api/load-model', { checkpoint_path: path, quantization: quant }).then(r => r.data),
 
   unloadModel: () => api.post('/api/unload-model').then(r => r.data),
+
+  releaseTransientMemory: () => api.post('/api/memory/release-transient').then(r => r.data),
+  unloadModelMemory: () => api.post('/api/memory/unload-model').then(r => r.data),
+  memoryProcesses: () => api.get<{ items: KreaServerProcess[] }>('/api/memory/processes').then(r => r.data),
+  stopMemoryProcess: (pid: number) => api.post('/api/memory/stop-process', { pid }).then(r => r.data),
 
   gallery: (page = 1, pageSize = 50, favorites = false) =>
     api.get<{ items: GalleryItem[]; total: number }>(`/api/gallery?page=${page}&page_size=${pageSize}&favorites=${favorites}`).then(r => r.data),

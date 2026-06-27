@@ -14,6 +14,24 @@ from typing import Any
 ITERS = 200_000
 SESSION_TTL_SECONDS = 12 * 60 * 60
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+TRUTHY = {"1", "true", "yes", "on"}
+FALSY = {"0", "false", "no", "off"}
+
+
+def resolve_auth_enabled(config_value: str | None, *, has_users: bool) -> bool:
+    if config_value is not None:
+        normalized = config_value.strip().lower()
+        if normalized in TRUTHY:
+            return True
+        if normalized in FALSY:
+            return False
+    return has_users
+
+
+def resolve_auto_funnel_enabled(config_value: str | None, *, auth_enabled: bool, has_admin: bool = True) -> bool:
+    if not auth_enabled or not has_admin or config_value is None:
+        return False
+    return config_value.strip().lower() in TRUTHY
 
 
 def load_users(path: Path) -> dict[str, dict[str, str]]:
@@ -69,6 +87,8 @@ def remove_user(path: Path, username: str) -> bool:
     users = load_users(path)
     if username not in users:
         return False
+    if _normalize_role(users[username].get("role", "admin")) == "admin" and _admin_count(users) <= 1:
+        raise ValueError("cannot remove the last admin")
     del users[username]
     save_users(path, users)
     return True
@@ -93,11 +113,23 @@ def get_user_role(path: Path, username: str) -> str | None:
     return _normalize_role(rec.get("role", "admin"))
 
 
+def _admin_count(users: dict[str, dict[str, str]]) -> int:
+    return sum(1 for rec in users.values() if _normalize_role(rec.get("role", "admin")) == "admin")
+
+
+def has_admin(path: Path) -> bool:
+    return _admin_count(load_users(path)) > 0
+
+
 def set_user_role(path: Path, username: str, role: str) -> bool:
     users = load_users(path)
     if username not in users:
         return False
-    users[username]["role"] = _normalize_role(role)
+    new_role = _normalize_role(role)
+    old_role = _normalize_role(users[username].get("role", "admin"))
+    if old_role == "admin" and new_role != "admin" and _admin_count(users) <= 1:
+        raise ValueError("cannot demote the last admin")
+    users[username]["role"] = new_role
     save_users(path, users)
     return True
 

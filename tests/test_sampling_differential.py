@@ -51,6 +51,38 @@ class DifferentialMaskTests(unittest.TestCase):
                 sampler="missing_sampler",
             )
 
+    def test_seed_variance_off_is_bitwise_equivalent(self) -> None:
+        from seed_variance import apply_seed_variance
+
+        txt = torch.randn(1, 8, 2, 4)
+
+        out = apply_seed_variance(txt, seed=123, preset="off")
+
+        self.assertTrue(torch.equal(out, txt))
+
+    def test_seed_variance_is_deterministic_and_changes_conditioning(self) -> None:
+        from seed_variance import apply_seed_variance
+
+        txt = torch.zeros(1, 8, 2, 4)
+
+        first = apply_seed_variance(txt, seed=123, preset="balanced", protection="none")
+        second = apply_seed_variance(txt, seed=123, preset="balanced", protection="none")
+        other = apply_seed_variance(txt, seed=124, preset="balanced", protection="none")
+
+        self.assertTrue(torch.equal(first, second))
+        self.assertFalse(torch.equal(first, txt))
+        self.assertFalse(torch.equal(first, other))
+
+    def test_seed_variance_protects_first_half_tokens(self) -> None:
+        from seed_variance import apply_seed_variance
+
+        txt = torch.zeros(1, 8, 2, 4)
+
+        out = apply_seed_variance(txt, seed=123, preset="bold", protection="first_half")
+
+        self.assertTrue(torch.equal(out[:, :4], txt[:, :4]))
+        self.assertFalse(torch.equal(out[:, 4:], txt[:, 4:]))
+
 
 if __name__ == "__main__":
     unittest.main()

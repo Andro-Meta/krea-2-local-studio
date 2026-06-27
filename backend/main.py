@@ -53,6 +53,7 @@ from schemas import (
     FavoriteRequest,
     GenerationRequest,
     LoadModelRequest,
+    MemoryStopProcessRequest,
     MoodboardImportRequest,
     MoodboardImportResponse,
     MoodboardDiscoveryResponse,
@@ -86,6 +87,12 @@ from support_models import download_support_models, support_model_status
 from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, start_funnel, stop_funnel, tailscale_status, tailscale_up
 from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_lora_filename
 from system_check import get_system_report
+from memory_manager import (
+    detect_krea_server_processes,
+    release_transient_pipeline_memory,
+    stop_krea_server_process,
+    unload_pipeline,
+)
 
 logger = logging.getLogger(__name__)
 setup_logging(LOGS_DIR)
@@ -160,6 +167,8 @@ def _auth_username_from_cookie(cookie: str | None) -> str | None:
 
 def _requires_admin(path: str, method: str) -> bool:
     if path.startswith("/api/admin/") or path.startswith("/api/sharing/"):
+        return True
+    if path.startswith("/api/memory/"):
         return True
     if path in {"/api/settings", "/api/load-model", "/api/unload-model", "/api/support-models/download"}:
         return True
@@ -297,8 +306,11 @@ async def admin_add_user(req: ShareUserCreateRequest):
 
 @app.put("/api/admin/users/{username}/role")
 async def admin_set_user_role(username: str, req: ShareUserRoleRequest):
-    if not set_user_role(SHARE_AUTH_FILE, username, req.role):
-        raise HTTPException(404, "User not found")
+    try:
+        if not set_user_role(SHARE_AUTH_FILE, username, req.role):
+            raise HTTPException(404, "User not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "users": list_user_records(SHARE_AUTH_FILE)}
 
 
@@ -316,8 +328,11 @@ async def admin_set_user_password(username: str, req: ShareUserPasswordRequest):
 
 @app.delete("/api/admin/users/{username}")
 async def admin_remove_user(username: str):
-    if not remove_user(SHARE_AUTH_FILE, username):
-        raise HTTPException(404, "User not found")
+    try:
+        if not remove_user(SHARE_AUTH_FILE, username):
+            raise HTTPException(404, "User not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "users": list_user_records(SHARE_AUTH_FILE)}
 
 
@@ -660,6 +675,14 @@ if PUBLIC_BASE_PATH != "/":
 # Model management
 # ---------------------------------------------------------------------------
 
+def _load_model_error_detail(exc: Exception) -> str:
+    detail = str(exc) or "Model load failed"
+    lower = detail.lower()
+    if any(token in lower for token in ("vram", "system ram", "ram critically low", "no model loaded")):
+        detail += " Check the System tab for free RAM/VRAM and duplicate GPU Python processes."
+    return detail
+
+
 @app.post("/api/load-model")
 async def load_model(req: LoadModelRequest):
     loop = asyncio.get_event_loop()
@@ -670,18 +693,41 @@ async def load_model(req: LoadModelRequest):
     except Exception as exc:
         logger.exception("Model load failed")
         if isinstance(exc, (RuntimeError, FileNotFoundError)):
-            raise HTTPException(400, str(exc))
+            raise HTTPException(400, _load_model_error_detail(exc))
         raise HTTPException(500, "Model load failed. Check the server logs for details.")
     return {"status": "loaded", "checkpoint": req.checkpoint_path}
 
 
 @app.post("/api/unload-model")
 async def unload_model():
-    pipeline.unload()
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return {"status": "unloaded"}
+    result = unload_pipeline(pipeline)
+    return {"status": "unloaded", **result}
+
+
+@app.post("/api/memory/release-transient")
+async def memory_release_transient():
+    return release_transient_pipeline_memory(pipeline)
+
+
+@app.post("/api/memory/unload-model")
+async def memory_unload_model():
+    result = unload_pipeline(pipeline)
+    return {"status": "unloaded", **result}
+
+
+@app.get("/api/memory/processes")
+async def memory_processes():
+    return {"items": detect_krea_server_processes()}
+
+
+@app.post("/api/memory/stop-process")
+async def memory_stop_process(req: MemoryStopProcessRequest):
+    try:
+        return stop_krea_server_process(req.pid)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -963,6 +1009,8 @@ async def system_info():
         "auto_checkpoint": auto_cp,
         "auto_quant": auto_quant,
         "load_error": getattr(pipeline, "_last_load_error", None),
+        "text_encoder_source": getattr(pipeline, "_text_encoder_source", None),
+        "memory": pipeline.memory_status(),
     }
     report["support_models"] = support_model_status()
     return report

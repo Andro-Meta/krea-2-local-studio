@@ -1,0 +1,91 @@
+{
+  "request": {
+    "prompt": "replace the gray block with a detailed brass lantern glowing warm amber light, realistic cinematic lighting, consistent perspective",
+    "negative_prompt": "blurry, smeared, broken geometry, low quality, text artifacts",
+    "mode": "inpaint",
+    "checkpoint": "turbo",
+    "quantization": "fp8",
+    "steps": 6,
+    "cfg": 0,
+    "width": 512,
+    "height": 512,
+    "num_images": 1,
+    "seed": 240627,
+    "denoise": 1.0,
+    "sampler": "euler_flow",
+    "inpaint_method": "lanpaint_experimental",
+    "lanpaint_inner_steps": 3,
+    "lanpaint_strength": 0.7,
+    "refine": false,
+    "use_prompt_expander": false
+  },
+  "job_status": {
+    "status": "done",
+    "progress": 100,
+    "error": null,
+    "seed": 240627,
+    "edit_provider": "krea_native",
+    "provider_warning": "Using Krea native edit pipeline.",
+    "metadata": [
+      {
+        "schema_version": 1,
+        "app": "Krea 2 Studio",
+        "created_at": "2026-06-27T05:53:43Z",
+        "filename": "1782539623466_4d3d1d14.png",
+        "prompt": "replace the gray block with a detailed brass lantern glowing warm amber light, realistic cinematic lighting, consistent perspective",
+        "original_prompt": "replace the gray block with a detailed brass lantern glowing warm amber light, realistic cinematic lighting, consistent perspective",
+        "negative_prompt": "blurry, smeared, broken geometry, low quality, text artifacts",
+        "seed": 240627,
+        "base_seed": 240627,
+        "image_index": 0,
+        "mode": "inpaint",
+        "checkpoint": "turbo",
+        "checkpoint_path": "",
+        "quantization": "fp8",
+        "steps": 6,
+        "cfg": 0.0,
+        "width": 512,
+        "height": 512,
+        "denoise": 1.0,
+        "sampler": "euler_flow",
+        "inpaint": {
+          "method": "lanpaint_experimental",
+          "lanpaint_inner_steps": 3,
+          "lanpaint_strength": 0.7
+        },
+        "mu": null,
+        "y1": 0.5,
+        "y2": 1.15,
+        "edit_provider": "auto",
+        "resolved_provider": "",
+        "quality_preset": "balanced",
+        "loras": [],
+        "mood": "",
+        "moodboard_ids": [],
+        "moodboard_strength": 0.5,
+        "image_references": {
+          "moodboard_count": 0,
+          "ref_image_count": 0,
+          "hashes": []
+        },
+        "rebalance": {
+          "enabled": true,
+          "multiplier": 4.0,
+          "weights": "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
+        },
+        "krea_enhancer": {
+          "enabled": false,
+          "strength": 1.0
+        },
+        "refine": {
+          "enabled": false,
+          "denoise": 0.3,
+          "steps": 6
+        },
+        "bboxes": [],
+        "use_prompt_expander": false
+      }
+    ],
+    "lora_warnings": []
+  }
+}

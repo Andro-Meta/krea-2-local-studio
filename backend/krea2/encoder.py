@@ -10,9 +10,13 @@ Extended with forward_with_images() for multimodal reference-image conditioning.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
 import torch
 import torch.nn as nn
+
+from support_models import support_model_path
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,49 @@ IMAGE_SYSTEM_PROMPT = (
     "image. Generate a new image that meets the user's requirements while maintaining "
     "consistency with the original input where appropriate."
 )
+IMAGE_TOKEN_SIZES = {
+    "low": 256,
+    "normal": 512,
+    "high": 1024,
+    "max": 1280,
+}
+
+
+def resolve_conditioner_source(version: str | None = None) -> dict[str, str]:
+    """Resolve the preferred Krea text-encoder asset.
+
+    ComfyUI runs Krea 2 with a separate FP8 Qwen3-VL asset. We detect that
+    asset so the app can report it and use it once a native FP8 transformer path
+    is available; the current safe runtime path remains the HF/Transformers bf16
+    model.
+    """
+    if version:
+        return {"kind": "hf_bf16", "path": version, "runtime": "hf_bf16", "status": "HF BF16 runtime"}
+    if os.environ.get("KREA2_TEXT_ENCODER", "").lower() == "bf16":
+        return {
+            "kind": "hf_bf16",
+            "path": "Qwen/Qwen3-VL-4B-Instruct",
+            "runtime": "hf_bf16",
+            "status": "HF BF16 runtime forced by KREA2_TEXT_ENCODER",
+        }
+    try:
+        root = support_model_path("qwen3_vl_fp8")
+        candidate = Path(root) / "text_encoders" / "qwen3vl_4b_fp8_scaled.safetensors"
+        if candidate.exists():
+            return {
+                "kind": "comfy_fp8",
+                "path": str(candidate),
+                "runtime": "hf_bf16_fallback",
+                "status": "FP8 asset installed; runtime unsupported, using HF BF16 fallback",
+            }
+    except Exception:
+        pass
+    return {
+        "kind": "hf_bf16",
+        "path": "Qwen/Qwen3-VL-4B-Instruct",
+        "runtime": "hf_bf16",
+        "status": "HF BF16 runtime",
+    }
 
 
 def _wrap_image_prompt(text: str, n_images: int) -> str:
@@ -68,6 +115,12 @@ class Qwen3VLConditioner(nn.Module):
         self._version = version
         self.select_layers = select_layers
         self.max_length = max_length
+        self.source = resolve_conditioner_source()
+        if self.source["kind"] == "comfy_fp8":
+            logger.info(
+                "ComfyUI FP8 Qwen3-VL asset detected at %s; using HF bf16 runtime fallback.",
+                self.source["path"],
+            )
 
         self.qwen = Qwen3VLForConditionalGeneration.from_pretrained(
             version,
@@ -143,6 +196,7 @@ class Qwen3VLConditioner(nn.Module):
         self,
         prompts: list[str],
         images: list,  # list[PIL.Image]
+        token_size: str = "normal",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode prompts + reference images via Qwen3-VL vision path.
 
@@ -157,7 +211,8 @@ class Qwen3VLConditioner(nn.Module):
 
         device = next(self.qwen.parameters()).device
         n_images = len(images)
-        resized = [img.resize((384, 384)).convert("RGB") for img in images]
+        image_size = IMAGE_TOKEN_SIZES.get(token_size, IMAGE_TOKEN_SIZES["normal"])
+        resized = [img.resize((image_size, image_size)).convert("RGB") for img in images]
         wrapped = _wrap_image_prompt(prompts[0], n_images)
 
         try:

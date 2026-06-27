@@ -14,6 +14,22 @@ import share_auth
 
 
 class ShareAuthTests(unittest.TestCase):
+    def test_resolves_auth_policy_from_config_or_users(self) -> None:
+        self.assertFalse(share_auth.resolve_auth_enabled(None, has_users=False))
+        self.assertTrue(share_auth.resolve_auth_enabled(None, has_users=True))
+        self.assertFalse(share_auth.resolve_auth_enabled("false", has_users=True))
+        self.assertFalse(share_auth.resolve_auth_enabled("0", has_users=True))
+        self.assertTrue(share_auth.resolve_auth_enabled("true", has_users=False))
+        self.assertTrue(share_auth.resolve_auth_enabled("yes", has_users=False))
+
+    def test_auto_funnel_requires_auth_and_truthy_config(self) -> None:
+        self.assertFalse(share_auth.resolve_auto_funnel_enabled(None, auth_enabled=True))
+        self.assertFalse(share_auth.resolve_auto_funnel_enabled("false", auth_enabled=True))
+        self.assertFalse(share_auth.resolve_auto_funnel_enabled("true", auth_enabled=False))
+        self.assertFalse(share_auth.resolve_auto_funnel_enabled("true", auth_enabled=True, has_admin=False))
+        self.assertTrue(share_auth.resolve_auto_funnel_enabled("true", auth_enabled=True, has_admin=True))
+        self.assertTrue(share_auth.resolve_auto_funnel_enabled("1", auth_enabled=True, has_admin=True))
+
     def test_user_passwords_are_hashed_and_verified(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             store = Path(td) / "auth.json"
@@ -34,6 +50,7 @@ class ShareAuthTests(unittest.TestCase):
             share_auth.add_user(store, "admin", "correct horse", role="admin")
             share_auth.add_user(store, "viewer", "correct horse", role="user")
 
+            self.assertTrue(share_auth.has_admin(store))
             self.assertEqual(share_auth.get_user_role(store, "admin"), "admin")
             self.assertEqual(share_auth.get_user_role(store, "viewer"), "user")
             self.assertTrue(share_auth.set_user_role(store, "viewer", "admin"))
@@ -43,10 +60,25 @@ class ShareAuthTests(unittest.TestCase):
             self.assertEqual([r["username"] for r in records], ["admin", "viewer"])
             self.assertEqual(records[1]["role"], "admin")
 
+    def test_refuses_to_remove_or_demote_last_admin(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = Path(td) / "auth.json"
+            share_auth.add_user(store, "admin", "correct horse", role="admin")
+            share_auth.add_user(store, "viewer", "correct horse", role="user")
+
+            with self.assertRaisesRegex(ValueError, "last admin"):
+                share_auth.set_user_role(store, "admin", "user")
+            with self.assertRaisesRegex(ValueError, "last admin"):
+                share_auth.remove_user(store, "admin")
+
+            self.assertTrue(share_auth.has_admin(store))
+            self.assertEqual(share_auth.get_user_role(store, "admin"), "admin")
+
     def test_session_token_round_trip_and_revocation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             store = Path(td) / "auth.json"
             share_auth.add_user(store, "alice", "correct horse")
+            share_auth.add_user(store, "bob", "correct horse", role="admin")
 
             token = share_auth.create_session_token("alice", "secret", now=1000)
 

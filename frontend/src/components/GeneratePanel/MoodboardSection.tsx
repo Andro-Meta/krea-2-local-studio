@@ -87,12 +87,13 @@ export default function MoodboardSection() {
       const images = await Promise.all(refs.map(src => apiFetch.moodboardImage(src)))
       const current = useStore.getState().params
       const nextIds = Array.from(new Set([...current.selected_moodboard_ids, moodboard.id]))
+      const nextUuids = Array.from(new Set([...current.moodboard_uuids, moodboard.uuid].filter(Boolean)))
       const nextImages = Array.from(new Set([...current.moodboard_images, ...images])).slice(0, MAX_CATALOG_REFS)
       setSelectedBoards(prev => prev.some(board => board.id === moodboard.id) ? prev : [...prev, moodboard])
       setParam('selected_moodboard_ids', nextIds)
+      setParam('moodboard_uuids', nextUuids)
       setParam('moodboard_images', nextImages)
       if (!current.prompt.trim()) setParam('prompt', moodboard.title)
-      if (current.moodboard_strength < 0.55) setParam('moodboard_strength', 0.55)
     } catch (e: any) {
       setCatalogMessage(moodboardErrorMessage(e, 'Could not load Krea moodboard images.'))
     } finally {
@@ -101,7 +102,9 @@ export default function MoodboardSection() {
   }
 
   const removeCatalogMoodboard = (id: number) => {
+    const board = selectedBoards.find(board => board.id === id)
     setParam('selected_moodboard_ids', selectedCatalogIds.filter(existing => existing !== id))
+    if (board?.uuid) setParam('moodboard_uuids', params.moodboard_uuids.filter(uuid => uuid !== board.uuid))
     setSelectedBoards(prev => prev.filter(board => board.id !== id))
   }
 
@@ -292,7 +295,7 @@ export default function MoodboardSection() {
                 size="small"
               />
               <Typography variant="caption" sx={{ color: 'text.disabled' }}>
-                0.5 = balanced · higher = stronger style push
+                0.35 = Comfy default · higher = stronger style push
               </Typography>
             </Box>
           )}

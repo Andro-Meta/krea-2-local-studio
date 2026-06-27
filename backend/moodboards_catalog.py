@@ -466,6 +466,7 @@ async def get_moodboard(moodboard_id: int, db_path: Path = DB_PATH) -> dict | No
 def moodboard_generation_context(
     moodboard_ids: list[int],
     *,
+    moodboard_uuids: list[str] | None = None,
     db_path: Path = DB_PATH,
     max_images: int = 10,
 ) -> dict:
@@ -477,14 +478,26 @@ def moodboard_generation_context(
             continue
         if item_id > 0 and item_id not in ids:
             ids.append(item_id)
-    if not ids:
-        return {"items": [], "style_text": "", "image_urls": []}
+    uuids = []
+    for value in moodboard_uuids or []:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in uuids:
+            uuids.append(normalized)
+    if not ids and not uuids:
+        return {"items": [], "style_text": "", "image_urls": [], "uuids": []}
 
-    placeholders = ",".join("?" for _ in ids)
+    clauses: list[str] = []
+    params: list[object] = []
+    if ids:
+        clauses.append(f"id IN ({','.join('?' for _ in ids)})")
+        params.extend(ids)
+    if uuids:
+        clauses.append(f"uuid IN ({','.join('?' for _ in uuids)})")
+        params.extend(uuids)
     db = sqlite3.connect(str(db_path))
     db.row_factory = sqlite3.Row
     try:
-        cur = db.execute(f"SELECT * FROM moodboards WHERE id IN ({placeholders})", ids)
+        cur = db.execute(f"SELECT * FROM moodboards WHERE {' OR '.join(clauses)}", params)
         try:
             rows = cur.fetchall()
         finally:
@@ -492,7 +505,19 @@ def moodboard_generation_context(
     finally:
         db.close()
     by_id = {int(row["id"]): _sync_row_to_item(row) for row in rows}
-    items = [by_id[item_id] for item_id in ids if item_id in by_id]
+    by_uuid = {str(row["uuid"]): _sync_row_to_item(row) for row in rows if str(row["uuid"])}
+    items: list[dict] = []
+    seen_item_ids: set[int] = set()
+    for item_id in ids:
+        item = by_id.get(item_id)
+        if item and int(item["id"]) not in seen_item_ids:
+            items.append(item)
+            seen_item_ids.add(int(item["id"]))
+    for uuid in uuids:
+        item = by_uuid.get(uuid)
+        if item and int(item["id"]) not in seen_item_ids:
+            items.append(item)
+            seen_item_ids.add(int(item["id"]))
 
     parts: list[str] = []
     image_urls: list[str] = []
@@ -513,7 +538,12 @@ def moodboard_generation_context(
             if len(image_urls) >= max_images:
                 break
     style_text = "Apply these Krea moodboard styles: " + " | ".join(parts) if parts else ""
-    return {"items": items, "style_text": style_text, "image_urls": image_urls}
+    return {
+        "items": items,
+        "style_text": style_text,
+        "image_urls": image_urls,
+        "uuids": [str(item.get("uuid", "")) for item in items if item.get("uuid")],
+    }
 
 
 async def _get_existing_moodboard_urls(db_path: Path = DB_PATH) -> set[str]:

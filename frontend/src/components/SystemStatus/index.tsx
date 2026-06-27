@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
 import GpuIcon from '@mui/icons-material/Memory'
-import { apiFetch, type AppSettings, type AuthSession, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
+import { apiFetch, type AppSettings, type AuthSession, type KreaServerProcess, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
 import { useStore } from '../../store'
 
 function GBBar({ label, used, total }: { label: string; used?: number; total?: number }) {
@@ -53,6 +53,9 @@ export default function SystemStatus() {
   const [qualityAssets, setQualityAssets] = useState<{ has_hf_token: boolean; items: QualityAsset[] } | null>(null)
   const [qualityBusy, setQualityBusy] = useState<string | null>(null)
   const [qualityMessage, setQualityMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
+  const [memoryBusy, setMemoryBusy] = useState<string | null>(null)
+  const [memoryMessage, setMemoryMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
+  const [kreaProcesses, setKreaProcesses] = useState<KreaServerProcess[]>([])
   const { setSystemReport } = useStore()
   const isAdmin = auth?.role === 'admin'
 
@@ -203,8 +206,64 @@ export default function SystemStatus() {
   }
 
   const unload = async () => {
-    await apiFetch.unloadModel()
-    await refresh()
+    setMemoryBusy('unload')
+    setMemoryMessage(null)
+    try {
+      await apiFetch.unloadModelMemory()
+      await refresh()
+      setMemoryMessage({ severity: 'success', text: 'Model unloaded and CUDA cache cleared.' })
+    } catch (e: any) {
+      setMemoryMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not unload model.' })
+    } finally {
+      setMemoryBusy(null)
+    }
+  }
+
+  const releaseTransientMemory = async () => {
+    setMemoryBusy('release')
+    setMemoryMessage(null)
+    try {
+      await apiFetch.releaseTransientMemory()
+      await refresh()
+      setMemoryMessage({ severity: 'success', text: 'Transient encoder/cache memory released.' })
+    } catch (e: any) {
+      setMemoryMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not release memory.' })
+    } finally {
+      setMemoryBusy(null)
+    }
+  }
+
+  const loadMemoryProcesses = async () => {
+    setMemoryBusy('processes')
+    setMemoryMessage(null)
+    try {
+      const result = await apiFetch.memoryProcesses()
+      setKreaProcesses(result.items)
+      setMemoryMessage({
+        severity: result.items.length ? 'info' : 'success',
+        text: result.items.length ? `Found ${result.items.length} Krea server process${result.items.length === 1 ? '' : 'es'}.` : 'No duplicate Krea server processes found.',
+      })
+    } catch (e: any) {
+      setMemoryMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not inspect Krea server processes.' })
+    } finally {
+      setMemoryBusy(null)
+    }
+  }
+
+  const stopMemoryProcess = async (pid: number) => {
+    if (!window.confirm(`Stop Krea server process ${pid}? Only do this for duplicate servers you are not using.`)) return
+    setMemoryBusy(`stop-${pid}`)
+    setMemoryMessage(null)
+    try {
+      await apiFetch.stopMemoryProcess(pid)
+      await refresh()
+      await loadMemoryProcesses()
+      setMemoryMessage({ severity: 'success', text: `Stopped Krea server process ${pid}.` })
+    } catch (e: any) {
+      setMemoryMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? `Could not stop process ${pid}.` })
+    } finally {
+      setMemoryBusy(null)
+    }
   }
 
   const downloadSupportModels = async () => {
@@ -323,7 +382,13 @@ export default function SystemStatus() {
                   Disk free: {report.disk_free_gb.toFixed(1)} GB
                 </Typography>
               )}
-              {report.gpu_processes.length > 0 && (
+              {(report.gpu_process_details?.length ?? 0) > 0 ? (
+                <Typography variant="caption" sx={{ color: 'warning.main' }}>
+                  Other GPU processes: {report.gpu_process_details?.map(proc =>
+                    `${proc.name} pid ${proc.pid}${proc.used_memory_gb != null ? ` (${proc.used_memory_gb.toFixed(1)} GB)` : ''}`,
+                  ).join(', ')}
+                </Typography>
+              ) : report.gpu_processes.length > 0 && (
                 <Typography variant="caption" sx={{ color: 'warning.main' }}>
                   Other GPU processes: {report.gpu_processes.join(', ')}
                 </Typography>
@@ -356,6 +421,7 @@ export default function SystemStatus() {
         <Paper sx={{ p: 2 }}>
           <Typography variant="h6" mb={1.5}>Model</Typography>
           {!isAdmin && <Alert severity="info" sx={{ py: 0, mb: 1 }}>Only admins can load or unload models.</Alert>}
+          {memoryMessage && <Alert severity={memoryMessage.severity} sx={{ py: 0, mb: 1 }}>{memoryMessage.text}</Alert>}
           {report?.model_status.loading ? (
             <Stack direction="row" spacing={1.5} alignItems="center">
               <CircularProgress size={18} />
@@ -372,8 +438,16 @@ export default function SystemStatus() {
               <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                 Quantization: {report.model_status.quantization}
               </Typography>
-              <Button variant="outlined" color="error" size="small" onClick={unload} disabled={!isAdmin} sx={{ alignSelf: 'flex-start' }}>
-                Unload
+              {report.model_status.text_encoder_source && (
+                <Typography variant="caption" sx={{ color: 'text.secondary', wordBreak: 'break-all' }}>
+                  Text encoder: {report.model_status.text_encoder_source.kind}
+                  {report.model_status.text_encoder_source.runtime ? ` · runtime ${report.model_status.text_encoder_source.runtime}` : ''}
+                  {' · '}
+                  {report.model_status.text_encoder_source.status || report.model_status.text_encoder_source.path}
+                </Typography>
+              )}
+              <Button variant="outlined" color="error" size="small" onClick={unload} disabled={!isAdmin || !!memoryBusy} sx={{ alignSelf: 'flex-start' }}>
+                {memoryBusy === 'unload' ? <CircularProgress size={14} color="inherit" /> : 'Unload'}
               </Button>
             </Stack>
           ) : (
@@ -417,6 +491,61 @@ export default function SystemStatus() {
               </Button>
             </Stack>
           )}
+        </Paper>
+
+        <Paper sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Typography variant="h6">Memory Tools</Typography>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              Free transient encoder/cache memory or inspect duplicate Krea servers before loading the model.
+            </Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={releaseTransientMemory}
+                disabled={!isAdmin || !!memoryBusy}
+                startIcon={memoryBusy === 'release' ? <CircularProgress size={14} color="inherit" /> : undefined}
+              >
+                Free transient memory
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={loadMemoryProcesses}
+                disabled={!isAdmin || !!memoryBusy}
+                startIcon={memoryBusy === 'processes' ? <CircularProgress size={14} color="inherit" /> : undefined}
+              >
+                Detect Krea servers
+              </Button>
+            </Stack>
+            {kreaProcesses.length > 0 && (
+              <Stack spacing={1}>
+                {kreaProcesses.map(proc => (
+                  <Paper key={proc.pid} variant="outlined" sx={{ p: 1 }}>
+                    <Stack spacing={0.75}>
+                      <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', fontSize: 12 }}>
+                        PID {proc.pid}{proc.port ? ` · port ${proc.port}` : ''}{proc.used_memory_gb != null ? ` · ${proc.used_memory_gb.toFixed(1)} GB VRAM` : ''}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: 'text.disabled', wordBreak: 'break-all' }}>
+                        {proc.command_line}
+                      </Typography>
+                      <Button
+                        variant="outlined"
+                        color="warning"
+                        size="small"
+                        onClick={() => stopMemoryProcess(proc.pid)}
+                        disabled={!isAdmin || !proc.can_stop || !!memoryBusy}
+                        sx={{ alignSelf: 'flex-start' }}
+                      >
+                        {memoryBusy === `stop-${proc.pid}` ? <CircularProgress size={14} color="inherit" /> : 'Stop this duplicate'}
+                      </Button>
+                    </Stack>
+                  </Paper>
+                ))}
+              </Stack>
+            )}
+          </Stack>
         </Paper>
 
         {/* Krea conditioning assets */}
