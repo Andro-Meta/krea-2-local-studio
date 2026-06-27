@@ -29,7 +29,7 @@ from PIL import Image
 from conditioning import blend_split_conditioning, rebalance, resolve_rebalance_weights
 from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
-from krea2.encoder import cap_vision_megapixels, crop_image_to_mask
+from krea2.reference_image import cap_vision_megapixels, crop_image_to_mask
 from krea2.sampler_registry import validate_sampler_configuration
 from krea2.lanpaint_sampler import LanPaintSettings
 from lora_manager import apply_loras, build_trigger_prompt

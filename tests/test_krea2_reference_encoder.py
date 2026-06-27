@@ -11,8 +11,8 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from krea2.encoder import (  # noqa: E402
-    _wrap_image_prompt,
+from krea2.reference_image import (  # noqa: E402
+    wrap_image_prompt,
     cap_vision_megapixels,
     crop_image_to_mask,
 )
@@ -40,12 +40,12 @@ class Krea2ReferenceEncoderTests(unittest.TestCase):
         self.assertEqual(unchanged.size, (200, 100))
 
     def test_prompt_wrapper_supports_image_after_prompt(self) -> None:
-        wrapped = _wrap_image_prompt("paint a red jacket", 1, vision_position="after_prompt")
+        wrapped = wrap_image_prompt("paint a red jacket", 1, vision_position="after_prompt")
 
         self.assertLess(wrapped.index("paint a red jacket"), wrapped.index("<|image_pad|>"))
 
     def test_prompt_wrapper_bounds_system_prompt_override(self) -> None:
-        wrapped = _wrap_image_prompt("x", 1, system_prompt="a" * 1000)
+        wrapped = wrap_image_prompt("x", 1, system_prompt="a" * 1000)
 
         self.assertIn("a" * 512, wrapped)
         self.assertNotIn("a" * 513, wrapped)
