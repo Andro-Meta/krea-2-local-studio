@@ -1,6 +1,6 @@
 # Core
 fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
+uvicorn[standard]>=0.49.0
 python-multipart>=0.0.12
 aiosqlite>=0.20.0
 aiofiles>=23.2.1
