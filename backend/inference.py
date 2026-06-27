@@ -710,7 +710,7 @@ class Krea2Pipeline:
         # Save + return base64 + filenames. Realtime previews pass
         # save_outputs=False so they never spam the Gallery output directory.
         metadata = [
-            build_generation_metadata(req, base_seed=seed, image_index=i, filename=filenames[i] if i < len(filenames) else "")
+            build_generation_metadata(req, base_seed=seed, image_index=i, filename="")
             for i in range(len(images))
         ]
         results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs, metadata=metadata)

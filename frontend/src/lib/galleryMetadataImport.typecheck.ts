@@ -21,3 +21,13 @@ const imported = metadataToGenerateParams({
 imported.mode satisfies 'redraw'
 imported.init_image_b64 satisfies string | undefined
 imported.loras?.[0].name satisfies string | undefined
+
+const importedT2i = metadataToGenerateParams({ prompt: 'x', mode: 'txt2img' }, 'txt2img', 'IMAGE_B64')
+const importedImg2Img = metadataToGenerateParams({ prompt: 'x', mode: 'txt2img' }, 'img2img', 'IMAGE_B64')
+const importedInpaint = metadataToGenerateParams({ prompt: 'x', mode: 'txt2img' }, 'inpaint', 'IMAGE_B64')
+const importedOutpaint = metadataToGenerateParams({ prompt: 'x', mode: 'txt2img' }, 'outpaint', 'IMAGE_B64')
+
+importedT2i.mode satisfies 'txt2img'
+importedImg2Img.mode satisfies 'img2img'
+importedInpaint.mode satisfies 'inpaint'
+importedOutpaint.mode satisfies 'outpaint'
