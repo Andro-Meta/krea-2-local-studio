@@ -1,25 +1,37 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
-  Box, Chip, Collapse, IconButton, Slider, Stack, Tooltip, Typography,
+  Box, Button, Chip, CircularProgress, Collapse, IconButton, Slider, Stack, TextField, Tooltip, Typography,
 } from '@mui/material'
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate'
 import CloseIcon from '@mui/icons-material/Close'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { useStore } from '../../store'
-import { apiFetch, type Mood } from '../../api'
+import { apiFetch, type Mood, type MoodboardItem } from '../../api'
+
+const MAX_CATALOG_REFS = 10
+
+function moodboardRefs(board: MoodboardItem): string[] {
+  return Array.from(new Set([board.primary_image_url, ...board.image_urls].filter(Boolean))).slice(0, MAX_CATALOG_REFS)
+}
 
 export default function MoodboardSection() {
   const { params, setParam } = useStore()
   const [moods, setMoods] = useState<Mood[]>([])
+  const [catalogQuery, setCatalogQuery] = useState('')
+  const [catalogResults, setCatalogResults] = useState<MoodboardItem[]>([])
+  const [selectedBoards, setSelectedBoards] = useState<MoodboardItem[]>([])
+  const [catalogLoading, setCatalogLoading] = useState(false)
+  const [catalogMessage, setCatalogMessage] = useState('')
   const [open, setOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { apiFetch.moods().then(setMoods).catch(() => {}) }, [])
 
   const board = params.moodboard_images
-  const active = !!params.mood || board.length > 0
+  const active = !!params.mood || params.selected_moodboard_ids.length > 0 || board.length > 0
 
   const selectedIds = params.mood.split(',').map(id => id.trim()).filter(Boolean)
+  const selectedCatalogIds = params.selected_moodboard_ids
   const selectedMoods = selectedIds
     .map(id => moods.find(m => m.id === id))
     .filter((m): m is Mood => !!m)
@@ -29,6 +41,57 @@ export default function MoodboardSection() {
       ? selectedIds.filter(existing => existing !== id)
       : [...selectedIds, id]
     setParam('mood', next.join(','))
+  }
+
+  useEffect(() => {
+    const missing = selectedCatalogIds.filter(id => !selectedBoards.some(board => board.id === id))
+    if (!missing.length) return
+    Promise.all(missing.map(id => apiFetch.moodboard(id).catch(() => null)))
+      .then(items => setSelectedBoards(prev => [
+        ...prev,
+        ...items.filter((item): item is MoodboardItem => !!item && !prev.some(board => board.id === item.id)),
+      ]))
+      .catch(() => undefined)
+  }, [selectedCatalogIds, selectedBoards])
+
+  const searchCatalog = async () => {
+    setCatalogLoading(true)
+    setCatalogMessage('')
+    try {
+      const data = await apiFetch.moodboards({ q: catalogQuery, page: 1, pageSize: 8 })
+      setCatalogResults(data.items)
+      if (!data.items.length) setCatalogMessage('No catalog moodboards matched that search.')
+    } catch (e: any) {
+      setCatalogMessage(e?.response?.data?.detail ?? e?.message ?? 'Could not search moodboards.')
+    } finally {
+      setCatalogLoading(false)
+    }
+  }
+
+  const addCatalogMoodboard = async (moodboard: MoodboardItem) => {
+    setCatalogLoading(true)
+    setCatalogMessage('')
+    try {
+      const refs = moodboardRefs(moodboard)
+      const images = await Promise.all(refs.map(src => apiFetch.moodboardImage(src)))
+      const current = useStore.getState().params
+      const nextIds = Array.from(new Set([...current.selected_moodboard_ids, moodboard.id]))
+      const nextImages = Array.from(new Set([...current.moodboard_images, ...images])).slice(0, MAX_CATALOG_REFS)
+      setSelectedBoards(prev => prev.some(board => board.id === moodboard.id) ? prev : [...prev, moodboard])
+      setParam('selected_moodboard_ids', nextIds)
+      setParam('moodboard_images', nextImages)
+      if (!current.prompt.trim()) setParam('prompt', moodboard.title)
+      if (current.moodboard_strength < 0.55) setParam('moodboard_strength', 0.55)
+    } catch (e: any) {
+      setCatalogMessage(e?.message ?? 'Could not load Krea moodboard images.')
+    } finally {
+      setCatalogLoading(false)
+    }
+  }
+
+  const removeCatalogMoodboard = (id: number) => {
+    setParam('selected_moodboard_ids', selectedCatalogIds.filter(existing => existing !== id))
+    setSelectedBoards(prev => prev.filter(board => board.id !== id))
   }
 
   const addImages = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -50,13 +113,14 @@ export default function MoodboardSection() {
   const summary = selectedMoods.length
     ? selectedMoods.map(m => m.name).join(' + ')
     : ''
+  const catalogSummary = selectedCatalogIds.length ? `${selectedCatalogIds.length} Krea board${selectedCatalogIds.length === 1 ? '' : 's'}` : ''
 
   return (
     <Box>
       <Stack direction="row" alignItems="center" justifyContent="space-between"
         sx={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 1 }}>
-          Moodboard{active ? ` · ${summary}${summary && board.length ? ' + ' : ''}${board.length ? `${board.length} img` : ''}` : ''}
+          Moodboard{active ? ` · ${[summary, catalogSummary, board.length ? `${board.length} img` : ''].filter(Boolean).join(' + ')}` : ''}
         </Typography>
         <ExpandMoreIcon sx={{ color: 'text.secondary', transform: open ? 'rotate(180deg)' : 'none', transition: '0.2s' }} />
       </Stack>
@@ -86,6 +150,31 @@ export default function MoodboardSection() {
             </Box>
           )}
 
+          {selectedCatalogIds.length > 0 && (
+            <Box sx={{ mb: 1.5 }}>
+              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5, fontWeight: 600 }}>
+                Krea Catalog Moodboards
+              </Typography>
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                {selectedCatalogIds.map(id => {
+                  const selected = selectedBoards.find(board => board.id === id)
+                  return (
+                    <Chip
+                      key={id}
+                      label={selected?.title ?? `Moodboard #${id}`}
+                      size="small"
+                      color="primary"
+                      onDelete={() => removeCatalogMoodboard(id)}
+                    />
+                  )
+                })}
+              </Stack>
+              <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
+                Removing a catalog chip stops its text style conditioning. Reference thumbnails remain until removed below.
+              </Typography>
+            </Box>
+          )}
+
           {/* Mood presets, grouped by category */}
           <Box sx={{ maxHeight: 280, overflowY: 'auto', mb: 1.5 }}>
             {[...new Set(moods.map(m => m.category))].map(cat => (
@@ -110,6 +199,50 @@ export default function MoodboardSection() {
                 </Box>
               </Box>
             ))}
+          </Box>
+
+          {/* Krea catalog moodboards */}
+          <Box sx={{ mb: 1.5 }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5, fontWeight: 600 }}>
+              Search Krea Moodboard Catalog
+            </Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
+              <TextField
+                size="small"
+                value={catalogQuery}
+                onChange={e => setCatalogQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') searchCatalog() }}
+                placeholder="cinematic realism, pastel product, horror..."
+                fullWidth
+              />
+              <Button variant="outlined" onClick={searchCatalog} disabled={catalogLoading}>
+                {catalogLoading ? <CircularProgress size={16} /> : 'Search'}
+              </Button>
+            </Stack>
+            {catalogMessage && (
+              <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
+                {catalogMessage}
+              </Typography>
+            )}
+            {catalogResults.length > 0 && (
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+                {catalogResults.map(result => (
+                  <Tooltip key={result.id} title={result.taste_profile || result.keywords.join(', ')} arrow>
+                    <span>
+                      <Chip
+                        label={result.title}
+                        size="small"
+                        clickable
+                        disabled={catalogLoading || selectedCatalogIds.includes(result.id)}
+                        color={selectedCatalogIds.includes(result.id) ? 'primary' : 'default'}
+                        variant={selectedCatalogIds.includes(result.id) ? 'filled' : 'outlined'}
+                        onClick={() => addCatalogMoodboard(result)}
+                      />
+                    </span>
+                  </Tooltip>
+                ))}
+              </Stack>
+            )}
           </Box>
 
           {/* Image board */}

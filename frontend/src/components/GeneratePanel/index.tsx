@@ -76,6 +76,7 @@ export default function GeneratePanel() {
         refine_denoise: params.refine_denoise,
         refine_steps: params.refine_steps,
         mood: params.mood,
+        moodboard_ids: params.selected_moodboard_ids,
         moodboard_strength: params.moodboard_strength,
         moodboard_images: params.moodboard_images,
       })

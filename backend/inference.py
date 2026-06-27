@@ -29,6 +29,7 @@ from PIL import Image
 from conditioning import parse_weights, rebalance
 from krea_enhancer import krea_enhancer_context
 from lora_manager import apply_loras, build_trigger_prompt
+from moodboards_catalog import moodboard_generation_context
 from output_saver import encode_images
 from settings import OUTPUTS_DIR, settings
 from support_models import support_model_path
@@ -434,6 +435,10 @@ class Krea2Pipeline:
             from moods import apply_mood
             prompt, negative_prompt = apply_mood(prompt, negative_prompt, mood_id)
 
+        catalog_context = moodboard_generation_context(list(getattr(req, "moodboard_ids", []) or []))
+        if catalog_context["style_text"]:
+            prompt = f"{prompt}\n\n{catalog_context['style_text']}" if prompt.strip() else catalog_context["style_text"]
+
         # Encode text. Conditioning is cheap to reuse; moving the 4B Qwen encoder
         # CPU→GPU is not, so cache final CPU tensors by prompt/reference settings.
         ref_b64s = [
@@ -446,7 +451,7 @@ class Krea2Pipeline:
         ref_hashes = self._hash_ref_images(ref_b64s)
         weights = parse_weights(req.rebalance_weights) if req.use_rebalance else None
         mult = req.rebalance_multiplier
-        if req.use_rebalance and (mood_id or ref_b64s):
+        if req.use_rebalance and (mood_id or ref_b64s or catalog_context["items"]):
             mult = mult * (0.5 + float(getattr(req, "moodboard_strength", 0.5)))
 
         positive_key = (

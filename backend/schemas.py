@@ -46,6 +46,7 @@ class GenerationRequest(BaseModel):
     refine_steps: int = 6
     # Moodboard: preset mood id + custom reference-image board + influence strength
     mood: str = ""
+    moodboard_ids: List[int] = []
     moodboard_strength: float = 0.5
     moodboard_images: List[str] = []
 

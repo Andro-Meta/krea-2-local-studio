@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from html import unescape
@@ -396,6 +397,15 @@ def _row_to_item(row: aiosqlite.Row) -> dict:
     return item
 
 
+def _sync_row_to_item(row: sqlite3.Row) -> dict:
+    item = dict(row)
+    item["favorite"] = bool(item["favorite"])
+    item["keywords"] = _json_list(item.get("keywords", "[]"))
+    item["image_urls"] = _json_list(item.get("image_urls", "[]"))
+    item["related_urls"] = _json_list(item.get("related_urls", "[]"))
+    return item
+
+
 def _tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
 
@@ -451,6 +461,59 @@ async def get_moodboard(moodboard_id: int, db_path: Path = DB_PATH) -> dict | No
         db.row_factory = aiosqlite.Row
         row = await (await db.execute("SELECT * FROM moodboards WHERE id = ?", (moodboard_id,))).fetchone()
     return _row_to_item(row) if row else None
+
+
+def moodboard_generation_context(
+    moodboard_ids: list[int],
+    *,
+    db_path: Path = DB_PATH,
+    max_images: int = 10,
+) -> dict:
+    ids = []
+    for value in moodboard_ids:
+        try:
+            item_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if item_id > 0 and item_id not in ids:
+            ids.append(item_id)
+    if not ids:
+        return {"items": [], "style_text": "", "image_urls": []}
+
+    placeholders = ",".join("?" for _ in ids)
+    db = sqlite3.connect(str(db_path))
+    db.row_factory = sqlite3.Row
+    try:
+        cur = db.execute(f"SELECT * FROM moodboards WHERE id IN ({placeholders})", ids)
+        try:
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        db.close()
+    by_id = {int(row["id"]): _sync_row_to_item(row) for row in rows}
+    items = [by_id[item_id] for item_id in ids if item_id in by_id]
+
+    parts: list[str] = []
+    image_urls: list[str] = []
+    seen_images: set[str] = set()
+    for item in items:
+        style_bits = [
+            item.get("title", ""),
+            item.get("taste_profile", ""),
+            f"Style keywords: {', '.join(item.get('keywords', []))}" if item.get("keywords") else "",
+        ]
+        text = ". ".join(bit.strip().rstrip(".") for bit in style_bits if bit.strip())
+        if text:
+            parts.append(text)
+        for url in [item.get("primary_image_url", ""), *item.get("image_urls", [])]:
+            if url and url not in seen_images:
+                image_urls.append(url)
+                seen_images.add(url)
+            if len(image_urls) >= max_images:
+                break
+    style_text = "Apply these Krea moodboard styles: " + " | ".join(parts) if parts else ""
+    return {"items": items, "style_text": style_text, "image_urls": image_urls}
 
 
 async def _get_existing_moodboard_urls(db_path: Path = DB_PATH) -> set[str]:

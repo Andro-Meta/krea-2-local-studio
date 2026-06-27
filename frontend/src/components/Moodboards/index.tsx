@@ -40,14 +40,6 @@ function moodboardRefs(board: MoodboardItem): string[] {
   return Array.from(new Set([board.primary_image_url, ...board.image_urls].filter(Boolean))).slice(0, MAX_LOCAL_MOODBOARD_REFS)
 }
 
-function moodboardDirection(board: MoodboardItem): string {
-  return [
-    board.title,
-    board.taste_profile,
-    board.keywords.length ? `Style keywords: ${board.keywords.join(', ')}` : '',
-  ].filter(Boolean).join('. ')
-}
-
 export default function MoodboardsPanel() {
   const [items, setItems] = useState<MoodboardItem[]>([])
   const [total, setTotal] = useState(0)
@@ -156,14 +148,14 @@ export default function MoodboardsPanel() {
     setMessage(null)
     try {
       const images = await Promise.all(refs.map(src => apiFetch.moodboardImage(src)))
-      const stylePrompt = moodboardDirection(board)
       const basePrompt = params.prompt.trim()
       setParams({
         mode: 'txt2img',
         mood: '',
+        selected_moodboard_ids: [board.id],
         moodboard_strength: 0.55,
         moodboard_images: images,
-        prompt: basePrompt ? `${basePrompt}\n\nApply this moodboard style: ${stylePrompt}` : stylePrompt,
+        prompt: basePrompt || board.title,
       })
       setMessage({ severity: 'success', text: `Loaded ${images.length} local reference images from ${board.title}.` })
       setTab(0)

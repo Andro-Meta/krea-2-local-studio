@@ -22,6 +22,7 @@ class KreaEnhancerTests(unittest.TestCase):
         self.assertIn("krea_enhancer_enabled", data)
         self.assertFalse(data["krea_enhancer_enabled"])
         self.assertEqual(data["krea_enhancer_strength"], 1.0)
+        self.assertEqual(data["moodboard_ids"], [])
 
     def test_enhancer_context_temporarily_patches_txtfusion(self) -> None:
         try:

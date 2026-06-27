@@ -49,6 +49,7 @@ export interface GenerationRequest {
   refine_denoise?: number
   refine_steps?: number
   mood?: string
+  moodboard_ids?: number[]
   moodboard_strength?: number
   moodboard_images?: string[]
 }

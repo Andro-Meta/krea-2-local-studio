@@ -24,6 +24,7 @@ from moodboards_catalog import (  # noqa: E402
     import_moodboard_urls,
     latest_moodboard_discovery,
     list_moodboards,
+    moodboard_generation_context,
     set_moodboard_favorite,
     should_sync_moodboards,
     upsert_moodboard,
@@ -190,6 +191,42 @@ class MoodboardCatalogTests(unittest.TestCase):
                 self.assertEqual([item["title"] for item in latest["items"]], ["New Neon Style"])
 
             asyncio.run(run())
+
+    def test_generation_context_formats_selected_catalog_moodboards(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def seed() -> int:
+                await init_moodboard_db(db_path)
+                return await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        slug="gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        uuid="4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        title="Gritty Cinematic Realism",
+                        taste_profile="Somber urban documentary suspense with tactile textures.",
+                        keywords=["cinematic realism", "tactile textures"],
+                        primary_image_url="https://optim-images.krea.ai/primary.webp",
+                        image_urls=["https://optim-images.krea.ai/ref-1.webp", "https://optim-images.krea.ai/ref-2.webp"],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+
+            board_id = asyncio.run(seed())
+            context = moodboard_generation_context([board_id], db_path=db_path)
+
+            self.assertIn("Gritty Cinematic Realism", context["style_text"])
+            self.assertIn("Somber urban documentary", context["style_text"])
+            self.assertIn("cinematic realism", context["style_text"])
+            self.assertEqual(
+                context["image_urls"],
+                [
+                    "https://optim-images.krea.ai/primary.webp",
+                    "https://optim-images.krea.ai/ref-1.webp",
+                    "https://optim-images.krea.ai/ref-2.webp",
+                ],
+            )
 
     def test_sync_throttle_uses_daily_interval(self) -> None:
         with tempfile.TemporaryDirectory() as td:

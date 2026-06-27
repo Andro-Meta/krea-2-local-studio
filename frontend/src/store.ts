@@ -45,6 +45,7 @@ export interface GenerateParams {
   refine_denoise: number
   refine_steps: number
   mood: string
+  selected_moodboard_ids: number[]
   moodboard_strength: number
   moodboard_images: string[]
 }
@@ -140,6 +141,7 @@ const defaultParams: GenerateParams = {
   refine_denoise: 0.3,
   refine_steps: 6,
   mood: '',
+  selected_moodboard_ids: [],
   moodboard_strength: 0.5,
   moodboard_images: [],
 }
