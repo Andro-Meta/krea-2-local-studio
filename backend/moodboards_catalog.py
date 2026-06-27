@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import base64
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -13,10 +13,11 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import aiosqlite
 import requests
 
-from settings import DB_PATH
+from settings import BASE_DIR, DB_PATH
 
 KREA_BASE_URL = "https://www.krea.ai"
 KREA_MOODBOARD_GALLERY_URL = f"{KREA_BASE_URL}/app?gallery=moodboards"
+MOODBOARD_SEED_PATH = BASE_DIR / "data" / "krea_moodboards_seed.json"
 SYNC_META_KEY = "last_krea_moodboard_sync_at"
 DEFAULT_SYNC_INTERVAL_SECONDS = 24 * 60 * 60
 ALLOWED_KREA_IMAGE_HOSTS = {"optim-images.krea.ai"}
@@ -35,6 +36,22 @@ class MoodboardRecord:
     image_urls: list[str] = field(default_factory=list)
     related_urls: list[str] = field(default_factory=list)
     sync_error: str = ""
+
+
+def _record_from_seed_item(item: dict) -> MoodboardRecord:
+    url = canonical_moodboard_url(str(item.get("url", "")))
+    slug, uuid = _slug_and_uuid(url)
+    return MoodboardRecord(
+        url=url,
+        slug=str(item.get("slug") or slug),
+        uuid=str(item.get("uuid") or uuid),
+        title=str(item.get("title") or _title_from_slug(slug)),
+        taste_profile=str(item.get("taste_profile") or ""),
+        keywords=[str(v) for v in item.get("keywords", []) if str(v).strip()],
+        primary_image_url=str(item.get("primary_image_url") or ""),
+        image_urls=[str(v) for v in item.get("image_urls", []) if str(v).strip()],
+        related_urls=[canonical_moodboard_url(str(v)) for v in item.get("related_urls", []) if str(v).strip()],
+    )
 
 
 def _now_iso() -> str:
@@ -240,14 +257,17 @@ class KreaMoodboardCrawler:
         )
 
     def crawl(self, seed_urls: list[str] | None = None, *, max_pages: int = 200) -> list[MoodboardRecord]:
+        return list(self.iter_crawl(seed_urls, max_pages=max_pages))
+
+    def iter_crawl(self, seed_urls: list[str] | None = None, *, max_pages: int = 200):
         queue = [
             canonical_moodboard_url(url) if "moodboard-feed/" in url else urljoin(KREA_BASE_URL, url)
             for url in (seed_urls or [])
         ]
         seen: set[str] = set()
-        records: list[MoodboardRecord] = []
 
-        while queue and len(records) < max_pages:
+        imported = 0
+        while queue and imported < max_pages:
             url = queue.pop(0)
             if not is_allowed_krea_moodboard_url(url):
                 raise ValueError("Only public Krea moodboard URLs can be imported.")
@@ -262,14 +282,13 @@ class KreaMoodboardCrawler:
                 queue.extend([u for u in discovered if u not in seen and u not in queue])
                 continue
             record = self.parse_detail_page(url, html)
-            records.append(record)
+            imported += 1
+            yield record
             for related_url in record.related_urls:
                 if related_url not in seen and related_url not in queue:
                     queue.append(related_url)
             if self.delay_seconds:
                 time.sleep(self.delay_seconds)
-
-        return records
 
 
 async def init_moodboard_db(db_path: Path = DB_PATH) -> None:
@@ -306,6 +325,8 @@ async def init_moodboard_db(db_path: Path = DB_PATH) -> None:
             """
         )
         await db.commit()
+    if db_path == DB_PATH:
+        await import_moodboard_seed(MOODBOARD_SEED_PATH, db_path=db_path)
 
 
 async def upsert_moodboard(record: MoodboardRecord, db_path: Path = DB_PATH) -> int:
@@ -429,6 +450,54 @@ async def get_moodboard(moodboard_id: int, db_path: Path = DB_PATH) -> dict | No
         db.row_factory = aiosqlite.Row
         row = await (await db.execute("SELECT * FROM moodboards WHERE id = ?", (moodboard_id,))).fetchone()
     return _row_to_item(row) if row else None
+
+
+def _seed_item_from_catalog_item(item: dict) -> dict:
+    return {
+        "url": item["url"],
+        "slug": item["slug"],
+        "uuid": item.get("uuid", ""),
+        "title": item["title"],
+        "taste_profile": item.get("taste_profile", ""),
+        "keywords": item.get("keywords", []),
+        "primary_image_url": item.get("primary_image_url", ""),
+        "image_urls": item.get("image_urls", []),
+        "related_urls": item.get("related_urls", []),
+    }
+
+
+async def export_moodboard_seed(seed_path: Path = MOODBOARD_SEED_PATH, *, db_path: Path = DB_PATH) -> int:
+    data = await list_moodboards(page=1, page_size=1_000_000, db_path=db_path)
+    seed = {
+        "version": 1,
+        "source": "https://www.krea.ai/app?gallery=moodboards",
+        "moodboards": [_seed_item_from_catalog_item(item) for item in data["items"]],
+    }
+    seed_path.parent.mkdir(parents=True, exist_ok=True)
+    seed_path.write_text(json.dumps(seed, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return len(seed["moodboards"])
+
+
+async def import_moodboard_seed(seed_path: Path = MOODBOARD_SEED_PATH, *, db_path: Path = DB_PATH) -> int:
+    if not seed_path.exists():
+        return 0
+    try:
+        payload = json.loads(seed_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return 0
+    items = payload.get("moodboards", payload if isinstance(payload, list) else [])
+    if not isinstance(items, list):
+        return 0
+    imported = 0
+    for item in items:
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        record = _record_from_seed_item(item)
+        if not is_allowed_krea_moodboard_url(record.url):
+            continue
+        await upsert_moodboard(record, db_path)
+        imported += 1
+    return imported
 
 
 async def should_sync_moodboards(

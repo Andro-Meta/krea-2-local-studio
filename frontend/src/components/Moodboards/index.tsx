@@ -24,6 +24,7 @@ import RefreshIcon from '@mui/icons-material/Refresh'
 import SearchIcon from '@mui/icons-material/Search'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import AddLinkIcon from '@mui/icons-material/AddLink'
+import SaveAltIcon from '@mui/icons-material/SaveAlt'
 import { apiFetch, type MoodboardItem } from '../../api'
 import { useStore } from '../../store'
 
@@ -110,6 +111,19 @@ export default function MoodboardsPanel() {
     }
   }
 
+  const exportSeed = async () => {
+    setBusy('Exporting portable seed')
+    setMessage(null)
+    try {
+      const result = await apiFetch.exportMoodboardSeed()
+      setMessage({ severity: 'success', text: `Exported ${result.exported} moodboards to ${result.path}.` })
+    } catch (e: any) {
+      setMessage({ severity: 'error', text: e?.response?.data?.detail ?? e?.message ?? 'Could not export moodboard seed' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const useMoodboard = async (board: MoodboardItem) => {
     const refs = moodboardRefs(board)
     setBusy(`Loading ${board.title}`)
@@ -147,6 +161,9 @@ export default function MoodboardsPanel() {
           <Stack direction="row" spacing={1}>
             <Button variant="outlined" startIcon={<AddLinkIcon />} onClick={importUrls} disabled={!!busy}>
               Import URLs
+            </Button>
+            <Button variant="outlined" startIcon={<SaveAltIcon />} onClick={exportSeed} disabled={!!busy}>
+              Export seed
             </Button>
             <Button variant="contained" startIcon={busy ? <CircularProgress size={16} /> : <RefreshIcon />} onClick={refreshCatalog} disabled={!!busy}>
               Sync Krea

@@ -212,6 +212,11 @@ class MoodboardImportResponse(BaseModel):
     ids: List[int]
 
 
+class MoodboardExportResponse(BaseModel):
+    exported: int
+    path: str
+
+
 class MoodboardImageRequest(BaseModel):
     url: str
 

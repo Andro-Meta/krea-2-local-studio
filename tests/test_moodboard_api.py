@@ -71,17 +71,22 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
         async def fake_import(_: list[str], max_pages: int = 200, use_browser_discovery: bool = False) -> dict:
             return {"imported": 1, "ids": [7]}
 
+        async def fake_export(_: object) -> int:
+            return 1
+
         with (
             patch.object(main, "list_moodboards", side_effect=fake_list),
             patch.object(main, "get_moodboard", side_effect=fake_detail),
             patch.object(main, "set_moodboard_favorite", side_effect=fake_favorite),
             patch.object(main, "import_moodboard_urls", side_effect=fake_import),
+            patch.object(main, "export_moodboard_seed", side_effect=fake_export),
             patch.object(main, "fetch_krea_image_b64", return_value="abc123"),
         ):
             listed = client.get("/api/moodboards?q=urban")
             detail = client.get("/api/moodboards/7")
             favorite = client.put("/api/moodboards/7/favorite", json={"favorite": True})
             imported = client.post("/api/moodboards/import", json={"urls": [MOODBOARD_ITEM["url"]], "max_pages": 1})
+            exported = client.post("/api/moodboards/export-seed")
             image = client.post("/api/moodboards/image", json={"url": "https://optim-images.krea.ai/ref.webp"})
 
         self.assertEqual(listed.status_code, 200)
@@ -89,6 +94,8 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(favorite.json(), {"ok": True})
         self.assertEqual(imported.json(), {"imported": 1, "ids": [7]})
+        self.assertEqual(exported.status_code, 200)
+        self.assertEqual(exported.json()["exported"], 1)
         self.assertEqual(image.json(), {"image_b64": "abc123"})
 
 

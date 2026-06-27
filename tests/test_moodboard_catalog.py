@@ -18,6 +18,8 @@ from moodboards_catalog import (  # noqa: E402
     init_moodboard_db,
     is_allowed_krea_image_url,
     is_allowed_krea_moodboard_url,
+    export_moodboard_seed,
+    import_moodboard_seed,
     list_moodboards,
     set_moodboard_favorite,
     should_sync_moodboards,
@@ -104,6 +106,43 @@ class MoodboardCatalogTests(unittest.TestCase):
                 self.assertTrue(data["items"][0]["favorite"])
                 self.assertEqual(data["items"][0]["keywords"], ["cinematic realism", "tactile textures"])
                 self.assertIn("Updated tactile", data["items"][0]["taste_profile"])
+
+            asyncio.run(run())
+
+    def test_exports_and_imports_portable_seed_without_local_favorites(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source_db = Path(td) / "source.db"
+            target_db = Path(td) / "target.db"
+            seed_path = Path(td) / "krea_moodboards_seed.json"
+
+            async def run() -> None:
+                await init_moodboard_db(source_db)
+                record = MoodboardRecord(
+                    url="https://www.krea.ai/moodboard-feed/gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                    slug="gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                    uuid="4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                    title="Gritty Cinematic Realism",
+                    taste_profile="Somber urban documentary suspense with tactile textures.",
+                    keywords=["cinematic realism", "tactile textures"],
+                    primary_image_url="https://optim-images.krea.ai/primary.webp",
+                    image_urls=["https://optim-images.krea.ai/ref-1.webp"],
+                    related_urls=[],
+                )
+                board_id = await upsert_moodboard(record, source_db)
+                await set_moodboard_favorite(board_id, True, source_db)
+
+                exported = await export_moodboard_seed(seed_path, db_path=source_db)
+                self.assertEqual(exported, 1)
+                self.assertTrue(seed_path.exists())
+
+                await init_moodboard_db(target_db)
+                imported = await import_moodboard_seed(seed_path, db_path=target_db)
+                data = await list_moodboards(db_path=target_db)
+
+                self.assertEqual(imported, 1)
+                self.assertEqual(data["total"], 1)
+                self.assertEqual(data["items"][0]["title"], "Gritty Cinematic Realism")
+                self.assertFalse(data["items"][0]["favorite"])
 
             asyncio.run(run())
 

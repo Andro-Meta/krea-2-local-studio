@@ -32,6 +32,8 @@ from log_setup import setup_logging
 from lora_manager import inspect_lora, list_loras
 from moodboards_catalog import (
     KREA_MOODBOARD_GALLERY_URL,
+    MOODBOARD_SEED_PATH,
+    export_moodboard_seed,
     fetch_krea_image_b64,
     get_moodboard,
     import_moodboard_urls,
@@ -52,6 +54,7 @@ from schemas import (
     LoadModelRequest,
     MoodboardImportRequest,
     MoodboardImportResponse,
+    MoodboardExportResponse,
     MoodboardImageRequest,
     MoodboardImageResponse,
     MoodboardListResponse,
@@ -720,6 +723,12 @@ async def import_moodboards(req: MoodboardImportRequest):
         return await import_moodboard_urls(urls, max_pages=req.max_pages, use_browser_discovery=not req.urls)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/moodboards/export-seed", response_model=MoodboardExportResponse)
+async def export_moodboards_seed():
+    exported = await export_moodboard_seed(MOODBOARD_SEED_PATH)
+    return {"exported": exported, "path": str(MOODBOARD_SEED_PATH)}
 
 
 @app.post("/api/moodboards/image", response_model=MoodboardImageResponse)

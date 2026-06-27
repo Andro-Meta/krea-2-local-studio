@@ -248,6 +248,9 @@ export const apiFetch = {
     api.post<{ imported: number; ids: number[] }>('/api/moodboards/import', { urls, max_pages: maxPages }, { timeout: 180000 })
       .then(r => r.data),
 
+  exportMoodboardSeed: () =>
+    api.post<{ exported: number; path: string }>('/api/moodboards/export-seed').then(r => r.data),
+
   moodboardImage: (url: string) =>
     api.post<{ image_b64: string }>('/api/moodboards/image', { url }, { timeout: 120000 })
       .then(r => r.data.image_b64),
