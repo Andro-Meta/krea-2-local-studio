@@ -116,6 +116,9 @@ export interface MoodboardItem {
   last_seen_at: string
   updated_at: string
   sync_error: string
+  qwen_guidance: Record<string, any>
+  qwen_guidance_at: string
+  qwen_guidance_version: number
 }
 
 export interface MoodboardDiscovery {
@@ -286,8 +289,17 @@ export const apiFetch = {
   setMoodboardFavorite: (id: number, favorite: boolean) =>
     api.put(`/api/moodboards/${id}/favorite`, { favorite }).then(r => r.data),
 
+  generateMoodboardGuidance: (id: number) =>
+    api.post<MoodboardItem>(`/api/moodboards/${id}/qwen-guidance`, {}, { timeout: 180000 }).then(r => r.data),
+
+  generateMissingMoodboardGuidance: (limit = 10) =>
+    api.post<{ processed: number; items: MoodboardItem[] }>('/api/moodboards/qwen-guidance-missing', { limit }, { timeout: 600000 }).then(r => r.data),
+
   createCustomMoodboard: (req: { title: string; taste_profile?: string; keywords?: string[]; image_b64s: string[] }) =>
     api.post<MoodboardItem>('/api/moodboards/custom', req, { timeout: 120000 }).then(r => r.data),
+
+  createMoodboardMashup: (req: { moodboard_ids: number[]; weights?: number[] }) =>
+    api.post<MoodboardItem>('/api/moodboards/mashup', req, { timeout: 180000 }).then(r => r.data),
 
   deleteCustomMoodboard: (id: number) =>
     api.delete(`/api/moodboards/custom/${id}`).then(r => r.data),

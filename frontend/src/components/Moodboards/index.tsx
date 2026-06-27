@@ -70,6 +70,7 @@ export default function MoodboardsPanel() {
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
+  const [mashupIds, setMashupIds] = useState<number[]>([])
   const customFileRef = useRef<HTMLInputElement>(null)
   const { params, setParams, setTab, moodboardView, setMoodboardView } = useStore()
 
@@ -175,8 +176,7 @@ export default function MoodboardsPanel() {
     const files = Array.from(event.target.files ?? []).slice(0, MAX_LOCAL_MOODBOARD_REFS)
     event.target.value = ''
     if (!files.length) return
-    const title = window.prompt('Name this custom moodboard.')
-    if (!title?.trim()) return
+    const title = window.prompt('Name this custom moodboard. Leave blank to let local Qwen name it.', '') ?? ''
     const tasteProfile = window.prompt('Optional taste profile / style description.', '') ?? ''
     const keywordsText = window.prompt('Optional keywords, separated by commas.', '') ?? ''
     setBusy('Saving custom moodboard')
@@ -210,6 +210,7 @@ export default function MoodboardsPanel() {
     try {
       await apiFetch.deleteCustomMoodboard(board.id)
       setItems(prev => prev.filter(item => item.id !== board.id))
+      setMashupIds(prev => prev.filter(id => id !== board.id))
       setTotal(prev => Math.max(0, prev - 1))
       setMessage({ severity: 'success', text: `Deleted custom moodboard “${board.title}”.` })
     } catch (e: any) {
@@ -244,6 +245,63 @@ export default function MoodboardsPanel() {
     }
   }
 
+  const generateGuidance = async (board: MoodboardItem) => {
+    setBusy(`Generating Qwen guidance for ${board.title}`)
+    setMessage(null)
+    try {
+      const updated = await apiFetch.generateMoodboardGuidance(board.id)
+      setItems(prev => prev.map(item => item.id === updated.id ? updated : item))
+      setMessage({ severity: 'success', text: `Generated Qwen prompt guidance for “${updated.title}”.` })
+    } catch (e: any) {
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not generate Qwen guidance') })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const generateMissingGuidance = async () => {
+    setBusy('Generating missing Qwen guidance')
+    setMessage(null)
+    try {
+      const result = await apiFetch.generateMissingMoodboardGuidance(10)
+      setMessage({ severity: 'success', text: `Generated Qwen guidance for ${result.processed} moodboards.` })
+      await load(1)
+    } catch (e: any) {
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not generate missing Qwen guidance') })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const toggleMashup = (board: MoodboardItem) => {
+    setMashupIds(prev => prev.includes(board.id)
+      ? prev.filter(id => id !== board.id)
+      : [...prev, board.id].slice(0, 5))
+  }
+
+  const createMashup = async () => {
+    if (mashupIds.length < 2) {
+      setMessage({ severity: 'error', text: 'Select at least two moodboards to mash up.' })
+      return
+    }
+    setBusy('Creating Qwen moodboard mashup')
+    setMessage(null)
+    try {
+      const created = await apiFetch.createMoodboardMashup({ moodboard_ids: mashupIds })
+      setMashupIds([])
+      setMoodboardView('custom')
+      setQuery('')
+      setItems([created])
+      setTotal(1)
+      setPage(1)
+      setMessage({ severity: 'success', text: `Saved mashup moodboard “${created.title}”.` })
+    } catch (e: any) {
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not create moodboard mashup') })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 } }}>
       <Stack spacing={2}>
@@ -255,6 +313,12 @@ export default function MoodboardsPanel() {
             </Typography>
           </Box>
           <Stack direction="row" spacing={1}>
+            <Button variant="outlined" onClick={createMashup} disabled={!!busy || mashupIds.length < 2}>
+              Create mashup{mashupIds.length ? ` (${mashupIds.length})` : ''}
+            </Button>
+            <Button variant="outlined" onClick={generateMissingGuidance} disabled={!!busy}>
+              Generate missing guidance
+            </Button>
             <Button variant="contained" onClick={() => customFileRef.current?.click()} disabled={!!busy}>
               Create custom
             </Button>
@@ -350,11 +414,31 @@ export default function MoodboardsPanel() {
                         {board.taste_profile || 'No taste profile imported yet.'}
                       </Typography>
                       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                        <Chip
+                          label={board.qwen_guidance_version > 0 ? 'Qwen guidance' : 'Needs Qwen guidance'}
+                          size="small"
+                          color={board.qwen_guidance_version > 0 ? 'success' : 'warning'}
+                          variant={board.qwen_guidance_version > 0 ? 'filled' : 'outlined'}
+                        />
+                        {mashupIds.includes(board.id) && <Chip label="Mashup source" size="small" color="primary" />}
                         {board.keywords.slice(0, 6).map(keyword => (
                           <Chip key={keyword} label={keyword} size="small" variant="outlined" />
                         ))}
                       </Stack>
                       <Box sx={{ flex: 1 }} />
+                      {board.qwen_guidance?.prompt_guidance && (
+                        <Typography variant="caption" sx={{ color: 'text.disabled', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                          {board.qwen_guidance.prompt_guidance}
+                        </Typography>
+                      )}
+                      <Stack direction="row" spacing={1}>
+                        <Button size="small" variant={mashupIds.includes(board.id) ? 'contained' : 'outlined'} onClick={() => toggleMashup(board)} disabled={!!busy}>
+                          Mashup
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => generateGuidance(board)} disabled={!!busy}>
+                          Qwen guidance
+                        </Button>
+                      </Stack>
                       <Button startIcon={<AutoAwesomeIcon />} variant="contained" onClick={() => useMoodboard(board)} disabled={!!busy || !(board.image_urls.length || board.primary_image_url)}>
                         Use moodboard
                       </Button>

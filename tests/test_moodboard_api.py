@@ -53,6 +53,9 @@ MOODBOARD_ITEM = {
     "last_seen_at": "2026-01-01T00:00:00Z",
     "updated_at": "2026-01-01T00:00:00Z",
     "sync_error": "",
+    "qwen_guidance": {},
+    "qwen_guidance_at": "",
+    "qwen_guidance_version": 0,
 }
 
 
@@ -138,6 +141,73 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.json()["source"], "custom")
         self.assertEqual(created.json()["title"], "My Board")
         self.assertEqual(deleted.json(), {"ok": True})
+
+    async def test_custom_moodboard_auto_authoring_failure_is_clear(self) -> None:
+        client = TestClient(main.app)
+
+        async def fake_create(**_: object) -> dict:
+            raise RuntimeError("Local Qwen unavailable")
+
+        with patch.object(main, "create_custom_moodboard", side_effect=fake_create):
+            created = client.post("/api/moodboards/custom", json={
+                "title": "",
+                "taste_profile": "",
+                "keywords": [],
+                "image_b64s": ["abc123"],
+            })
+
+        self.assertEqual(created.status_code, 502)
+        self.assertIn("Qwen custom moodboard authoring failed", created.json()["detail"])
+
+    async def test_qwen_guidance_routes_generate_single_and_missing(self) -> None:
+        client = TestClient(main.app)
+        guidance = {
+            "prompt_guidance": "Use gritty documentary realism.",
+            "negative_guidance": "Avoid glossy studio light.",
+            "style_axes": ["documentary realism"],
+            "conditioning_notes": ["Use references for texture."],
+            "source_summary": "Qwen guidance.",
+            "guidance_version": 1,
+        }
+
+        async def fake_single(moodboard_id: int, **_: object) -> dict:
+            return {**MOODBOARD_ITEM, "id": moodboard_id, "qwen_guidance": guidance, "qwen_guidance_version": 1}
+
+        async def fake_missing(**_: object) -> dict:
+            return {"processed": 1, "items": [{**MOODBOARD_ITEM, "qwen_guidance": guidance, "qwen_guidance_version": 1}]}
+
+        with (
+            patch.object(main, "generate_and_store_moodboard_qwen_guidance", side_effect=fake_single),
+            patch.object(main, "generate_missing_moodboard_qwen_guidance", side_effect=fake_missing),
+        ):
+            single = client.post("/api/moodboards/7/qwen-guidance")
+            missing = client.post("/api/moodboards/qwen-guidance-missing", json={"limit": 5})
+
+        self.assertEqual(single.status_code, 200)
+        self.assertEqual(single.json()["qwen_guidance"]["prompt_guidance"], "Use gritty documentary realism.")
+        self.assertEqual(missing.status_code, 200)
+        self.assertEqual(missing.json()["processed"], 1)
+
+    async def test_mashup_route_creates_custom_moodboard(self) -> None:
+        client = TestClient(main.app)
+        custom_item = {
+            **MOODBOARD_ITEM,
+            "id": 12,
+            "source": "custom",
+            "title": "Gritty Neon Documentary",
+            "qwen_guidance": {"prompt_guidance": "Blend gritty realism with neon."},
+            "qwen_guidance_version": 1,
+        }
+
+        async def fake_mashup(**_: object) -> dict:
+            return custom_item
+
+        with patch.object(main, "create_mashup_moodboard", side_effect=fake_mashup):
+            created = client.post("/api/moodboards/mashup", json={"moodboard_ids": [7, 8], "weights": [0.7, 0.3]})
+
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["source"], "custom")
+        self.assertEqual(created.json()["title"], "Gritty Neon Documentary")
 
 
 if __name__ == "__main__":

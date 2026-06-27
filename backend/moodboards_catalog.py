@@ -86,6 +86,27 @@ def is_allowed_krea_moodboard_url(url: str) -> bool:
     )
 
 
+def is_krea_ui_image_url(url: str) -> bool:
+    normalized = str(url or "").lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "s-krea-ai-icons",
+            "/icons-",
+            "-icons-",
+            "homeicon",
+            "personalization",
+            "nodeeditor",
+            "nanobanana",
+            "realtimev",
+        )
+    )
+
+
+def _moodboard_image_urls(urls: list[str]) -> list[str]:
+    return [url for url in _dedupe(urls) if url and not is_krea_ui_image_url(url)]
+
+
 def fetch_krea_image_b64(url: str, *, timeout: int = 30) -> str:
     if not is_allowed_krea_image_url(url):
         raise ValueError("Only Krea image URLs can be loaded into moodboards.")
@@ -281,7 +302,7 @@ class KreaMoodboardCrawler:
 
         image_urls = re.findall(r"(?:src|image)=[\"'](https://optim-images\.krea\.ai/[^\"']+)[\"']", html, flags=re.I)
         image_urls.extend(re.findall(r'"(https://optim-images\.krea\.ai/[^"]+)"', html))
-        image_urls = _dedupe(image_urls)
+        image_urls = _moodboard_image_urls(image_urls)
         if primary_image_url and primary_image_url not in image_urls:
             image_urls.insert(0, primary_image_url)
 
@@ -358,13 +379,22 @@ async def init_moodboard_db(db_path: Path = DB_PATH) -> None:
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                sync_error TEXT DEFAULT ''
+                sync_error TEXT DEFAULT '',
+                qwen_guidance_json TEXT DEFAULT '',
+                qwen_guidance_at TEXT DEFAULT '',
+                qwen_guidance_version INTEGER DEFAULT 0
             )
             """
         )
         columns = [str(row[1]) for row in await (await db.execute("PRAGMA table_info(moodboards)")).fetchall()]
         if "source" not in columns:
             await db.execute("ALTER TABLE moodboards ADD COLUMN source TEXT DEFAULT 'official'")
+        if "qwen_guidance_json" not in columns:
+            await db.execute("ALTER TABLE moodboards ADD COLUMN qwen_guidance_json TEXT DEFAULT ''")
+        if "qwen_guidance_at" not in columns:
+            await db.execute("ALTER TABLE moodboards ADD COLUMN qwen_guidance_at TEXT DEFAULT ''")
+        if "qwen_guidance_version" not in columns:
+            await db.execute("ALTER TABLE moodboards ADD COLUMN qwen_guidance_version INTEGER DEFAULT 0")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_moodboards_title ON moodboards(title)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_moodboards_favorite ON moodboards(favorite)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_moodboards_source ON moodboards(source)")
@@ -430,6 +460,94 @@ async def set_moodboard_favorite(moodboard_id: int, favorite: bool, db_path: Pat
         await db.commit()
 
 
+async def set_moodboard_qwen_guidance(
+    moodboard_id: int,
+    guidance: dict,
+    *,
+    db_path: Path = DB_PATH,
+) -> None:
+    version = int(guidance.get("guidance_version") or 1)
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            """
+            UPDATE moodboards
+            SET qwen_guidance_json = ?, qwen_guidance_at = ?, qwen_guidance_version = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (json.dumps(guidance, sort_keys=True), _now_iso(), version, _now_iso(), moodboard_id),
+        )
+        await db.commit()
+
+
+async def generate_and_store_moodboard_qwen_guidance(
+    moodboard_id: int,
+    *,
+    db_path: Path = DB_PATH,
+    generator=None,
+) -> dict:
+    from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
+
+    item = await get_moodboard(moodboard_id, db_path=db_path)
+    if not item:
+        raise ValueError("Moodboard not found.")
+
+    image_b64s: list[str] = []
+    for url in _moodboard_image_urls([item.get("primary_image_url", ""), *item.get("image_urls", [])])[:4]:
+        try:
+            image_b64s.append(fetch_moodboard_image_b64(url))
+        except Exception:
+            continue
+
+    guidance = generate_moodboard_guidance(
+        [
+            MoodboardSource(
+                title=str(item.get("title") or ""),
+                taste_profile=str(item.get("taste_profile") or ""),
+                keywords=list(item.get("keywords") or []),
+                image_b64s=image_b64s,
+            )
+        ],
+        mode="official" if item.get("source") == "official" else "custom",
+        generator=generator,
+    )
+    await set_moodboard_qwen_guidance(moodboard_id, guidance, db_path=db_path)
+    refreshed = await get_moodboard(moodboard_id, db_path=db_path)
+    if not refreshed:
+        raise ValueError("Moodboard not found after guidance update.")
+    return refreshed
+
+
+async def generate_missing_moodboard_qwen_guidance(
+    *,
+    limit: int = 25,
+    db_path: Path = DB_PATH,
+    generator=None,
+) -> dict:
+    safe_limit = max(1, min(int(limit or 25), 250))
+    async with aiosqlite.connect(str(db_path)) as db:
+        rows = await (
+            await db.execute(
+                """
+                SELECT id FROM moodboards
+                WHERE COALESCE(qwen_guidance_json, '') = ''
+                ORDER BY source, title
+                LIMIT ?
+                """,
+                (safe_limit,),
+            )
+        ).fetchall()
+    items: list[dict] = []
+    for row in rows:
+        items.append(
+            await generate_and_store_moodboard_qwen_guidance(
+                int(row[0]),
+                db_path=db_path,
+                generator=generator,
+            )
+        )
+    return {"processed": len(items), "items": items}
+
+
 async def create_custom_moodboard(
     *,
     title: str,
@@ -438,8 +556,33 @@ async def create_custom_moodboard(
     image_b64s: list[str],
     db_path: Path = DB_PATH,
     storage_dir: Path = CUSTOM_MOODBOARD_DIR,
+    guidance_generator=None,
 ) -> dict:
     cleaned_title = str(title or "").strip()
+    cleaned_taste_profile = str(taste_profile or "").strip()
+    cleaned_keywords = [str(v).strip() for v in keywords or [] if str(v).strip()]
+    qwen_guidance: dict = {}
+    should_auto_author = not cleaned_title or not cleaned_taste_profile or (
+        guidance_generator is not None and not cleaned_keywords
+    )
+    if image_b64s and should_auto_author:
+        from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
+
+        qwen_guidance = generate_moodboard_guidance(
+            [
+                MoodboardSource(
+                    title=cleaned_title,
+                    taste_profile=cleaned_taste_profile,
+                    keywords=cleaned_keywords,
+                    image_b64s=image_b64s,
+                )
+            ],
+            mode="custom",
+            generator=guidance_generator,
+        )
+        cleaned_title = cleaned_title or str(qwen_guidance.get("title") or "").strip()
+        cleaned_taste_profile = cleaned_taste_profile or str(qwen_guidance.get("taste_profile") or "").strip()
+        cleaned_keywords = cleaned_keywords or [str(v).strip() for v in qwen_guidance.get("keywords", []) if str(v).strip()]
     if not cleaned_title:
         raise ValueError("Custom moodboard title is required.")
     if not image_b64s:
@@ -467,21 +610,25 @@ async def create_custom_moodboard(
             """
             INSERT INTO moodboards
                 (url, slug, uuid, title, taste_profile, keywords, primary_image_url,
-                 image_urls, related_urls, favorite, source, first_seen_at, last_seen_at, updated_at, sync_error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 'custom', ?, ?, ?, '')
+                 image_urls, related_urls, favorite, source, first_seen_at, last_seen_at, updated_at, sync_error,
+                 qwen_guidance_json, qwen_guidance_at, qwen_guidance_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 'custom', ?, ?, ?, '', ?, ?, ?)
             """,
             (
                 url,
                 slug,
                 board_uuid,
                 cleaned_title,
-                str(taste_profile or ""),
-                json.dumps([str(v).strip() for v in keywords or [] if str(v).strip()]),
+                cleaned_taste_profile,
+                json.dumps(cleaned_keywords),
                 image_urls[0],
                 json.dumps(image_urls),
                 now,
                 now,
                 now,
+                json.dumps(qwen_guidance, sort_keys=True) if qwen_guidance else "",
+                now if qwen_guidance else "",
+                int(qwen_guidance.get("guidance_version") or 0),
             ),
         )
         row = await (await db.execute("SELECT * FROM moodboards WHERE url = ?", (url,))).fetchone()
@@ -509,12 +656,83 @@ async def delete_custom_moodboard(
     return True
 
 
+async def create_mashup_moodboard(
+    *,
+    moodboard_ids: list[int],
+    weights: list[float] | None = None,
+    db_path: Path = DB_PATH,
+    storage_dir: Path = CUSTOM_MOODBOARD_DIR,
+    guidance_generator=None,
+) -> dict:
+    from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
+
+    ids: list[int] = []
+    for value in moodboard_ids:
+        try:
+            item_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if item_id > 0 and item_id not in ids:
+            ids.append(item_id)
+    if len(ids) < 2:
+        raise ValueError("Choose at least two moodboards to create a mashup.")
+    items = await _items_by_ids(ids, db_path=db_path)
+    if len(items) < 2:
+        raise ValueError("Choose at least two existing moodboards to create a mashup.")
+
+    normalized_weights = list(weights or [])
+    sources: list[MoodboardSource] = []
+    image_b64s: list[str] = []
+    for index, item in enumerate(items):
+        item_weight = float(normalized_weights[index]) if index < len(normalized_weights) else 1.0
+        item_images: list[str] = []
+        for url in _moodboard_image_urls([item.get("primary_image_url", ""), *item.get("image_urls", [])])[:2]:
+            try:
+                image_b64 = fetch_moodboard_image_b64(url, storage_dir=storage_dir)
+                item_images.append(image_b64)
+                image_b64s.append(image_b64)
+            except Exception:
+                continue
+        sources.append(
+            MoodboardSource(
+                title=str(item.get("title") or ""),
+                taste_profile=str(item.get("taste_profile") or ""),
+                keywords=list(item.get("keywords") or []),
+                image_b64s=item_images,
+                weight=item_weight,
+            )
+        )
+
+    guidance = generate_moodboard_guidance(sources, mode="mashup", generator=guidance_generator)
+    created = await create_custom_moodboard(
+        title=str(guidance.get("title") or "").strip(),
+        taste_profile=str(guidance.get("taste_profile") or "").strip(),
+        keywords=list(guidance.get("keywords") or []),
+        image_b64s=image_b64s[:10],
+        db_path=db_path,
+        storage_dir=storage_dir,
+    )
+    await set_moodboard_qwen_guidance(created["id"], guidance, db_path=db_path)
+    refreshed = await get_moodboard(created["id"], db_path=db_path)
+    if not refreshed:
+        raise ValueError("Mashup moodboard was not saved.")
+    return refreshed
+
+
 def _json_list(value: str) -> list[str]:
     try:
         data = json.loads(value or "[]")
     except json.JSONDecodeError:
         return []
     return [str(item) for item in data] if isinstance(data, list) else []
+
+
+def _json_dict(value: str) -> dict:
+    try:
+        data = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _row_to_item(row: aiosqlite.Row) -> dict:
@@ -524,6 +742,9 @@ def _row_to_item(row: aiosqlite.Row) -> dict:
     item["keywords"] = _json_list(item.get("keywords", "[]"))
     item["image_urls"] = _json_list(item.get("image_urls", "[]"))
     item["related_urls"] = _json_list(item.get("related_urls", "[]"))
+    item["qwen_guidance"] = _json_dict(item.get("qwen_guidance_json", ""))
+    item["qwen_guidance_at"] = str(item.get("qwen_guidance_at") or "")
+    item["qwen_guidance_version"] = int(item.get("qwen_guidance_version") or 0)
     return item
 
 
@@ -534,6 +755,9 @@ def _sync_row_to_item(row: sqlite3.Row) -> dict:
     item["keywords"] = _json_list(item.get("keywords", "[]"))
     item["image_urls"] = _json_list(item.get("image_urls", "[]"))
     item["related_urls"] = _json_list(item.get("related_urls", "[]"))
+    item["qwen_guidance"] = _json_dict(item.get("qwen_guidance_json", ""))
+    item["qwen_guidance_at"] = str(item.get("qwen_guidance_at") or "")
+    item["qwen_guidance_version"] = int(item.get("qwen_guidance_version") or 0)
     return item
 
 
@@ -662,15 +886,17 @@ def moodboard_generation_context(
     image_urls: list[str] = []
     seen_images: set[str] = set()
     for item in items:
+        guidance = item.get("qwen_guidance") or {}
         style_bits = [
             item.get("title", ""),
-            item.get("taste_profile", ""),
+            str(guidance.get("prompt_guidance") or item.get("taste_profile", "")),
             f"Style keywords: {', '.join(item.get('keywords', []))}" if item.get("keywords") else "",
+            f"Negative guidance: {guidance.get('negative_guidance')}" if guidance.get("negative_guidance") else "",
         ]
         text = ". ".join(bit.strip().rstrip(".") for bit in style_bits if bit.strip())
         if text:
             parts.append(text)
-        for url in [item.get("primary_image_url", ""), *item.get("image_urls", [])]:
+        for url in _moodboard_image_urls([item.get("primary_image_url", ""), *item.get("image_urls", [])]):
             if url and url not in seen_images:
                 image_urls.append(url)
                 seen_images.add(url)

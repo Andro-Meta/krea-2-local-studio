@@ -34,10 +34,13 @@ from moodboards_catalog import (
     CUSTOM_MOODBOARD_DIR,
     KREA_MOODBOARD_GALLERY_URL,
     MOODBOARD_SEED_PATH,
+    create_mashup_moodboard,
     create_custom_moodboard,
     delete_custom_moodboard,
     export_moodboard_seed,
     fetch_moodboard_image_b64,
+    generate_and_store_moodboard_qwen_guidance,
+    generate_missing_moodboard_qwen_guidance,
     get_moodboard,
     import_moodboard_urls,
     init_moodboard_db,
@@ -64,6 +67,8 @@ from schemas import (
     MoodboardExportResponse,
     MoodboardImageRequest,
     MoodboardImageResponse,
+    MoodboardGuidanceMissingRequest,
+    MoodboardMashupRequest,
     MoodboardListResponse,
     MoodboardItem,
     RealtimePreviewRequest,
@@ -785,6 +790,37 @@ async def favorite_moodboard(moodboard_id: int, req: FavoriteRequest):
     return {"ok": True}
 
 
+@app.post("/api/moodboards/{moodboard_id}/qwen-guidance", response_model=MoodboardItem)
+async def qwen_guidance_moodboard(moodboard_id: int):
+    try:
+        return await generate_and_store_moodboard_qwen_guidance(moodboard_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Qwen moodboard guidance failed")
+        raise HTTPException(502, f"Qwen moodboard guidance failed: {exc}") from exc
+
+
+@app.post("/api/moodboards/qwen-guidance-missing")
+async def qwen_guidance_missing(req: MoodboardGuidanceMissingRequest):
+    try:
+        return await generate_missing_moodboard_qwen_guidance(limit=req.limit)
+    except Exception as exc:
+        logger.exception("Qwen moodboard guidance batch failed")
+        raise HTTPException(502, f"Qwen moodboard guidance batch failed: {exc}") from exc
+
+
+@app.post("/api/moodboards/mashup", response_model=MoodboardItem)
+async def mashup_moodboard(req: MoodboardMashupRequest):
+    try:
+        return await create_mashup_moodboard(moodboard_ids=req.moodboard_ids, weights=req.weights)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Qwen moodboard mashup failed")
+        raise HTTPException(502, f"Qwen moodboard mashup failed: {exc}") from exc
+
+
 @app.post("/api/moodboards/custom", response_model=MoodboardItem)
 async def create_custom_moodboard_endpoint(req: CustomMoodboardRequest):
     try:
@@ -796,6 +832,9 @@ async def create_custom_moodboard_endpoint(req: CustomMoodboardRequest):
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Qwen custom moodboard authoring failed")
+        raise HTTPException(502, f"Qwen custom moodboard authoring failed: {exc}") from exc
 
 
 @app.delete("/api/moodboards/custom/{moodboard_id}")

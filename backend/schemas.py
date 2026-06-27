@@ -224,6 +224,9 @@ class MoodboardItem(BaseModel):
     last_seen_at: str
     updated_at: str
     sync_error: str = ""
+    qwen_guidance: dict = {}
+    qwen_guidance_at: str = ""
+    qwen_guidance_version: int = 0
 
 
 class MoodboardListResponse(BaseModel):
@@ -269,6 +272,15 @@ class MoodboardImageRequest(BaseModel):
 
 class MoodboardImageResponse(BaseModel):
     image_b64: str
+
+
+class MoodboardGuidanceMissingRequest(BaseModel):
+    limit: int = 25
+
+
+class MoodboardMashupRequest(BaseModel):
+    moodboard_ids: List[int]
+    weights: List[float] = []
 
 
 class SettingsUpdate(BaseModel):

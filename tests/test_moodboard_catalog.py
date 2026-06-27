@@ -19,6 +19,7 @@ from moodboards_catalog import (  # noqa: E402
     create_custom_moodboard,
     delete_custom_moodboard,
     fetch_moodboard_image_b64,
+    create_mashup_moodboard,
     init_moodboard_db,
     is_allowed_krea_image_url,
     is_allowed_krea_moodboard_url,
@@ -28,6 +29,7 @@ from moodboards_catalog import (  # noqa: E402
     latest_moodboard_discovery,
     list_moodboards,
     moodboard_generation_context,
+    set_moodboard_qwen_guidance,
     set_moodboard_favorite,
     should_sync_moodboards,
     upsert_moodboard,
@@ -53,6 +55,7 @@ FIXTURE_HTML = """
     </ul>
     <img alt="Gritty Cinematic Realism style reference image — cinematic realism" src="https://optim-images.krea.ai/ref-1.webp">
     <img alt="Gritty Cinematic Realism style reference image — shallow depth of field" src="https://optim-images.krea.ai/ref-2.webp">
+    <img alt="Home icon" src="https://optim-images.krea.ai/https---s-krea-ai-icons-HomeIcon-png-128.webp">
     <a href="/moodboard-feed/cinematic-blue-solitude-a057f657-b26a-5768-a134-3e21474484fe">Cinematic Blue Solitude</a>
   </body>
 </html>
@@ -79,6 +82,7 @@ class MoodboardCatalogTests(unittest.TestCase):
         self.assertEqual(parsed.keywords, ["cinematic realism", "shallow depth of field", "moody natural lighting"])
         self.assertEqual(parsed.primary_image_url, "https://optim-images.krea.ai/primary.webp")
         self.assertIn("https://optim-images.krea.ai/ref-1.webp", parsed.image_urls)
+        self.assertNotIn("https://optim-images.krea.ai/https---s-krea-ai-icons-HomeIcon-png-128.webp", parsed.image_urls)
         self.assertIn("https://www.krea.ai/moodboard-feed/cinematic-blue-solitude-a057f657-b26a-5768-a134-3e21474484fe", parsed.related_urls)
 
     def test_catalog_upsert_searches_and_preserves_favorites(self) -> None:
@@ -236,6 +240,86 @@ class MoodboardCatalogTests(unittest.TestCase):
             )
             self.assertEqual(context["uuids"], ["4e938f5c-ff17-539b-bdb2-ad7884cdb369"])
 
+    def test_generation_context_filters_krea_ui_icon_images(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def seed() -> int:
+                await init_moodboard_db(db_path)
+                return await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        slug="gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        uuid="4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        title="Gritty Cinematic Realism",
+                        taste_profile="Somber urban documentary suspense with tactile textures.",
+                        keywords=["cinematic realism", "tactile textures"],
+                        primary_image_url="https://optim-images.krea.ai/primary.webp",
+                        image_urls=[
+                            "https://optim-images.krea.ai/https---s-krea-ai-icons-HomeIcon-png-128.webp",
+                            "https://optim-images.krea.ai/ref-1.webp",
+                        ],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+
+            board_id = asyncio.run(seed())
+            context = moodboard_generation_context([board_id], db_path=db_path)
+
+            self.assertEqual(
+                context["image_urls"],
+                [
+                    "https://optim-images.krea.ai/primary.webp",
+                    "https://optim-images.krea.ai/ref-1.webp",
+                ],
+            )
+
+    def test_qwen_guidance_is_stored_without_rewriting_official_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def run() -> tuple[dict, dict]:
+                await init_moodboard_db(db_path)
+                board_id = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        slug="gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        uuid="4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        title="Gritty Cinematic Realism",
+                        taste_profile="Somber urban documentary suspense.",
+                        keywords=["cinematic realism"],
+                        primary_image_url="https://optim-images.krea.ai/primary.webp",
+                        image_urls=["https://optim-images.krea.ai/ref-1.webp"],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                await set_moodboard_qwen_guidance(
+                    board_id,
+                    {
+                        "title": "Should Not Replace Official Title",
+                        "keywords": ["should not replace"],
+                        "prompt_guidance": "Translate this board into candid urban realism.",
+                        "negative_guidance": "Avoid glossy studio light.",
+                        "style_axes": ["gritty realism"],
+                        "conditioning_notes": ["Use references for texture."],
+                        "source_summary": "Qwen prompt guidance.",
+                        "guidance_version": 1,
+                    },
+                    db_path=db_path,
+                )
+                listed = await list_moodboards(db_path=db_path)
+                context = moodboard_generation_context([board_id], db_path=db_path)
+                return listed["items"][0], context
+
+            item, context = asyncio.run(run())
+
+            self.assertEqual(item["title"], "Gritty Cinematic Realism")
+            self.assertEqual(item["keywords"], ["cinematic realism"])
+            self.assertEqual(item["qwen_guidance"]["prompt_guidance"], "Translate this board into candid urban realism.")
+            self.assertIn("Translate this board", context["style_text"])
+
     def test_generation_context_resolves_uuid_moodboards(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "catalog.db"
@@ -314,6 +398,42 @@ class MoodboardCatalogTests(unittest.TestCase):
             self.assertEqual(fetched, self.TINY_PNG_B64)
             self.assertTrue(deleted)
 
+    def test_custom_moodboard_auto_authors_missing_metadata_with_qwen(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "custom"
+
+            async def run() -> dict:
+                await init_moodboard_db(db_path)
+                return await create_custom_moodboard(
+                    title="",
+                    taste_profile="",
+                    keywords=[],
+                    image_b64s=[self.TINY_PNG_B64],
+                    db_path=db_path,
+                    storage_dir=storage_dir,
+                    guidance_generator=lambda _prompt, images: f"""
+                    {{
+                      "title": "Neon Rain Glass",
+                      "taste_profile": "Reflective cyber-noir with rain-slick glass and pink rim light.",
+                      "keywords": ["cyber-noir", "rain glass", "pink rim light"],
+                      "prompt_guidance": "Use wet reflective surfaces and neon contrast from {len(images)} reference.",
+                      "negative_guidance": "Avoid flat daylight.",
+                      "style_axes": ["neon noir"],
+                      "conditioning_notes": ["Use uploaded image for palette."],
+                      "source_summary": "Auto-authored custom moodboard.",
+                      "guidance_version": 1
+                    }}
+                    """,
+                )
+
+            created = asyncio.run(run())
+
+            self.assertEqual(created["title"], "Neon Rain Glass")
+            self.assertIn("cyber-noir", created["keywords"])
+            self.assertIn("Reflective cyber-noir", created["taste_profile"])
+            self.assertIn("wet reflective surfaces", created["qwen_guidance"]["prompt_guidance"])
+
     def test_official_moodboard_sync_does_not_overwrite_custom_boards(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "catalog.db"
@@ -351,6 +471,70 @@ class MoodboardCatalogTests(unittest.TestCase):
 
             self.assertEqual(custom_count, 1)
             self.assertEqual(official_count, 1)
+
+    def test_mashup_moodboard_requires_qwen_and_saves_custom_board(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "custom"
+
+            async def run() -> dict:
+                await init_moodboard_db(db_path)
+                first = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        slug="gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        uuid="4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        title="Gritty Cinematic Realism",
+                        taste_profile="Somber urban documentary suspense.",
+                        keywords=["cinematic realism"],
+                        primary_image_url="https://optim-images.krea.ai/first.webp",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                second = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/neon-product-studio-a057f657-b26a-5768-a134-3e21474484fe",
+                        slug="neon-product-studio-a057f657-b26a-5768-a134-3e21474484fe",
+                        uuid="a057f657-b26a-5768-a134-3e21474484fe",
+                        title="Neon Product Studio",
+                        taste_profile="Glossy neon product lighting.",
+                        keywords=["neon", "product"],
+                        primary_image_url="https://optim-images.krea.ai/second.webp",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                with patch("moodboards_catalog.fetch_moodboard_image_b64", return_value=self.TINY_PNG_B64):
+                    return await create_mashup_moodboard(
+                        moodboard_ids=[first, second],
+                        weights=[0.65, 0.35],
+                        db_path=db_path,
+                        storage_dir=storage_dir,
+                        guidance_generator=lambda prompt, images: f"""
+                        {{
+                          "title": "Gritty Neon Documentary",
+                          "taste_profile": "A hybrid of candid street realism and neon product glow.",
+                          "keywords": ["gritty neon", "documentary product", "wet reflections"],
+                          "prompt_guidance": "Blend gritty realism with neon highlights from {len(images)} references.",
+                          "negative_guidance": "Avoid clean catalog sterility.",
+                          "style_axes": ["street realism", "neon gloss"],
+                          "conditioning_notes": ["Use weighted source moodboards."],
+                          "source_summary": "{'Gritty Cinematic Realism' in prompt}",
+                          "guidance_version": 1
+                        }}
+                        """,
+                    )
+
+            created = asyncio.run(run())
+
+            self.assertEqual(created["source"], "custom")
+            self.assertEqual(created["title"], "Gritty Neon Documentary")
+            self.assertIn("gritty neon", created["keywords"])
+            self.assertIn("Blend gritty realism", created["qwen_guidance"]["prompt_guidance"])
+            self.assertEqual(len(created["image_urls"]), 2)
 
     def test_sync_throttle_uses_daily_interval(self) -> None:
         with tempfile.TemporaryDirectory() as td:
