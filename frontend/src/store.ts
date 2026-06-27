@@ -30,6 +30,9 @@ export interface GenerateParams {
   use_rebalance: boolean
   rebalance_multiplier: number
   rebalance_weights: string
+  krea_enhancer_variant: 'off' | 'rebalance' | 'enhancer' | 'rebalance_enhancer'
+  krea_enhancer_enabled: boolean
+  krea_enhancer_strength: number
   loras: ActiveLora[]
   bboxes: Array<{ label: string; bbox: number[] }>
   init_image_b64: string
@@ -122,6 +125,9 @@ const defaultParams: GenerateParams = {
   use_rebalance: true,
   rebalance_multiplier: 4.0,
   rebalance_weights: '1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0',
+  krea_enhancer_variant: 'rebalance',
+  krea_enhancer_enabled: false,
+  krea_enhancer_strength: 1.0,
   loras: [],
   bboxes: [],
   init_image_b64: '',
@@ -198,6 +204,8 @@ interface AppState {
 
   tab: number
   setTab: (n: number) => void
+  moodboardView: 'all' | 'favorites' | 'new'
+  setMoodboardView: (view: 'all' | 'favorites' | 'new') => void
 
   lightbox: LightboxState | null
   lightboxImage: string | null
@@ -243,6 +251,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   tab: 0,
   setTab: (n) => set({ tab: n }),
+  moodboardView: 'all',
+  setMoodboardView: (view) => set({ moodboardView: view }),
 
   lightbox: null,
   lightboxImage: null,

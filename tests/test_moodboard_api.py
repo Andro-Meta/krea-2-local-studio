@@ -69,10 +69,13 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
             return None
 
         async def fake_import(_: list[str], max_pages: int = 200, use_browser_discovery: bool = False) -> dict:
-            return {"imported": 1, "ids": [7]}
+            return {"imported": 1, "ids": [7], "new_count": 1, "new_ids": [7]}
 
         async def fake_export(_: object) -> int:
             return 1
+
+        async def fake_latest_discovery() -> dict:
+            return {"id": "2026-01-01T00:00:00Z", "discovered_at": "2026-01-01T00:00:00Z", "new_count": 1, "new_ids": [7], "items": [MOODBOARD_ITEM]}
 
         with (
             patch.object(main, "list_moodboards", side_effect=fake_list),
@@ -80,6 +83,7 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "set_moodboard_favorite", side_effect=fake_favorite),
             patch.object(main, "import_moodboard_urls", side_effect=fake_import),
             patch.object(main, "export_moodboard_seed", side_effect=fake_export),
+            patch.object(main, "latest_moodboard_discovery", side_effect=fake_latest_discovery),
             patch.object(main, "fetch_krea_image_b64", return_value="abc123"),
         ):
             listed = client.get("/api/moodboards?q=urban")
@@ -88,15 +92,17 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
             imported = client.post("/api/moodboards/import", json={"urls": [MOODBOARD_ITEM["url"]], "max_pages": 1})
             exported = client.post("/api/moodboards/export-seed")
             image = client.post("/api/moodboards/image", json={"url": "https://optim-images.krea.ai/ref.webp"})
+            latest = client.get("/api/moodboards/discoveries/latest")
 
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(listed.json()["items"][0]["title"], "Gritty Cinematic Realism")
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(favorite.json(), {"ok": True})
-        self.assertEqual(imported.json(), {"imported": 1, "ids": [7]})
+        self.assertEqual(imported.json(), {"imported": 1, "ids": [7], "new_count": 1, "new_ids": [7]})
         self.assertEqual(exported.status_code, 200)
         self.assertEqual(exported.json()["exported"], 1)
         self.assertEqual(image.json(), {"image_b64": "abc123"})
+        self.assertEqual(latest.json()["items"][0]["title"], "Gritty Cinematic Realism")
 
 
 if __name__ == "__main__":

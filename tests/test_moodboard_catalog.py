@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -20,6 +21,8 @@ from moodboards_catalog import (  # noqa: E402
     is_allowed_krea_moodboard_url,
     export_moodboard_seed,
     import_moodboard_seed,
+    import_moodboard_urls,
+    latest_moodboard_discovery,
     list_moodboards,
     set_moodboard_favorite,
     should_sync_moodboards,
@@ -143,6 +146,48 @@ class MoodboardCatalogTests(unittest.TestCase):
                 self.assertEqual(data["total"], 1)
                 self.assertEqual(data["items"][0]["title"], "Gritty Cinematic Realism")
                 self.assertFalse(data["items"][0]["favorite"])
+
+            asyncio.run(run())
+
+    def test_import_reports_new_moodboards_and_records_latest_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            existing = MoodboardRecord(
+                url="https://www.krea.ai/moodboard-feed/existing-style-11111111-1111-5111-9111-111111111111",
+                slug="existing-style-11111111-1111-5111-9111-111111111111",
+                uuid="11111111-1111-5111-9111-111111111111",
+                title="Existing Style",
+                taste_profile="Already known.",
+                keywords=["known"],
+                primary_image_url="https://optim-images.krea.ai/existing.webp",
+                image_urls=[],
+                related_urls=[],
+            )
+            new = MoodboardRecord(
+                url="https://www.krea.ai/moodboard-feed/new-neon-style-22222222-2222-5222-9222-222222222222",
+                slug="new-neon-style-22222222-2222-5222-9222-222222222222",
+                uuid="22222222-2222-5222-9222-222222222222",
+                title="New Neon Style",
+                taste_profile="Fresh neon cinematic taste.",
+                keywords=["neon"],
+                primary_image_url="https://optim-images.krea.ai/new.webp",
+                image_urls=[],
+                related_urls=[],
+            )
+
+            async def run() -> None:
+                await init_moodboard_db(db_path)
+                await upsert_moodboard(existing, db_path)
+                with patch("moodboards_catalog.KreaMoodboardCrawler.crawl", return_value=[existing, new]):
+                    result = await import_moodboard_urls([KREA_MOODBOARD_GALLERY_URL], db_path=db_path)
+
+                latest = await latest_moodboard_discovery(db_path=db_path)
+
+                self.assertEqual(result["imported"], 2)
+                self.assertEqual(result["new_count"], 1)
+                self.assertEqual(len(result["new_ids"]), 1)
+                self.assertEqual(latest["new_count"], 1)
+                self.assertEqual([item["title"] for item in latest["items"]], ["New Neon Style"])
 
             asyncio.run(run())
 

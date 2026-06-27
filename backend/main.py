@@ -38,6 +38,7 @@ from moodboards_catalog import (
     get_moodboard,
     import_moodboard_urls,
     init_moodboard_db,
+    latest_moodboard_discovery,
     list_moodboards,
     set_moodboard_favorite,
     should_sync_moodboards,
@@ -54,6 +55,7 @@ from schemas import (
     LoadModelRequest,
     MoodboardImportRequest,
     MoodboardImportResponse,
+    MoodboardDiscoveryResponse,
     MoodboardExportResponse,
     MoodboardImageRequest,
     MoodboardImageResponse,
@@ -700,6 +702,11 @@ async def delete_gallery_item(gallery_id: int):
 @app.get("/api/moodboards", response_model=MoodboardListResponse)
 async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False):
     return await list_moodboards(query=q, page=page, page_size=page_size, favorites_only=favorites)
+
+
+@app.get("/api/moodboards/discoveries/latest", response_model=MoodboardDiscoveryResponse)
+async def moodboard_latest_discovery():
+    return await latest_moodboard_discovery()
 
 
 @app.get("/api/moodboards/{moodboard_id}", response_model=MoodboardItem)

@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import {
   Accordion, AccordionDetails, AccordionSummary,
-  Box, FormControlLabel, Grid, Slider, Stack, Switch, TextField, Tooltip, Typography,
+  Box, FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
@@ -45,9 +45,16 @@ function LabeledSlider({ label, value, min, max, step, onChange, tip, helperText
 }
 
 export default function ParameterSection() {
-  const { params, setParam } = useStore()
+  const { params, setParam, setParams } = useStore()
   const [advOpen, setAdvOpen] = useState(false)
   const isTurbo = params.checkpoint === 'turbo'
+  const setEnhancerVariant = (variant: typeof params.krea_enhancer_variant) => {
+    setParams({
+      krea_enhancer_variant: variant,
+      use_rebalance: variant === 'rebalance' || variant === 'rebalance_enhancer',
+      krea_enhancer_enabled: variant === 'enhancer' || variant === 'rebalance_enhancer',
+    })
+  }
 
   return (
     <Box>
@@ -187,6 +194,34 @@ export default function ParameterSection() {
                 fullWidth
                 helperText="Layers 1–12 of Qwen3-VL. Default: 1,1,1,1,1,1,1,2.5,5,1.1,4,1"
               />
+              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', mt: 0.5 }}>
+                Experimental Krea 2 Enhancer
+                <InfoTip text="Runtime patch based on the ComfyUI Krea2T enhancer. It runs Krea's text-fusion normally, compares it with a boosted pass, then applies a capped delta. Default is off." />
+              </Typography>
+              <TextField
+                select
+                label="Testing variant"
+                value={params.krea_enhancer_variant}
+                onChange={e => setEnhancerVariant(e.target.value as typeof params.krea_enhancer_variant)}
+                size="small"
+                fullWidth
+                helperText="Use fixed seed/prompt to compare baseline, current rebalance, enhancer, and stacked conditioning."
+              >
+                <MenuItem value="off">Baseline: no rebalance, no enhancer</MenuItem>
+                <MenuItem value="rebalance">Current default: rebalance only</MenuItem>
+                <MenuItem value="enhancer">Enhancer only</MenuItem>
+                <MenuItem value="rebalance_enhancer">Rebalance + enhancer</MenuItem>
+              </TextField>
+              {params.krea_enhancer_enabled && (
+                <LabeledSlider
+                  label="Enhancer strength"
+                  value={params.krea_enhancer_strength}
+                  min={0} max={2} step={0.05}
+                  onChange={v => setParam('krea_enhancer_strength', v)}
+                  tip="Blends the internal text-fusion enhancement from neutral 0.0 to full 2.0. Start at 1.0 for A/B tests."
+                  helperText="Experimental · compare with a fixed seed before using in a final workflow"
+                />
+              )}
             </Stack>
           </AccordionDetails>
         </Accordion>

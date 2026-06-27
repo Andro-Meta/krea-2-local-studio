@@ -62,6 +62,8 @@ export default function GeneratePanel() {
         use_rebalance: params.use_rebalance,
         rebalance_multiplier: params.rebalance_multiplier,
         rebalance_weights: params.rebalance_weights,
+        krea_enhancer_enabled: params.krea_enhancer_enabled,
+        krea_enhancer_strength: params.krea_enhancer_strength,
         loras: params.loras,
         bboxes: params.bboxes,
         init_image_b64: params.init_image_b64 || undefined,

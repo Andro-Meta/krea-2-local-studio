@@ -53,16 +53,30 @@ export default function MoodboardsPanel() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
-  const [favoritesOnly, setFavoritesOnly] = useState(false)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
-  const { params, setParams, setTab } = useStore()
+  const { params, setParams, setTab, moodboardView, setMoodboardView } = useStore()
 
   const load = useCallback(async (pg = 1) => {
     setLoading(true)
     try {
-      const data = await apiFetch.moodboards({ q: query, page: pg, pageSize: PAGE_SIZE, favorites: favoritesOnly })
+      if (moodboardView === 'new') {
+        const discovery = await apiFetch.latestMoodboardDiscovery()
+        const needle = query.trim().toLowerCase()
+        const newItems = needle
+          ? discovery.items.filter(board => [
+            board.title,
+            board.taste_profile,
+            board.keywords.join(' '),
+          ].join(' ').toLowerCase().includes(needle))
+          : discovery.items
+        setItems(newItems)
+        setTotal(newItems.length)
+        setPage(1)
+        return
+      }
+      const data = await apiFetch.moodboards({ q: query, page: pg, pageSize: PAGE_SIZE, favorites: moodboardView === 'favorites' })
       setItems(prev => pg === 1 ? data.items : [...prev, ...data.items])
       setTotal(data.total)
       setPage(pg)
@@ -71,7 +85,7 @@ export default function MoodboardsPanel() {
     } finally {
       setLoading(false)
     }
-  }, [favoritesOnly, query])
+  }, [moodboardView, query])
 
   useEffect(() => { load(1) }, [load])
 
@@ -85,7 +99,13 @@ export default function MoodboardsPanel() {
     setMessage(null)
     try {
       const result = await apiFetch.importMoodboards()
-      setMessage({ severity: 'success', text: `Imported or updated ${result.imported} moodboards.` })
+      setMessage({
+        severity: 'success',
+        text: result.new_count > 0
+          ? `Imported or updated ${result.imported} moodboards. ${result.new_count} are new.`
+          : `Imported or updated ${result.imported} moodboards. No new moodboards found.`,
+      })
+      if (result.new_count > 0) setMoodboardView('new')
       await load(1)
     } catch (e: any) {
       setMessage({ severity: 'error', text: e?.response?.data?.detail ?? e?.message ?? 'Could not sync moodboards' })
@@ -102,7 +122,13 @@ export default function MoodboardsPanel() {
     setMessage(null)
     try {
       const result = await apiFetch.importMoodboards(urls)
-      setMessage({ severity: 'success', text: `Imported or updated ${result.imported} moodboards.` })
+      setMessage({
+        severity: 'success',
+        text: result.new_count > 0
+          ? `Imported or updated ${result.imported} moodboards. ${result.new_count} are new.`
+          : `Imported or updated ${result.imported} moodboards. No new moodboards found.`,
+      })
+      if (result.new_count > 0) setMoodboardView('new')
       await load(1)
     } catch (e: any) {
       setMessage({ severity: 'error', text: e?.response?.data?.detail ?? e?.message ?? 'Could not import moodboards' })
@@ -185,9 +211,10 @@ export default function MoodboardsPanel() {
               startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>,
             }}
           />
-          <Tabs value={favoritesOnly ? 1 : 0} onChange={(_, v) => setFavoritesOnly(v === 1)} sx={{ minWidth: 220 }}>
-            <Tab label="All" />
-            <Tab label="Favorites" />
+          <Tabs value={moodboardView} onChange={(_, v) => setMoodboardView(v)} sx={{ minWidth: 300 }}>
+            <Tab label="All" value="all" />
+            <Tab label="Favorites" value="favorites" />
+            <Tab label="New" value="new" />
           </Tabs>
           <Tooltip title="Refresh list">
             <IconButton onClick={() => load(1)} disabled={loading}><RefreshIcon /></IconButton>
@@ -201,7 +228,7 @@ export default function MoodboardsPanel() {
         ) : items.length === 0 ? (
           <Box sx={{ textAlign: 'center', py: 8 }}>
             <Typography sx={{ color: 'text.secondary' }}>
-              No moodboards yet. Click Sync Krea or import a moodboard URL.
+              {moodboardView === 'new' ? 'No new moodboards have been discovered yet.' : 'No moodboards yet. Click Sync Krea or import a moodboard URL.'}
             </Typography>
           </Box>
         ) : (

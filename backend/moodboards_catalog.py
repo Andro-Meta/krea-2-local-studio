@@ -19,6 +19,7 @@ KREA_BASE_URL = "https://www.krea.ai"
 KREA_MOODBOARD_GALLERY_URL = f"{KREA_BASE_URL}/app?gallery=moodboards"
 MOODBOARD_SEED_PATH = BASE_DIR / "data" / "krea_moodboards_seed.json"
 SYNC_META_KEY = "last_krea_moodboard_sync_at"
+DISCOVERY_META_KEY = "latest_krea_moodboard_discovery"
 DEFAULT_SYNC_INTERVAL_SECONDS = 24 * 60 * 60
 ALLOWED_KREA_IMAGE_HOSTS = {"optim-images.krea.ai"}
 ALLOWED_KREA_MOODBOARD_HOSTS = {"www.krea.ai", "krea.ai"}
@@ -452,6 +453,62 @@ async def get_moodboard(moodboard_id: int, db_path: Path = DB_PATH) -> dict | No
     return _row_to_item(row) if row else None
 
 
+async def _get_existing_moodboard_urls(db_path: Path = DB_PATH) -> set[str]:
+    async with aiosqlite.connect(str(db_path)) as db:
+        rows = await (await db.execute("SELECT url FROM moodboards")).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+async def _items_by_ids(ids: list[int], db_path: Path = DB_PATH) -> list[dict]:
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(f"SELECT * FROM moodboards WHERE id IN ({placeholders})", ids)).fetchall()
+    by_id = {int(row["id"]): _row_to_item(row) for row in rows}
+    return [by_id[item_id] for item_id in ids if item_id in by_id]
+
+
+async def _record_moodboard_discovery(new_ids: list[int], db_path: Path = DB_PATH) -> None:
+    if not new_ids:
+        return
+    now = _now_iso()
+    payload = {
+        "id": now,
+        "discovered_at": now,
+        "new_count": len(new_ids),
+        "new_ids": new_ids,
+    }
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (DISCOVERY_META_KEY, json.dumps(payload)),
+        )
+        await db.commit()
+
+
+async def latest_moodboard_discovery(db_path: Path = DB_PATH) -> dict:
+    empty = {"id": "", "discovered_at": "", "new_count": 0, "new_ids": [], "items": []}
+    async with aiosqlite.connect(str(db_path)) as db:
+        row = await (await db.execute("SELECT value FROM app_meta WHERE key = ?", (DISCOVERY_META_KEY,))).fetchone()
+    if not row:
+        return empty
+    try:
+        payload = json.loads(row[0])
+    except json.JSONDecodeError:
+        return empty
+    ids = [int(v) for v in payload.get("new_ids", []) if str(v).isdigit()]
+    items = await _items_by_ids(ids, db_path=db_path)
+    return {
+        "id": str(payload.get("id", "")),
+        "discovered_at": str(payload.get("discovered_at", "")),
+        "new_count": int(payload.get("new_count", len(ids))),
+        "new_ids": ids,
+        "items": items,
+    }
+
+
 def _seed_item_from_catalog_item(item: dict) -> dict:
     return {
         "url": item["url"],
@@ -533,5 +590,15 @@ async def import_moodboard_urls(
 
     loop = asyncio.get_event_loop()
     records = await loop.run_in_executor(None, lambda: crawler.crawl(urls, max_pages=max_pages))
-    ids = [await upsert_moodboard(record, db_path) for record in records]
-    return {"imported": len(ids), "ids": ids}
+    existing_urls = await _get_existing_moodboard_urls(db_path)
+    ids: list[int] = []
+    new_ids: list[int] = []
+    seen_new_urls: set[str] = set()
+    for record in records:
+        board_id = await upsert_moodboard(record, db_path)
+        ids.append(board_id)
+        if record.url not in existing_urls and record.url not in seen_new_urls:
+            new_ids.append(board_id)
+            seen_new_urls.add(record.url)
+    await _record_moodboard_discovery(new_ids, db_path=db_path)
+    return {"imported": len(ids), "ids": ids, "new_count": len(new_ids), "new_ids": new_ids}

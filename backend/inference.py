@@ -27,6 +27,7 @@ import torch
 from PIL import Image
 
 from conditioning import parse_weights, rebalance
+from krea_enhancer import krea_enhancer_context
 from lora_manager import apply_loras, build_trigger_prompt
 from output_saver import encode_images
 from settings import OUTPUTS_DIR, settings
@@ -560,33 +561,38 @@ class Krea2Pipeline:
         # Incompatible LoRAs are skipped; reports flow back to the UI.
         lora_reports = apply_loras(self.mmdit, req.loras or [], device=self._device)
 
-        images = sampling.sample(
-            model=self.mmdit,
-            ae=self.ae,
-            encoder=None,
-            prompts=None,
-            txt=txt,
-            txtmask=txtmask,
-            negative_txt=neg_txt,
-            negative_txtmask=neg_txtmask,
-            device=self._device,
-            dtype=self._dtype,
-            width=req.width,
-            height=req.height,
-            steps=req.steps,
-            guidance=req.cfg,
-            seed=seed,
-            mu=mu,
-            y1=req.y1,
-            y2=req.y2,
-            batch_size=req.num_images,
-            init_latent=init_latent,
-            denoise=req.denoise,
-            mask=mask_tensor,
-            init_latent_clean=init_latent_clean,
-            differential_mask=req.mode == "outpaint",
-            progress_cb=progress_cb,
-        )
+        with krea_enhancer_context(
+            self.mmdit,
+            enabled=bool(getattr(req, "krea_enhancer_enabled", False)),
+            strength=float(getattr(req, "krea_enhancer_strength", 1.0)),
+        ):
+            images = sampling.sample(
+                model=self.mmdit,
+                ae=self.ae,
+                encoder=None,
+                prompts=None,
+                txt=txt,
+                txtmask=txtmask,
+                negative_txt=neg_txt,
+                negative_txtmask=neg_txtmask,
+                device=self._device,
+                dtype=self._dtype,
+                width=req.width,
+                height=req.height,
+                steps=req.steps,
+                guidance=req.cfg,
+                seed=seed,
+                mu=mu,
+                y1=req.y1,
+                y2=req.y2,
+                batch_size=req.num_images,
+                init_latent=init_latent,
+                denoise=req.denoise,
+                mask=mask_tensor,
+                init_latent_clean=init_latent_clean,
+                differential_mask=req.mode == "outpaint",
+                progress_cb=progress_cb,
+            )
 
         if req.mode == "outpaint" and init_img_for_stitch is not None and mask_img_for_stitch is not None:
             images = _outpaint_stitch(images, init_img_for_stitch, mask_img_for_stitch)

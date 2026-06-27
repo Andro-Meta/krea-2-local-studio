@@ -31,6 +31,8 @@ class GenerationRequest(BaseModel):
     use_rebalance: bool = True
     rebalance_multiplier: float = 4.0
     rebalance_weights: str = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
+    krea_enhancer_enabled: bool = False
+    krea_enhancer_strength: float = 1.0
     bboxes: List[BoundingBox] = []
     init_image_b64: Optional[str] = None
     mask_b64: Optional[str] = None
@@ -210,6 +212,16 @@ class MoodboardImportRequest(BaseModel):
 class MoodboardImportResponse(BaseModel):
     imported: int
     ids: List[int]
+    new_count: int = 0
+    new_ids: List[int] = []
+
+
+class MoodboardDiscoveryResponse(BaseModel):
+    id: str = ""
+    discovered_at: str = ""
+    new_count: int = 0
+    new_ids: List[int] = []
+    items: List[MoodboardItem] = []
 
 
 class MoodboardExportResponse(BaseModel):

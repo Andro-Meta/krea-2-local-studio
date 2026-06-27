@@ -36,6 +36,8 @@ export interface GenerationRequest {
   use_rebalance?: boolean
   rebalance_multiplier?: number
   rebalance_weights?: string
+  krea_enhancer_enabled?: boolean
+  krea_enhancer_strength?: number
   bboxes?: Array<{ label: string; bbox: number[] }>
   init_image_b64?: string
   mask_b64?: string
@@ -99,6 +101,14 @@ export interface MoodboardItem {
   last_seen_at: string
   updated_at: string
   sync_error: string
+}
+
+export interface MoodboardDiscovery {
+  id: string
+  discovered_at: string
+  new_count: number
+  new_ids: number[]
+  items: MoodboardItem[]
 }
 
 export interface GalleryItem {
@@ -246,8 +256,11 @@ export const apiFetch = {
     api.put(`/api/moodboards/${id}/favorite`, { favorite }).then(r => r.data),
 
   importMoodboards: (urls: string[] = [], maxPages = 200) =>
-    api.post<{ imported: number; ids: number[] }>('/api/moodboards/import', { urls, max_pages: maxPages }, { timeout: 180000 })
+    api.post<{ imported: number; ids: number[]; new_count: number; new_ids: number[] }>('/api/moodboards/import', { urls, max_pages: maxPages }, { timeout: 180000 })
       .then(r => r.data),
+
+  latestMoodboardDiscovery: () =>
+    api.get<MoodboardDiscovery>('/api/moodboards/discoveries/latest').then(r => r.data),
 
   exportMoodboardSeed: () =>
     api.post<{ exported: number; path: string }>('/api/moodboards/export-seed').then(r => r.data),

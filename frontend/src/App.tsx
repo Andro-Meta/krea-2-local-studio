@@ -1,4 +1,4 @@
-import { Box, Tabs, Tab } from '@mui/material'
+import { Alert, Box, Button, Snackbar, Tabs, Tab } from '@mui/material'
 import { useEffect, useState } from 'react'
 import Layout from './components/Layout'
 import GeneratePanel from './components/GeneratePanel'
@@ -9,16 +9,41 @@ import RedrawStudio from './components/RedrawStudio'
 import RealtimeStudio from './components/RealtimeStudio'
 import Lightbox from './components/Gallery/Lightbox'
 import { useStore } from './store'
+import { apiFetch, type MoodboardDiscovery } from './api'
+
+const SEEN_MOODBOARD_DISCOVERY_KEY = 'krea2_seen_moodboard_discovery_id'
 
 export default function App() {
-  const { tab, lightbox, params, setParam } = useStore()
+  const { tab, lightbox, params, setParam, setTab, setMoodboardView } = useStore()
   const [createMode, setCreateMode] = useState<'txt2img' | 'redraw' | 'realtime'>(
     params.mode === 'txt2img' ? 'txt2img' : 'redraw',
   )
+  const [moodboardToast, setMoodboardToast] = useState<MoodboardDiscovery | null>(null)
 
   useEffect(() => {
     if (params.mode !== 'txt2img' && createMode !== 'realtime') setCreateMode('redraw')
   }, [createMode, params.mode])
+
+  useEffect(() => {
+    let stopped = false
+    const checkDiscovery = async () => {
+      try {
+        const latest = await apiFetch.latestMoodboardDiscovery()
+        if (stopped || !latest.id || latest.new_count <= 0) return
+        if (localStorage.getItem(SEEN_MOODBOARD_DISCOVERY_KEY) === latest.id) return
+        localStorage.setItem(SEEN_MOODBOARD_DISCOVERY_KEY, latest.id)
+        setMoodboardToast(latest)
+      } catch {
+        // Best-effort notification only; the Moodboards tab can still be opened normally.
+      }
+    }
+    checkDiscovery()
+    const interval = window.setInterval(checkDiscovery, 60_000)
+    return () => {
+      stopped = true
+      window.clearInterval(interval)
+    }
+  }, [])
 
   const renderCreate = () => (
     <Box>
@@ -56,6 +81,28 @@ export default function App() {
       {tab === 2 && <MoodboardsPanel />}
       {tab === 3 && <SystemStatus />}
       {lightbox && <Lightbox />}
+      <Snackbar open={!!moodboardToast} autoHideDuration={8000} onClose={() => setMoodboardToast(null)}>
+        <Alert
+          severity="success"
+          variant="filled"
+          onClose={() => setMoodboardToast(null)}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => {
+                setMoodboardView('new')
+                setTab(2)
+                setMoodboardToast(null)
+              }}
+            >
+              View
+            </Button>
+          }
+        >
+          Krea found {moodboardToast?.new_count ?? 0} new moodboard{moodboardToast?.new_count === 1 ? '' : 's'}.
+        </Alert>
+      </Snackbar>
     </Layout>
   )
 }
