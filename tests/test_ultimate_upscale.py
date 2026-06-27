@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 import base64
+import importlib.util
 import io
 from pathlib import Path
 
@@ -58,6 +59,7 @@ class UltimateUpscaleTests(unittest.TestCase):
 
         self.assertEqual(result.size, (64, 64))
 
+    @unittest.skipIf(importlib.util.find_spec("numpy") is None, "numpy is required for Ultimate upscale blending")
     def test_ultimate_accepts_generation_metadata_return(self) -> None:
         image = Image.new("RGB", (64, 64), (12, 34, 56))
 
