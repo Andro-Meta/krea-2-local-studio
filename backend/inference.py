@@ -29,7 +29,10 @@ from PIL import Image
 from conditioning import blend_split_conditioning, parse_weights, rebalance
 from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
+from krea2.sampler_registry import validate_sampler_configuration
+from krea2.lanpaint_sampler import LanPaintSettings
 from lora_manager import apply_loras, build_trigger_prompt
+from model_profiles import apply_profile_defaults
 from moodboards_catalog import moodboard_generation_context
 from memory_manager import clear_cuda_cache
 from output_saver import encode_images
@@ -68,6 +71,11 @@ def _apply_creativity_defaults(req) -> None:
 
 def normalize_generation_defaults(req) -> None:
     """Apply model-family defaults for callers that bypass the frontend presets."""
+    if _request_field_was_set(req, "model_profile") and str(getattr(req, "model_profile", "") or ""):
+        apply_profile_defaults(req)
+        _apply_creativity_defaults(req)
+        return
+
     checkpoint = str(getattr(req, "checkpoint", "") or "").lower()
     quality_preset = str(getattr(req, "quality_preset", "") or "").lower()
     _apply_creativity_defaults(req)
@@ -384,6 +392,11 @@ def _build_bbox_prompt(prompt: str, bboxes: list) -> str:
 
 def _resolve_native_sampler(req) -> str:
     native_sampler = getattr(req, "sampler", "euler_flow")
+    validate_sampler_configuration(
+        native_sampler,
+        getattr(req, "scheduler", "simple"),
+        getattr(req, "model_profile", "") or ("krea_raw" if getattr(req, "checkpoint", "turbo") == "raw" else "krea_turbo"),
+    )
     inpaint_method = getattr(req, "inpaint_method", "native")
     if inpaint_method == "lanpaint_experimental":
         if req.mode != "inpaint":
@@ -392,6 +405,19 @@ def _resolve_native_sampler(req) -> str:
             raise ValueError("lanpaint_experimental requires init_image_b64 and mask_b64")
         return "lanpaint_experimental"
     return native_sampler
+
+
+def _lanpaint_settings_from_request(req) -> LanPaintSettings:
+    return LanPaintSettings(
+        num_steps=int(getattr(req, "lanpaint_inner_steps", 5) if _request_field_was_set(req, "lanpaint_inner_steps") else 5),
+        lambda_strength=float(getattr(req, "lanpaint_lambda", 16.0) if _request_field_was_set(req, "lanpaint_lambda") else 16.0),
+        step_size=float(getattr(req, "lanpaint_step_size", 0.2) if _request_field_was_set(req, "lanpaint_step_size") else 0.2),
+        beta=float(getattr(req, "lanpaint_beta", 1.0) if _request_field_was_set(req, "lanpaint_beta") else 1.0),
+        friction=float(getattr(req, "lanpaint_friction", 15.0) if _request_field_was_set(req, "lanpaint_friction") else 15.0),
+        early_stop=int(getattr(req, "lanpaint_early_stop", 1) if _request_field_was_set(req, "lanpaint_early_stop") else 1),
+        prompt_mode=str(getattr(req, "lanpaint_prompt_mode", "Image First") if _request_field_was_set(req, "lanpaint_prompt_mode") else "Image First"),
+        strength=float(getattr(req, "lanpaint_strength", 1.0) if _request_field_was_set(req, "lanpaint_strength") else 1.0),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -690,6 +716,15 @@ class Krea2Pipeline:
             and bool(ref_b64s)
         )
         edit_rebalance_profile = str(getattr(req, "edit_rebalance_profile", "conservative") or "conservative")
+        requested_conditioning_mode = str(getattr(req, "conditioning_mode", "auto") or "auto")
+        edit_plus_active = (
+            requested_conditioning_mode == "qwen_image_edit_plus"
+            or (
+                requested_conditioning_mode == "auto"
+                and str(getattr(req, "mode", "")) in {"redraw", "img2img", "inpaint", "outpaint"}
+                and bool(ref_b64s)
+            )
+        )
 
         positive_key = (
             "positive",
@@ -702,6 +737,7 @@ class Krea2Pipeline:
             style_ref_settings,
             bool(edit_rebalance_enabled),
             edit_rebalance_profile,
+            "qwen_image_edit_plus" if edit_plus_active else "qwen_reference",
         )
         negative_key = (
             "negative",
@@ -728,9 +764,16 @@ class Krea2Pipeline:
                         )
                         if edit_rebalance_enabled:
                             text_txt, text_mask = self.encoder([prompt] * req.num_images)
-                            image_txt, image_mask = self.encoder.forward_with_images(
-                                [prompt] * req.num_images, images=ref_images, token_size=token_size
-                            )
+                            if edit_plus_active:
+                                image_txt, image_mask = self.encoder.forward_image_edit_plus(
+                                    [prompt] * req.num_images,
+                                    images=ref_images[:3],
+                                    negative_prompts=[negative_prompt] * req.num_images,
+                                )
+                            else:
+                                image_txt, image_mask = self.encoder.forward_with_images(
+                                    [prompt] * req.num_images, images=ref_images, token_size=token_size
+                                )
                             text_txt, txtmask, image_txt = _align_conditioning_pair(
                                 text_txt, text_mask, image_txt, image_mask
                             )
@@ -741,9 +784,16 @@ class Krea2Pipeline:
                                 profile=edit_rebalance_profile,
                             )
                         else:
-                            txt, txtmask = self.encoder.forward_with_images(
-                                [prompt] * req.num_images, images=ref_images, token_size=token_size
-                            )
+                            if edit_plus_active:
+                                txt, txtmask = self.encoder.forward_image_edit_plus(
+                                    [prompt] * req.num_images,
+                                    images=ref_images[:3],
+                                    negative_prompts=[negative_prompt] * req.num_images,
+                                )
+                            else:
+                                txt, txtmask = self.encoder.forward_with_images(
+                                    [prompt] * req.num_images, images=ref_images, token_size=token_size
+                                )
                     else:
                         txt, txtmask = self.encoder([prompt] * req.num_images)
 
@@ -869,6 +919,7 @@ class Krea2Pipeline:
                 sampler=native_sampler,
                 lanpaint_inner_steps=getattr(req, "lanpaint_inner_steps", 3),
                 lanpaint_strength=getattr(req, "lanpaint_strength", 1.0),
+                lanpaint_settings=_lanpaint_settings_from_request(req),
                 progress_cb=progress_cb,
             )
 

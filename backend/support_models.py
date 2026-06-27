@@ -59,6 +59,54 @@ SUPPORT_MODELS = [
         ],
         "optional": True,
     },
+    {
+        "id": "qwen_image_edit",
+        "label": "Qwen Image Edit model family",
+        "repo_id": "Qwen/Qwen-Image-Edit",
+        "local_dir": LOCAL_AI_DIR / "qwen_image_edit",
+        "purpose": "Future optional Qwen Image Edit profile with Edit Plus conditioning",
+        "required": ["model_index.json"],
+        "allow_patterns": None,
+        "optional": True,
+        "download_enabled": False,
+        "disabled_reason": "Loader path is not implemented yet.",
+    },
+    {
+        "id": "lens_turbo",
+        "label": "Lens Turbo model family",
+        "repo_id": "lens-family/placeholder",
+        "local_dir": LOCAL_AI_DIR / "lens_turbo",
+        "purpose": "Future optional Lens profile requiring GPT-OSS-20B text encoder and Flux2 VAE",
+        "required": ["model_index.json"],
+        "allow_patterns": None,
+        "optional": True,
+        "download_enabled": False,
+        "disabled_reason": "Model/license layout and loader path need confirmation before download.",
+    },
+    {
+        "id": "ernie_turbo",
+        "label": "ERNIE Turbo model family",
+        "repo_id": "ernie-family/placeholder",
+        "local_dir": LOCAL_AI_DIR / "ernie_turbo",
+        "purpose": "Future optional ERNIE profile requiring ERNIE encoder, Flux2 VAE, and AuraFlow shift",
+        "required": ["model_index.json"],
+        "allow_patterns": None,
+        "optional": True,
+        "download_enabled": False,
+        "disabled_reason": "Model/license layout and loader path need confirmation before download.",
+    },
+    {
+        "id": "z_image_turbo",
+        "label": "Z-Image Turbo model family",
+        "repo_id": "z-image-family/placeholder",
+        "local_dir": LOCAL_AI_DIR / "z_image_turbo",
+        "purpose": "Future optional Z-Image profile requiring Qwen3-4B encoder and ae.safetensors VAE",
+        "required": ["ae.safetensors"],
+        "allow_patterns": None,
+        "optional": True,
+        "download_enabled": False,
+        "disabled_reason": "Loader path is not implemented yet.",
+    },
 ]
 
 
@@ -114,6 +162,8 @@ def support_model_status() -> list[dict[str, Any]]:
             "purpose": model["purpose"],
             "installed": installed,
             "optional": bool(model.get("optional", False)),
+            "download_enabled": bool(model.get("download_enabled", True)),
+            "disabled_reason": str(model.get("disabled_reason", "")),
             "path": str(local_dir),
             "cache_dir": str(_repo_cache_dir(model["repo_id"])),
             "legacy_cache_installed": _has_required(model["repo_id"], model["required"]),
@@ -128,6 +178,8 @@ def download_support_models() -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for model in SUPPORT_MODELS:
         if model.get("optional") and model.get("id") != "qwen3_vl_fp8":
+            continue
+        if model.get("download_enabled") is False:
             continue
         path = snapshot_download(
             repo_id=model["repo_id"],

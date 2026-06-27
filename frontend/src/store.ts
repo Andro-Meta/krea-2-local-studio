@@ -20,6 +20,7 @@ export interface GenerateParams {
   prompt: string
   negative_prompt: string
   mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
+  model_profile: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
   checkpoint: 'turbo' | 'raw'
   quantization: 'bf16' | 'fp8'
   steps: number
@@ -32,10 +33,17 @@ export interface GenerateParams {
   num_images: number
   seed: number
   denoise: number
-  sampler: 'euler_flow'
+  sampler: 'euler' | 'euler_flow' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
+  scheduler: 'simple'
   inpaint_method: 'native' | 'lanpaint_experimental' | 'flux_fill'
   lanpaint_inner_steps: number
   lanpaint_strength: number
+  lanpaint_lambda: number
+  lanpaint_step_size: number
+  lanpaint_beta: number
+  lanpaint_friction: number
+  lanpaint_early_stop: number
+  lanpaint_prompt_mode: 'Image First' | 'Prompt First'
   edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   creativity: 'raw' | 'low' | 'medium' | 'high'
@@ -45,6 +53,7 @@ export interface GenerateParams {
   rebalance_weights: string
   edit_rebalance_enabled: boolean
   edit_rebalance_profile: 'default' | 'edit' | 'conservative'
+  conditioning_mode: 'auto' | 'qwen_image_edit_plus' | 'qwen_reference'
   krea_enhancer_variant: 'off' | 'rebalance' | 'enhancer' | 'rebalance_enhancer'
   krea_enhancer_enabled: boolean
   krea_enhancer_strength: number
@@ -130,6 +139,7 @@ const defaultParams: GenerateParams = {
   prompt: '',
   negative_prompt: '',
   mode: 'txt2img',
+  model_profile: 'krea_turbo',
   checkpoint: 'turbo',
   quantization: 'fp8',
   steps: 8,
@@ -142,10 +152,17 @@ const defaultParams: GenerateParams = {
   num_images: 1,
   seed: -1,
   denoise: 0.75,
-  sampler: 'euler_flow',
+  sampler: 'euler',
+  scheduler: 'simple',
   inpaint_method: 'native',
-  lanpaint_inner_steps: 3,
+  lanpaint_inner_steps: 5,
   lanpaint_strength: 1.0,
+  lanpaint_lambda: 16.0,
+  lanpaint_step_size: 0.2,
+  lanpaint_beta: 1.0,
+  lanpaint_friction: 15.0,
+  lanpaint_early_stop: 1,
+  lanpaint_prompt_mode: 'Image First',
   edit_provider: 'auto',
   quality_preset: 'balanced',
   creativity: 'medium',
@@ -155,6 +172,7 @@ const defaultParams: GenerateParams = {
   rebalance_weights: '1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0',
   edit_rebalance_enabled: true,
   edit_rebalance_profile: 'conservative',
+  conditioning_mode: 'auto',
   krea_enhancer_variant: 'rebalance',
   krea_enhancer_enabled: false,
   krea_enhancer_strength: 1.0,

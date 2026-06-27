@@ -16,6 +16,48 @@ if str(BACKEND) not in sys.path:
 
 
 class LanPaintSamplerTests(unittest.TestCase):
+    def test_binary_mask_preparation_matches_lanpaint_requirement(self) -> None:
+        from krea2.lanpaint_sampler import prepare_lanpaint_mask
+
+        mask = torch.tensor([[[0.0], [0.25], [0.5], [0.75], [1.0]]])
+        prepared = prepare_lanpaint_mask(mask)
+
+        self.assertTrue(torch.equal(prepared, torch.tensor([[[0.0], [0.0], [1.0], [1.0], [1.0]]])))
+
+    def test_advanced_settings_control_update_and_early_stop(self) -> None:
+        from krea2.lanpaint_sampler import LanPaintSettings, lanpaint_masked_inner_update
+
+        calls: list[float] = []
+        current = torch.zeros(1, 4, 2)
+        known = torch.ones(1, 4, 2)
+        mask = torch.tensor([[[0.0], [1.0], [0.0], [1.0]]])
+
+        def velocity_fn(latent: torch.Tensor, tcurr: float) -> torch.Tensor:
+            calls.append(float(tcurr))
+            return torch.ones_like(latent) * 0.5
+
+        updated = lanpaint_masked_inner_update(
+            current,
+            known,
+            mask,
+            tcurr=0.8,
+            tprev=0.6,
+            velocity_fn=velocity_fn,
+            settings=LanPaintSettings(
+                num_steps=5,
+                lambda_strength=16.0,
+                step_size=0.2,
+                beta=1.0,
+                friction=15.0,
+                early_stop=2,
+                prompt_mode="Image First",
+            ),
+        )
+
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(torch.allclose(updated[:, [0, 2]], known[:, [0, 2]]))
+        self.assertFalse(torch.allclose(updated[:, [1, 3]], current[:, [1, 3]]))
+
     def test_masked_inner_update_preserves_known_region_and_calls_model(self) -> None:
         from krea2.lanpaint_sampler import lanpaint_masked_inner_update
 

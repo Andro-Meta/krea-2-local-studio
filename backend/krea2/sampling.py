@@ -20,11 +20,22 @@ from einops import rearrange, repeat
 from PIL import Image
 
 from .lanpaint_sampler import lanpaint_masked_inner_update
+from .lanpaint_sampler import LanPaintSettings
+from .sampler_registry import (
+    KREA_FLOW_SAMPLERS,
+    SAMPLER_ALIASES,
+    SAMPLER_SPECS,
+    normalize_sampler_name,
+    sampler_options,
+    validate_sampler_for_profile,
+)
 
 # Qwen-Image VAE spatial compression and MMDiT patch size.
 COMPRESSION = 8
 PATCH = 2
 LATENT_CHANNELS = 16
+
+
 
 
 def prepare(img, txtlen, patch, txtmask):
@@ -97,8 +108,21 @@ def euler_flow_step(img: torch.Tensor, velocity: torch.Tensor, *, tcurr: float, 
     return img + (tprev - tcurr) * velocity
 
 
+def heun_flow_step(
+    img: torch.Tensor,
+    velocity: torch.Tensor,
+    *,
+    tcurr: float,
+    tprev: float,
+    velocity_fn: Callable[[torch.Tensor, float], torch.Tensor],
+) -> torch.Tensor:
+    predictor = euler_flow_step(img, velocity, tcurr=tcurr, tprev=tprev)
+    corrected = velocity_fn(predictor, tprev)
+    return img + (tprev - tcurr) * 0.5 * (velocity + corrected)
+
+
 def _validate_sampler(sampler: str) -> None:
-    if sampler not in {"euler_flow", "lanpaint_experimental"}:
+    if normalize_sampler_name(sampler) not in {"euler_flow", "exp_heun_2_x0_sde", "lanpaint_experimental"}:
         raise ValueError(f"Unknown sampler: {sampler}")
 
 
@@ -139,8 +163,10 @@ def sample(
     sampler: str = "euler_flow",
     lanpaint_inner_steps: int = 3,
     lanpaint_strength: float = 1.0,
+    lanpaint_settings: LanPaintSettings | None = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> list[Image.Image]:
+    sampler = normalize_sampler_name(sampler)
     _validate_sampler(sampler)
     align = COMPRESSION * PATCH
     # Round up to a valid patch grid.
@@ -273,11 +299,14 @@ def sample(
                 velocity_fn=_velocity,
                 inner_steps=lanpaint_inner_steps,
                 strength=lanpaint_strength,
+                settings=lanpaint_settings,
             )
-            continue
 
         v = _velocity(img, tcurr)
-        img = euler_flow_step(img, v, tcurr=tcurr, tprev=tprev)
+        if sampler == "exp_heun_2_x0_sde":
+            img = heun_flow_step(img, v, tcurr=tcurr, tprev=tprev, velocity_fn=_velocity)
+        else:
+            img = euler_flow_step(img, v, tcurr=tcurr, tprev=tprev)
     if progress_cb is not None:
         progress_cb(n_steps, n_steps)
 

@@ -79,6 +79,7 @@ from schemas import (
     ShareUserRoleRequest,
     LoraImportRequest,
     UpscaleRequest,
+    PreprocessorPreviewRequest,
 )
 from realtime_jobs import RealtimePreviewRegistry
 from settings import BASE_DIR, DIST_DIR, LOGS_DIR, LORAS_DIR, MODELS_DIR, OUTPUTS_DIR, settings
@@ -994,8 +995,12 @@ async def upscale(req: UpscaleRequest):
             raise HTTPException(400, "Model must be loaded for Ultimate upscale")
         result = await loop.run_in_executor(
             None, lambda: upscale_ultimate(
-                img, pipeline, MODELS_DIR, prompt=req.prompt, scale=req.scale,
-                tile=req.tile_size, denoise=req.denoise, seam_fix=req.seam_fix,
+                img, pipeline, MODELS_DIR, prompt=req.prompt, scale=req.upscale_by,
+                tile=req.tile_width or req.tile_size, padding=req.tile_padding,
+                mask_blur=req.mask_blur, denoise=req.denoise, steps=req.steps,
+                cfg=req.cfg, sampler=req.sampler, scheduler=req.scheduler,
+                seam_mode=req.seam_mode, tile_mode=req.tile_mode,
+                tiled_decode=req.tiled_decode, seam_fix=req.seam_fix,
             )
         )
     else:
@@ -1008,8 +1013,20 @@ async def upscale(req: UpscaleRequest):
         "prompt": req.prompt,
         "method": req.method,
         "scale": req.scale,
+        "upscale_by": req.upscale_by,
         "denoise": req.denoise,
         "tile_size": req.tile_size,
+        "tile_width": req.tile_width,
+        "tile_height": req.tile_height,
+        "tile_padding": req.tile_padding,
+        "mask_blur": req.mask_blur,
+        "seam_mode": req.seam_mode,
+        "tile_mode": req.tile_mode,
+        "sampler": req.sampler,
+        "scheduler": req.scheduler,
+        "steps": req.steps,
+        "cfg": req.cfg,
+        "tiled_decode": req.tiled_decode,
         "seam_fix": req.seam_fix,
         "source_gallery_id": req.gallery_id,
         "width": result.width,
@@ -1039,6 +1056,40 @@ async def automask(req: AutoMaskRequest):
     buf = _io.BytesIO()
     mask.save(buf, format="PNG")
     return {"mask_b64": _b64.b64encode(buf.getvalue()).decode()}
+
+
+@app.post("/api/preprocess/preview")
+async def preprocessor_preview(req: PreprocessorPreviewRequest):
+    """Generate a lightweight ControlNet-Aux-style preview image."""
+    import base64 as _b64
+    import io as _io
+    from PIL import Image as _Image
+    from preprocessors import preprocess_image
+
+    try:
+        source = req.image_b64.split(",", 1)[1] if "," in req.image_b64 else req.image_b64
+        img = _Image.open(_io.BytesIO(_b64.b64decode(source)))
+        preview = preprocess_image(
+            img,
+            kind=req.kind,
+            resolution=req.resolution,
+            low_threshold=req.low_threshold,
+            high_threshold=req.high_threshold,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Preprocessor preview failed: %s", exc)
+        raise HTTPException(400, "Bad image data.") from exc
+
+    buf = _io.BytesIO()
+    preview.save(buf, format="PNG")
+    return {
+        "image_b64": _b64.b64encode(buf.getvalue()).decode(),
+        "kind": req.kind,
+        "width": preview.width,
+        "height": preview.height,
+    }
 
 
 @app.post("/api/describe-image", response_model=DescribeImageResponse)

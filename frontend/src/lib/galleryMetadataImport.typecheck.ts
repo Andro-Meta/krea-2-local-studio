@@ -12,7 +12,18 @@ const imported = metadataToGenerateParams({
   width: 1024,
   height: 768,
   sampler: 'euler_flow',
-  inpaint: { method: 'lanpaint_experimental', lanpaint_inner_steps: 5, lanpaint_strength: 0.75 },
+  scheduler: 'simple',
+  inpaint: {
+    method: 'lanpaint_experimental',
+    lanpaint_inner_steps: 5,
+    lanpaint_strength: 0.75,
+    lanpaint_lambda: 16,
+    lanpaint_step_size: 0.2,
+    lanpaint_beta: 1,
+    lanpaint_friction: 15,
+    lanpaint_early_stop: 1,
+    lanpaint_prompt_mode: 'Image First',
+  },
   loras: [{ name: 'krea2_darkbrush', filename: 'krea2_darkbrush.safetensors', strength: 0.7, enabled: true }],
   moodboard_ids: [12],
   moodboard_uuids: ['abc'],
@@ -28,9 +39,12 @@ imported.mode satisfies 'redraw'
 imported.init_image_b64 satisfies string | undefined
 imported.loras?.[0].name satisfies string | undefined
 imported.sampler satisfies string | undefined
+imported.scheduler satisfies string | undefined
 imported.inpaint_method satisfies string | undefined
 imported.lanpaint_inner_steps satisfies number | undefined
 imported.lanpaint_strength satisfies number | undefined
+imported.lanpaint_lambda satisfies number | undefined
+imported.lanpaint_prompt_mode satisfies string | undefined
 imported.creativity satisfies string | undefined
 imported.style_references?.[0].strength satisfies number | undefined
 imported.moodboard_uuids?.[0] satisfies string | undefined

@@ -2,14 +2,36 @@ import React from 'react'
 import { Box, Chip, Stack, Tooltip, Typography } from '@mui/material'
 import { useStore } from '../../store'
 
-const CHECKPOINTS = [
+const PROFILES = [
   {
-    id: 'turbo', label: 'Turbo',
-    desc: '8 steps · up to 2048px · distilled for speed · CFG=0',
+    id: 'krea_turbo', label: 'Krea Turbo',
+    desc: 'Euler/simple · 8 steps · CFG 1 · fp8 · fastest Krea profile',
+    enabled: true,
   },
   {
-    id: 'raw', label: 'RAW',
-    desc: '52 steps · up to 1024px · training-quality detail · CFG=3.5',
+    id: 'krea_raw', label: 'Krea RAW',
+    desc: 'Euler/simple · 52 steps · CFG 3.5 · bf16 · high memory',
+    enabled: true,
+  },
+  {
+    id: 'qwen_image_edit', label: 'Qwen Image Edit',
+    desc: 'Planned optional profile · loader not enabled yet',
+    enabled: false,
+  },
+  {
+    id: 'lens_turbo', label: 'Lens',
+    desc: 'Planned optional profile · GPT-OSS encoder/Flux2 VAE loader required',
+    enabled: false,
+  },
+  {
+    id: 'ernie_turbo', label: 'ERNIE',
+    desc: 'Planned optional profile · ERNIE encoder/Flux2 VAE loader required',
+    enabled: false,
+  },
+  {
+    id: 'z_image_turbo', label: 'Z-Image',
+    desc: 'Planned optional profile · Z-Image loader and ae.safetensors VAE required',
+    enabled: false,
   },
 ]
 
@@ -22,6 +44,34 @@ export default function ModelSection() {
   const { params, setParam, setParams, systemReport } = useStore()
   const loaded = systemReport?.model_status?.loaded
   const loadedCp = systemReport?.model_status?.checkpoint ?? ''
+  const applyProfile = (profileId: typeof params.model_profile) => {
+    if (profileId === 'krea_turbo') {
+      setParams({
+        model_profile: profileId,
+        checkpoint: 'turbo',
+        steps: 8,
+        cfg: 1.0,
+        mu: 1.15,
+        quantization: 'fp8',
+        sampler: 'euler',
+        scheduler: 'simple',
+        conditioning_mode: 'auto',
+      })
+    }
+    if (profileId === 'krea_raw') {
+      setParams({
+        model_profile: profileId,
+        checkpoint: 'raw',
+        steps: 52,
+        cfg: 3.5,
+        mu: null,
+        quantization: 'bf16',
+        sampler: 'euler',
+        scheduler: 'simple',
+        conditioning_mode: 'auto',
+      })
+    }
+  }
 
   return (
     <Box>
@@ -30,22 +80,22 @@ export default function ModelSection() {
       </Typography>
       <Stack spacing={1.5}>
         <Stack direction="row" spacing={1} flexWrap="wrap">
-          {CHECKPOINTS.map(c => (
+          {PROFILES.map(c => (
             <Tooltip key={c.id} title={c.desc} placement="top" arrow>
               <Chip
                 label={c.label}
-                variant={params.checkpoint === c.id ? 'filled' : 'outlined'}
-                color={params.checkpoint === c.id ? 'primary' : 'default'}
-                onClick={() => {
-                  setParam('checkpoint', c.id as 'turbo' | 'raw')
-                  if (c.id === 'turbo') setParams({ steps: 8, cfg: 0.0, mu: 1.15, quantization: 'fp8' })
-                  else setParams({ steps: 52, cfg: 3.5, mu: null, quantization: 'bf16' })
-                }}
-                clickable
+                variant={params.model_profile === c.id ? 'filled' : 'outlined'}
+                color={params.model_profile === c.id ? 'primary' : 'default'}
+                onClick={() => c.enabled && applyProfile(c.id as typeof params.model_profile)}
+                clickable={c.enabled}
+                disabled={!c.enabled}
               />
             </Tooltip>
           ))}
         </Stack>
+        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+          Profile routing updates checkpoint, encoder/VAE assumptions, sampler defaults, CFG, steps, precision, and conditioning mode together.
+        </Typography>
         <Stack direction="row" spacing={1}>
           {QUANTS.map(q => (
             <Tooltip key={q.id} title={q.desc} placement="top" arrow>

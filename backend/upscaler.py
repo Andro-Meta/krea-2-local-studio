@@ -6,8 +6,14 @@ import io
 import logging
 from pathlib import Path
 
-import torch
 from PIL import Image
+
+try:
+    import torch
+except ModuleNotFoundError:  # pragma: no cover - lightweight CI helper paths
+    torch = None
+
+BFLOAT16 = getattr(torch, "bfloat16", None)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +74,7 @@ def upscale_tiled_vae(
     img: Image.Image,
     ae,
     device: str = "cuda",
-    dtype: torch.dtype = torch.bfloat16,
+    dtype=BFLOAT16,
     tile: int = 512,
     overlap: int = 64,
 ) -> Image.Image:
@@ -137,17 +143,63 @@ def upscale_model_refine(
     return img
 
 
+def ultimate_tile_rects(
+    width: int,
+    height: int,
+    *,
+    tile: int = 1024,
+    mode: str = "chess",
+    seam_mode: str = "band_pass",
+) -> list[tuple[int, int, int, int]]:
+    import math
+
+    tile = max(128, int(tile or 1024))
+    cols = math.ceil(width / tile)
+    rows = math.ceil(height / tile)
+    base = [
+        (xi * tile, yi * tile, min(width, (xi + 1) * tile), min(height, (yi + 1) * tile))
+        for yi in range(rows)
+        for xi in range(cols)
+    ]
+    if mode == "chess":
+        even = [rect for idx, rect in enumerate(base) if ((idx % cols) % 2 == 0) == ((idx // cols) % 2 == 0)]
+        odd = [rect for idx, rect in enumerate(base) if rect not in even]
+        rects = even + odd
+    else:
+        rects = base
+
+    if seam_mode in {"half_tile", "half_tile_intersections"} and width > tile and height > tile:
+        ox = tile // 2
+        oy = tile // 2
+        hcols = math.ceil((width - ox) / tile)
+        hrows = math.ceil((height - oy) / tile)
+        offset_rects = [
+            (ox + xi * tile, oy + yi * tile, min(width, ox + (xi + 1) * tile), min(height, oy + (yi + 1) * tile))
+            for yi in range(hrows)
+            for xi in range(hcols)
+        ]
+        rects.extend(offset_rects)
+
+    return rects
+
+
 def upscale_ultimate(
     img: Image.Image,
     pipeline,                # Krea2Pipeline
     models_dir: Path,
     prompt: str = "",
-    scale: int = 2,
+    scale: float = 2.0,
     tile: int = 1024,
     padding: int = 32,
     mask_blur: int = 8,
     denoise: float = 0.3,
     steps: int = 8,
+    cfg: float = 1.0,
+    sampler: str = "euler",
+    scheduler: str = "simple",
+    seam_mode: str = "band_pass",
+    tile_mode: str = "chess",
+    tiled_decode: bool = False,
     seam_fix: bool = True,
 ) -> Image.Image:
     """Ultimate SD Upscale: pre-upscale, then tiled low-denoise img2img refine.
@@ -167,7 +219,7 @@ def upscale_ultimate(
         logger.warning("Model not loaded; ultimate upscale → bicubic only.")
         return img.resize((img.width * scale, img.height * scale), Image.LANCZOS)
 
-    W, H = img.width * scale, img.height * scale
+    W, H = int(round(img.width * scale)), int(round(img.height * scale))
     try:
         work = upscale_realesrgan(img, models_dir, scale)
         if work.size != (W, H):
@@ -205,8 +257,9 @@ def upscale_ultimate(
         gen_in.save(buf, format="PNG")
         req = GenerationRequest(
             prompt=prompt or "high quality, sharp fine detail",
-            mode="img2img", checkpoint="turbo", steps=steps, cfg=0.0,
+            mode="img2img", checkpoint="turbo", steps=steps, cfg=cfg,
             width=gw, height=gh, num_images=1, seed=42, denoise=dn,
+            sampler=sampler,
             init_image_b64=base64.b64encode(buf.getvalue()).decode(),
         )
         results, _seed, _files, _lora = pipeline.generate(req)
@@ -220,26 +273,27 @@ def upscale_ultimate(
         work.paste(Image.fromarray(blended), (cx1, cy1))
         return work
 
-    cols = math.ceil(W / tile)
-    rows = math.ceil(H / tile)
-    even = [(xi, yi) for yi in range(rows) for xi in range(cols) if (xi % 2 == 0) == (yi % 2 == 0)]
-    odd = [(xi, yi) for yi in range(rows) for xi in range(cols) if (xi % 2 == 0) != (yi % 2 == 0)]
-    total = len(even) + len(odd)
-    for n, (xi, yi) in enumerate(even + odd):
+    if seam_mode == "none" or not seam_fix:
+        seam_mode = "none"
+    rects = ultimate_tile_rects(W, H, tile=tile, mode=tile_mode, seam_mode="none")
+    total = len(rects)
+    for n, rect in enumerate(rects):
         logger.info(f"Ultimate upscale tile {n + 1}/{total}")
-        work = _tile(work, (xi * tile, yi * tile, (xi + 1) * tile, (yi + 1) * tile),
-                     padding, mask_blur, denoise)
+        work = _tile(work, rect, padding, mask_blur, denoise)
 
-    if seam_fix and total > 1:
-        ox, oy = tile // 2, tile // 2
-        hcols = math.ceil((W - ox) / tile)
-        hrows = math.ceil((H - oy) / tile)
-        for yi in range(hrows):
-            for xi in range(hcols):
-                work = _tile(work, (ox + xi * tile, oy + yi * tile,
-                                    ox + (xi + 1) * tile, oy + (yi + 1) * tile),
-                             16, 4, denoise)
-        logger.info("Ultimate upscale seam-fix pass done.")
+    if seam_mode in {"half_tile", "half_tile_intersections"} and total > 1:
+        seam_rects = ultimate_tile_rects(W, H, tile=tile, mode="linear", seam_mode=seam_mode)[total:]
+        for rect in seam_rects:
+            work = _tile(work, rect, max(16, padding // 2), max(4, mask_blur // 2), denoise)
+        logger.info("Ultimate upscale half-tile seam pass done.")
+    elif seam_mode == "band_pass" and total > 1:
+        logger.info("Ultimate upscale band-pass seams handled by padded feather masks.")
+
+    if tiled_decode and pipeline.is_loaded() and hasattr(pipeline, "ae"):
+        try:
+            pipeline.ae.ae.enable_tiling()
+        except Exception:
+            logger.debug("Tiled decode requested but VAE tiling was unavailable.")
 
     return work
 

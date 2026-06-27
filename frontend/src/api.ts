@@ -17,6 +17,7 @@ export interface GenerationRequest {
   prompt: string
   negative_prompt?: string
   mode?: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
+  model_profile?: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
   checkpoint?: 'turbo' | 'raw'
   checkpoint_path?: string
   quantization?: 'bf16' | 'fp8'
@@ -30,10 +31,17 @@ export interface GenerationRequest {
   num_images?: number
   seed?: number
   denoise?: number
-  sampler?: 'euler_flow'
+  sampler?: 'euler' | 'euler_flow' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
+  scheduler?: 'simple'
   inpaint_method?: 'native' | 'lanpaint_experimental' | 'flux_fill'
   lanpaint_inner_steps?: number
   lanpaint_strength?: number
+  lanpaint_lambda?: number
+  lanpaint_step_size?: number
+  lanpaint_beta?: number
+  lanpaint_friction?: number
+  lanpaint_early_stop?: number
+  lanpaint_prompt_mode?: 'Image First' | 'Prompt First'
   edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   creativity?: 'raw' | 'low' | 'medium' | 'high'
@@ -44,6 +52,7 @@ export interface GenerationRequest {
   rebalance_weights?: string
   edit_rebalance_enabled?: boolean
   edit_rebalance_profile?: 'default' | 'edit' | 'conservative'
+  conditioning_mode?: 'auto' | 'qwen_image_edit_plus' | 'qwen_reference'
   krea_enhancer_enabled?: boolean
   krea_enhancer_strength?: number
   bboxes?: Array<{ label: string; bbox: number[] }>
@@ -318,19 +327,61 @@ export const apiFetch = {
     api.post<{ image_b64: string }>('/api/moodboards/image', { url }, { timeout: 120000 })
       .then(r => r.data.image_b64),
 
-  upscale: (image_b64: string, method: string, opts?: { scale?: number; denoise?: number; prompt?: string; tile_size?: number; seam_fix?: boolean }) =>
+  upscale: (image_b64: string, method: string, opts?: {
+    scale?: number
+    upscale_by?: number
+    denoise?: number
+    prompt?: string
+    tile_size?: number
+    tile_width?: number
+    tile_height?: number
+    tile_padding?: number
+    mask_blur?: number
+    seam_mode?: 'none' | 'band_pass' | 'half_tile' | 'half_tile_intersections'
+    tile_mode?: 'linear' | 'chess'
+    sampler?: string
+    scheduler?: string
+    steps?: number
+    cfg?: number
+    tiled_decode?: boolean
+    seam_fix?: boolean
+  }) =>
     api.post<{ image_b64: string; metadata?: Record<string, any> }>('/api/upscale', {
       image_b64, method,
       scale: opts?.scale ?? (method === 'realesrgan' ? 4 : 2),
+      upscale_by: opts?.upscale_by ?? 2,
       denoise: opts?.denoise ?? (method === 'ultimate' ? 0.3 : 0.24),
       prompt: opts?.prompt ?? '',
       tile_size: opts?.tile_size ?? 1024,
+      tile_width: opts?.tile_width ?? opts?.tile_size ?? 1024,
+      tile_height: opts?.tile_height ?? opts?.tile_size ?? 1024,
+      tile_padding: opts?.tile_padding ?? 96,
+      mask_blur: opts?.mask_blur ?? 12,
+      seam_mode: opts?.seam_mode ?? 'band_pass',
+      tile_mode: opts?.tile_mode ?? 'chess',
+      sampler: opts?.sampler ?? 'euler',
+      scheduler: opts?.scheduler ?? 'simple',
+      steps: opts?.steps ?? 8,
+      cfg: opts?.cfg ?? 1,
+      tiled_decode: opts?.tiled_decode ?? false,
       seam_fix: opts?.seam_fix ?? true,
     }, { timeout: 1800000 }).then(r => r.data),
 
   autoMask: (image_b64: string, prompt: string, threshold?: number) =>
     api.post<{ mask_b64: string }>('/api/automask', { image_b64, prompt, threshold: threshold ?? 0.35 })
       .then(r => r.data.mask_b64),
+
+  preprocessorPreview: (
+    image_b64: string,
+    opts?: { kind?: 'canny' | 'soft_edge' | 'lineart' | 'depth'; resolution?: number; low_threshold?: number; high_threshold?: number },
+  ) =>
+    api.post<{ image_b64: string; kind: string; width: number; height: number }>('/api/preprocess/preview', {
+      image_b64,
+      kind: opts?.kind ?? 'canny',
+      resolution: opts?.resolution ?? 768,
+      low_threshold: opts?.low_threshold ?? 80,
+      high_threshold: opts?.high_threshold ?? 160,
+    }).then(r => r.data),
 
   describeImage: (image_b64: string) =>
     api.post<{ prompt: string; backend: 'local' | 'openrouter' }>('/api/describe-image', { image_b64 })

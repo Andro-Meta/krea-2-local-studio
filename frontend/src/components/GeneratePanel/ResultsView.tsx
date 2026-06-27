@@ -10,7 +10,18 @@ import { apiFetch } from '../../api'
 import { downloadImage } from '../../lib/imageActions'
 
 const UPSCALE_METHODS = [
-  { key: 'ultimate', label: 'Ultimate SD Upscale 2×', sub: 'tiled refine — best detail, slow' },
+  {
+    key: 'ultimate',
+    label: 'Ultimate SD Upscale 2× balanced',
+    sub: 'Euler/simple · 8 steps · 1024 tile · band-pass seams',
+    opts: { upscale_by: 2, steps: 8, cfg: 1, denoise: 0.28, tile_size: 1024, tile_padding: 96, mask_blur: 12, seam_mode: 'band_pass', tile_mode: 'chess', sampler: 'euler', scheduler: 'simple' },
+  },
+  {
+    key: 'ultimate',
+    label: 'Ultimate SD Upscale 2× best',
+    sub: 'Euler/simple · 8 steps · half-tile seam pass · tiled decode',
+    opts: { upscale_by: 2, steps: 8, cfg: 1, denoise: 0.24, tile_size: 1280, tile_padding: 128, mask_blur: 16, seam_mode: 'half_tile_intersections', tile_mode: 'chess', sampler: 'euler', scheduler: 'simple', tiled_decode: true },
+  },
   { key: 'realesrgan', label: 'RealESRGAN 4×', sub: 'fast, no diffusion' },
   { key: 'tiled_vae', label: 'Tiled VAE 2×', sub: 'lossless re-decode' },
   { key: 'model_refine', label: 'Detail refine 1×', sub: 'sharpen, no resize' },
@@ -36,12 +47,13 @@ export default function ResultsView({ images, seed, metadata = [] }: Props) {
     setMenuAnchor(e.currentTarget)
   }
 
-  const runUpscale = async (method: string, label: string) => {
+  const runUpscale = async (method: string, label: string, opts: Record<string, any> = {}) => {
     setMenuAnchor(null)
     setBusy(label)
     try {
       const { image_b64, metadata: upscaledMetadata } = await apiFetch.upscale(images[activeIdx], method, {
         prompt: params.prompt,
+        ...opts,
       })
       openLightbox([{ src: `data:image/png;base64,${image_b64}`, prompt: params.prompt, metadata: upscaledMetadata }])
       setToast(`${label} complete — opened full size`)
@@ -100,7 +112,7 @@ export default function ResultsView({ images, seed, metadata = [] }: Props) {
           Upscale method
         </Typography>
         {UPSCALE_METHODS.map(m => (
-          <MenuItem key={m.key} onClick={() => runUpscale(m.key, m.label)} sx={{ display: 'block', py: 1 }}>
+          <MenuItem key={`${m.key}-${m.label}`} onClick={() => runUpscale(m.key, m.label, m.opts)} sx={{ display: 'block', py: 1 }}>
             <Typography variant="body2">{m.label}</Typography>
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>{m.sub}</Typography>
           </MenuItem>

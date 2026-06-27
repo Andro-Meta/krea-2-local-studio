@@ -19,6 +19,7 @@ class GenerationRequest(BaseModel):
     prompt: str
     negative_prompt: str = ""
     mode: str = "txt2img"           # txt2img | redraw | img2img | inpaint | outpaint
+    model_profile: str = ""         # krea_turbo | krea_raw | future gated profiles
     checkpoint: str = "turbo"       # turbo | raw | custom
     checkpoint_path: str = ""       # custom path override
     quantization: str = "fp8"       # bf16 | fp8
@@ -32,10 +33,17 @@ class GenerationRequest(BaseModel):
     num_images: int = 1
     seed: int = -1
     denoise: float = 1.0
-    sampler: str = "euler_flow"       # euler_flow
+    sampler: str = "euler_flow"       # euler | euler_flow | exp_heun_2_x0_sde | guarded Comfy names
+    scheduler: str = "simple"
     inpaint_method: str = "native"    # native | lanpaint_experimental | flux_fill
     lanpaint_inner_steps: int = 3
     lanpaint_strength: float = 1.0
+    lanpaint_lambda: float = 16.0
+    lanpaint_step_size: float = 0.2
+    lanpaint_beta: float = 1.0
+    lanpaint_friction: float = 15.0
+    lanpaint_early_stop: int = 1
+    lanpaint_prompt_mode: Literal["Image First", "Prompt First"] = "Image First"
     edit_provider: str = "auto"       # auto | krea_native | flux_fill
     quality_preset: str = "balanced"  # fast | balanced | best | raw_benchmark
     creativity: Literal["raw", "low", "medium", "high"] = "medium"
@@ -46,6 +54,7 @@ class GenerationRequest(BaseModel):
     rebalance_weights: str = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
     edit_rebalance_enabled: bool = True
     edit_rebalance_profile: Literal["default", "edit", "conservative"] = "conservative"
+    conditioning_mode: Literal["auto", "qwen_image_edit_plus", "qwen_reference"] = "auto"
     krea_enhancer_enabled: bool = False
     krea_enhancer_strength: float = 1.0
     bboxes: List[BoundingBox] = []
@@ -105,11 +114,23 @@ class UpscaleRequest(BaseModel):
     image_b64: str
     method: str = "realesrgan"      # realesrgan | tiled_vae | model_refine | ultimate
     scale: int = 4
+    upscale_by: float = 2.0
     denoise: float = 0.24
     gallery_id: Optional[int] = None
     # Ultimate SD Upscale params
     prompt: str = ""
     tile_size: int = 1024
+    tile_width: int = 1024
+    tile_height: int = 1024
+    tile_padding: int = 96
+    mask_blur: int = 12
+    seam_mode: Literal["none", "band_pass", "half_tile", "half_tile_intersections"] = "band_pass"
+    tile_mode: Literal["linear", "chess"] = "chess"
+    sampler: str = "euler"
+    scheduler: str = "simple"
+    steps: int = 8
+    cfg: float = 1.0
+    tiled_decode: bool = False
     seam_fix: bool = True
 
 
@@ -117,6 +138,14 @@ class AutoMaskRequest(BaseModel):
     image_b64: str
     prompt: str                     # text description of region(s) to mask, comma-separated
     threshold: float = 0.35
+
+
+class PreprocessorPreviewRequest(BaseModel):
+    image_b64: str
+    kind: Literal["canny", "soft_edge", "lineart", "depth"] = "canny"
+    resolution: int = 768
+    low_threshold: int = 80
+    high_threshold: int = 160
 
 
 class DescribeImageRequest(BaseModel):

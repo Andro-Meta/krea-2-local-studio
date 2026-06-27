@@ -16,6 +16,13 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from .edit_plus import (
+    EDIT_PLUS_IMAGE_SIZE,
+    EDIT_PLUS_MAX_IMAGES,
+    IMAGE_EDIT_PLUS_SYSTEM_PROMPT,
+    resize_edit_plus_images,
+    wrap_image_edit_plus_prompt,
+)
 from support_models import support_model_path
 
 logger = logging.getLogger(__name__)
@@ -91,6 +98,14 @@ def _wrap_image_prompt(text: str, n_images: int) -> str:
         f"Picture {i + 1}: <|vision_start|><|image_pad|><|vision_end|>"
         for i in range(n_images)
     )
+
+
+def _wrap_image_edit_plus_prompt(text: str, n_images: int, negative_text: str = "") -> str:
+    return wrap_image_edit_plus_prompt(text, n_images, negative_text)
+
+
+def _resize_edit_plus_images(images: list) -> list:
+    return resize_edit_plus_images(images)
     return (
         f"<|im_start|>system\n{IMAGE_SYSTEM_PROMPT}<|im_end|>\n"
         f"<|im_start|>user\n{img_prefix}{text}<|im_end|>\n"
@@ -237,4 +252,56 @@ class Qwen3VLConditioner(nn.Module):
 
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Multimodal encoding failed ({e}); text-only fallback")
+            return self.forward(prompts)
+
+    def forward_image_edit_plus(
+        self,
+        prompts: list[str],
+        images: list,  # list[PIL.Image]
+        negative_prompts: list[str] | None = None,
+        vae_reference_latents=None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Comfy TextEncodeQwenImageEditPlus-inspired conditioning path.
+
+        The current Krea backend consumes Qwen token conditioning, not separate VAE
+        reference latents, so `vae_reference_latents` is accepted for routing parity
+        and future preservation paths while the semantic image path handles the first
+        three references.
+        """
+        try:
+            processor = self._get_vision_processor()
+        except ImportError:
+            logger.warning("Qwen3VLProcessor unavailable; edit-plus text-only fallback")
+            return self.forward(prompts)
+
+        if not images:
+            return self.forward(prompts)
+
+        device = next(self.qwen.parameters()).device
+        resized = _resize_edit_plus_images(images)
+        negative = (negative_prompts or [""])[0] if negative_prompts else ""
+        wrapped = _wrap_image_edit_plus_prompt(prompts[0], len(resized), negative)
+        if vae_reference_latents is not None:
+            logger.debug("VAE reference latents supplied; semantic edit-plus path is active.")
+
+        try:
+            inputs = processor(text=wrapped, images=resized, return_tensors="pt").to(device)
+            out = self.qwen(**inputs, output_hidden_states=True, return_dict=True)
+
+            hiddens = self._stack_layers(out.hidden_states)
+            mask = inputs.get("attention_mask")
+            if mask is None:
+                mask = torch.ones(
+                    hiddens.shape[0], hiddens.shape[1], dtype=torch.bool, device=device
+                )
+            else:
+                mask = mask.bool()
+
+            B = len(prompts)
+            if B > 1:
+                hiddens = hiddens.expand(B, -1, -1, -1)
+                mask = mask.expand(B, -1)
+            return hiddens, mask
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Qwen image edit plus failed ({e}); text-only fallback")
             return self.forward(prompts)

@@ -21,6 +21,9 @@ export default function MaskCanvas({ imageB64, onMaskChange }: Props) {
   const [autoPrompt, setAutoPrompt] = useState('')
   const [autoLoading, setAutoLoading] = useState(false)
   const [autoError, setAutoError] = useState('')
+  const [preKind, setPreKind] = useState<'canny' | 'soft_edge' | 'lineart' | 'depth'>('canny')
+  const [preLoading, setPreLoading] = useState(false)
+  const [prePreview, setPrePreview] = useState('')
 
   useEffect(() => {
     const img = new Image()
@@ -110,6 +113,17 @@ export default function MaskCanvas({ imageB64, onMaskChange }: Props) {
     setAutoLoading(false)
   }
 
+  const runPreprocessor = async () => {
+    setPreLoading(true); setAutoError('')
+    try {
+      const preview = await apiFetch.preprocessorPreview(imageB64, { kind: preKind, resolution: 768 })
+      setPrePreview(preview.image_b64)
+    } catch (e: any) {
+      setAutoError(e?.response?.data?.detail ?? e.message ?? 'Preprocessor preview failed')
+    }
+    setPreLoading(false)
+  }
+
   return (
     <Box>
       {/* Auto-mask from text */}
@@ -138,6 +152,28 @@ export default function MaskCanvas({ imageB64, onMaskChange }: Props) {
           ),
         }}
       />
+
+      <Stack direction="row" spacing={1} alignItems="center" mb={1} flexWrap="wrap">
+        <Typography variant="caption" sx={{ color: 'text.secondary' }}>Control preview</Typography>
+        <ToggleButtonGroup size="small" value={preKind} exclusive onChange={(_, v) => v && setPreKind(v)}>
+          <ToggleButton value="canny">Canny</ToggleButton>
+          <ToggleButton value="soft_edge">Soft</ToggleButton>
+          <ToggleButton value="lineart">Lineart</ToggleButton>
+          <ToggleButton value="depth">Depth</ToggleButton>
+        </ToggleButtonGroup>
+        <Tooltip title="Generate preprocessor preview">
+          <span>
+            <IconButton size="small" onClick={runPreprocessor} disabled={preLoading}>
+              {preLoading ? <CircularProgress size={16} /> : <AutoFixHighIcon sx={{ fontSize: 18 }} />}
+            </IconButton>
+          </span>
+        </Tooltip>
+      </Stack>
+      {prePreview && (
+        <Box sx={{ mb: 1, borderRadius: 1, overflow: 'hidden', border: '1px solid', borderColor: 'divider' }}>
+          <img src={`data:image/png;base64,${prePreview}`} alt={`${preKind} preview`} style={{ width: '100%', display: 'block' }} />
+        </Box>
+      )}
 
       <Stack direction="row" spacing={2} alignItems="center" mb={1} flexWrap="wrap">
         <ToggleButtonGroup size="small" value={tool} exclusive onChange={(_, v) => v && setTool(v)}>

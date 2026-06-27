@@ -59,6 +59,21 @@ export default function ParameterSection() {
     setParams({
       inpaint_method: method,
       edit_provider: method === 'flux_fill' ? 'flux_fill' : params.edit_provider,
+      ...(method === 'lanpaint_experimental'
+        ? {
+            steps: Math.max(params.steps, 20),
+            denoise: 1.0,
+            sampler: 'euler',
+            scheduler: 'simple',
+            lanpaint_inner_steps: 5,
+            lanpaint_lambda: 16,
+            lanpaint_step_size: 0.2,
+            lanpaint_beta: 1,
+            lanpaint_friction: 15,
+            lanpaint_early_stop: 1,
+            lanpaint_prompt_mode: 'Image First',
+          }
+        : {}),
     })
   }
 
@@ -181,9 +196,26 @@ export default function ParameterSection() {
                 onChange={e => setParam('sampler', e.target.value as typeof params.sampler)}
                 size="small"
                 fullWidth
-                helperText="Euler Flow is the native Krea 2 sampler. Experimental masked samplers appear through inpaint method."
+                helperText="Comfy-style sampler selector. Unsupported standard diffusion samplers are shown for parity but guarded until non-Krea backends are available."
               >
-                <MenuItem value="euler_flow">Euler Flow (native)</MenuItem>
+                <MenuItem value="euler">Euler / Simple (Krea default)</MenuItem>
+                <MenuItem value="euler_flow">Euler Flow (native alias)</MenuItem>
+                <MenuItem value="exp_heun_2_x0_sde">Experimental Heun x0 SDE (detail refine)</MenuItem>
+                <MenuItem value="lcm" disabled>LCM (requires LCM-compatible profile)</MenuItem>
+                <MenuItem value="dpmpp_2m" disabled>DPM++ 2M (standard diffusion backend required)</MenuItem>
+                <MenuItem value="ddim" disabled>DDIM (standard diffusion backend required)</MenuItem>
+                <MenuItem value="uni_pc" disabled>UniPC (standard diffusion backend required)</MenuItem>
+              </TextField>
+              <TextField
+                select
+                label="Scheduler"
+                value={params.scheduler}
+                onChange={e => setParam('scheduler', e.target.value as typeof params.scheduler)}
+                size="small"
+                fullWidth
+                helperText="Krea flow profiles currently support Comfy's simple scheduler semantics only."
+              >
+                <MenuItem value="simple">Simple (Krea flow)</MenuItem>
               </TextField>
               {(params.mode === 'inpaint' || params.mode === 'outpaint') && (
                 <TextField
@@ -205,10 +237,10 @@ export default function ParameterSection() {
                   <LabeledSlider
                     label="LanPaint think steps"
                     value={params.lanpaint_inner_steps}
-                    min={1} max={8} step={1}
+                    min={0} max={20} step={1}
                     onChange={v => setParam('lanpaint_inner_steps', v)}
                     tip="Extra masked-region model iterations per denoise step. Higher can improve difficult fills but increases generation time."
-                    helperText="Experimental · start with 3"
+                    helperText="LanPaint default: 5 · easy: 2–5 · hard: 5–10"
                   />
                   <LabeledSlider
                     label="LanPaint strength"
@@ -218,6 +250,58 @@ export default function ParameterSection() {
                     tip="Scales the masked inner update. Lower is safer, higher is more aggressive."
                     helperText="Experimental · start with 1.0"
                   />
+                  <LabeledSlider
+                    label="LanPaint lambda"
+                    value={params.lanpaint_lambda}
+                    min={0.1} max={50} step={0.1}
+                    onChange={v => setParam('lanpaint_lambda', v)}
+                    tip="Content alignment strength. Higher can preserve context better but may become unstable."
+                    helperText="Upstream default: 16"
+                  />
+                  <LabeledSlider
+                    label="LanPaint step size"
+                    value={params.lanpaint_step_size}
+                    min={0.01} max={1} step={0.01}
+                    onChange={v => setParam('lanpaint_step_size', v)}
+                    tip="Langevin thinking step size. Lower is safer; higher converges faster."
+                    helperText="Recommended: 0.1–0.5 · default: 0.2"
+                  />
+                  <LabeledSlider
+                    label="LanPaint beta"
+                    value={params.lanpaint_beta}
+                    min={0.1} max={5} step={0.1}
+                    onChange={v => setParam('lanpaint_beta', v)}
+                    tip="Masked/unmasked step ratio. Lower can stabilize high lambda values."
+                    helperText="Default: 1.0"
+                  />
+                  <LabeledSlider
+                    label="LanPaint friction"
+                    value={params.lanpaint_friction}
+                    min={0} max={50} step={0.5}
+                    onChange={v => setParam('lanpaint_friction', v)}
+                    tip="Stabilizes Langevin updates. Higher is slower but safer."
+                    helperText="Recommended: 10–20 · default: 15"
+                  />
+                  <LabeledSlider
+                    label="LanPaint early stop"
+                    value={params.lanpaint_early_stop}
+                    min={0} max={10} step={1}
+                    onChange={v => setParam('lanpaint_early_stop', v)}
+                    tip="Stops LanPaint thinking before final sampling steps to reduce late artifacts."
+                    helperText="Recommended: 1–5 · default: 1"
+                  />
+                  <TextField
+                    select
+                    label="LanPaint prompt mode"
+                    value={params.lanpaint_prompt_mode}
+                    onChange={e => setParam('lanpaint_prompt_mode', e.target.value as typeof params.lanpaint_prompt_mode)}
+                    size="small"
+                    fullWidth
+                    helperText="Image First favors local context. Prompt First is stronger but may reduce quality."
+                  >
+                    <MenuItem value="Image First">Image First</MenuItem>
+                    <MenuItem value="Prompt First">Prompt First</MenuItem>
+                  </TextField>
                 </>
               )}
               <LabeledSlider
@@ -313,6 +397,19 @@ export default function ParameterSection() {
               )}
               {(params.mode === 'redraw' || params.mode === 'img2img' || params.mode === 'inpaint' || params.mode === 'outpaint') && (
                 <>
+                  <TextField
+                    select
+                    label="Qwen conditioning mode"
+                    value={params.conditioning_mode}
+                    onChange={e => setParam('conditioning_mode', e.target.value as typeof params.conditioning_mode)}
+                    size="small"
+                    fullWidth
+                    helperText="Auto uses Qwen Image Edit Plus for edit modes with references, and the standard Qwen reference path otherwise."
+                  >
+                    <MenuItem value="auto">Auto</MenuItem>
+                    <MenuItem value="qwen_image_edit_plus">Qwen Image Edit Plus</MenuItem>
+                    <MenuItem value="qwen_reference">Standard Qwen reference</MenuItem>
+                  </TextField>
                   <FormControlLabel
                     control={<Switch checked={params.edit_rebalance_enabled} onChange={e => setParam('edit_rebalance_enabled', e.target.checked)} size="small" />}
                     label={
