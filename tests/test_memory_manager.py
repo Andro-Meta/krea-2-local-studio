@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +117,7 @@ class MemoryManagerTests(unittest.TestCase):
 
         with patch("memory_manager._all_python_process_rows", return_value=rows), \
              patch("memory_manager.get_gpu_process_details", return_value=[]), \
+             patch("memory_manager.PROJECT_ROOT", "e:/krea 2"), \
              patch("memory_manager.os.getpid", return_value=400):
             result = memory_manager.detect_krea_runtime_processes()
 
@@ -149,12 +151,26 @@ class MemoryManagerTests(unittest.TestCase):
                 memory_manager.stop_krea_server_process(12345)
 
     def test_memory_api_routes_require_admin(self) -> None:
+        inserted_torch_stub = False
+        if "torch" not in sys.modules:
+            torch_mock = Mock()
+            torch_mock.cuda.is_available.return_value = False
+            torch_mock.bfloat16 = "bfloat16"
+            torch_mock.float32 = "float32"
+            torch_mock.Tensor = object
+            torch_mock.nn = SimpleNamespace(Module=object, Linear=object)
+            sys.modules["torch"] = torch_mock
+            inserted_torch_stub = True
         import main
 
-        self.assertTrue(main._requires_admin("/api/memory/release-transient", "POST"))
-        self.assertTrue(main._requires_admin("/api/memory/unload-model", "POST"))
-        self.assertTrue(main._requires_admin("/api/memory/stop-process", "POST"))
-        self.assertTrue(main._requires_admin("/api/memory/processes", "GET"))
+        try:
+            self.assertTrue(main._requires_admin("/api/memory/release-transient", "POST"))
+            self.assertTrue(main._requires_admin("/api/memory/unload-model", "POST"))
+            self.assertTrue(main._requires_admin("/api/memory/stop-process", "POST"))
+            self.assertTrue(main._requires_admin("/api/memory/processes", "GET"))
+        finally:
+            if inserted_torch_stub:
+                sys.modules.pop("torch", None)
 
 
 if __name__ == "__main__":
