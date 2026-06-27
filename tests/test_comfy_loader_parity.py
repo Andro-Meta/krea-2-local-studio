@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import importlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,7 +42,7 @@ class ComfyLoaderParityTests(unittest.TestCase):
         self.assertEqual(parsed, [{"pid": 47808, "name": "python.exe", "used_memory_gb": 6.25}])
 
     def test_system_report_includes_gpu_process_details(self) -> None:
-        import system_check
+        system_check = importlib.import_module("system_check")
 
         with patch.object(system_check, "get_gpu_info", return_value=("RTX 4090", 24.0, 9.0)), \
              patch.object(system_check, "get_ram_gb", return_value=(32.0, 16.0)), \

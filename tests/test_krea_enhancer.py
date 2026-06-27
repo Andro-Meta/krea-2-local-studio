@@ -30,10 +30,7 @@ class KreaEnhancerTests(unittest.TestCase):
     def test_enhancer_context_temporarily_patches_txtfusion(self) -> None:
         if torch is None:
             self.skipTest("torch is not installed in the lightweight CI environment")
-        try:
-            enhancer = importlib.import_module("krea_enhancer")
-        except ModuleNotFoundError:
-            self.fail("krea_enhancer module is missing")
+        enhancer = importlib.import_module("krea_enhancer")
 
         class FakeTxtFusion:
             def __init__(self):
@@ -58,15 +55,13 @@ class KreaEnhancerTests(unittest.TestCase):
         model = FakeModel()
         original_forward = model.txtfusion.forward
         x = torch.ones((1, 2, 12, 2560), dtype=torch.float32)
-        out = None
 
         with enhancer.krea_enhancer_context(model, enabled=True, strength=1.0):
             self.assertIsNot(model.txtfusion.forward, original_forward)
             out = model.txtfusion.forward(x)
+            self.assertEqual(tuple(out.shape), (1, 2, 2560))
 
         self.assertIs(model.txtfusion.forward, original_forward)
-        self.assertIsNotNone(out)
-        self.assertEqual(tuple(out.shape), (1, 2, 2560))
         self.assertGreater(model.txtfusion.calls, 1)
 
 

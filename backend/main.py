@@ -883,22 +883,33 @@ def _safe_custom_moodboard_image_path(board_uuid: str, filename: str) -> Path:
 
     if safe_board_uuid != str(board_uuid).lower():
         raise ValueError("Invalid custom moodboard id")
-    if not filename or filename != Path(filename).name:
+    if not filename or "/" in filename or "\\" in filename:
         raise ValueError("Invalid custom moodboard image name")
     if any(char not in _CUSTOM_IMAGE_FILENAME_CHARS for char in filename):
         raise ValueError("Invalid custom moodboard image name")
-    if Path(filename).suffix.lower() not in _CUSTOM_IMAGE_SUFFIXES:
+    suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if suffix not in _CUSTOM_IMAGE_SUFFIXES:
         raise ValueError("Invalid custom moodboard image type")
 
     root = CUSTOM_MOODBOARD_DIR.resolve()
-    board_dir = (root / safe_board_uuid).resolve()
-    if board_dir.parent != root:
+    if not root.is_dir():
+        raise ValueError("Custom moodboard storage is unavailable")
+    try:
+        board_dir = next(
+            candidate.resolve()
+            for candidate in root.iterdir()
+            if candidate.is_dir() and candidate.name == safe_board_uuid
+        )
+        image_path = next(
+            candidate.resolve()
+            for candidate in board_dir.iterdir()
+            if candidate.is_file() and candidate.name == filename
+        )
+    except StopIteration as exc:
+        raise ValueError("Invalid custom moodboard image path") from exc
+    if board_dir.parent != root or image_path.parent != board_dir:
         raise ValueError("Invalid custom moodboard image path")
-
-    path = (board_dir / filename).resolve()
-    if path.parent != board_dir or not path.is_file():
-        raise ValueError("Invalid custom moodboard image path")
-    return path
+    return image_path
 
 
 @app.get("/api/moodboards/custom-images/{board_uuid}/{filename}")
