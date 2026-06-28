@@ -76,8 +76,28 @@ class ComfyLoaderParityTests(unittest.TestCase):
         with patch("inference.get_ram_gb", return_value=(32.0, 24.0)), \
              patch("inference.get_gpu_info", return_value=("RTX 4090", 24.0, 22.0)), \
              patch("inference.get_gpu_process_details", return_value=[]):
-            with self.assertRaisesRegex(RuntimeError, "RAW/BF16 variants need at least ~48GB system RAM"):
+            with self.assertRaisesRegex(RuntimeError, "needs ~48GB system RAM"):
                 preflight_model_load("krea2_raw_bf16.safetensors", "bf16")
+
+    def test_raw_as_dynamic_fp8_is_allowed_on_24gb_card(self) -> None:
+        from inference import preflight_model_load
+
+        # RAW file requested as fp8 → dynamic fp8 path; must NOT hit the bf16
+        # 48GB-RAM gate just because the filename contains "raw".
+        with patch("inference.get_ram_gb", return_value=(32.0, 24.0)), \
+             patch("inference.get_gpu_info", return_value=("RTX 4090", 24.0, 22.0)), \
+             patch("inference.get_gpu_process_details", return_value=[]):
+            preflight_model_load("krea2_raw_bf16.safetensors", "fp8")
+
+    def test_block_swap_relaxes_fp8_vram_requirement(self) -> None:
+        from inference import preflight_model_load
+
+        # 10GB free VRAM would fail the ~13GB fp8 gate, but streaming 8 blocks
+        # lowers the resident requirement enough to pass.
+        with patch("inference.get_ram_gb", return_value=(32.0, 24.0)), \
+             patch("inference.get_gpu_info", return_value=("RTX 4090", 24.0, 10.0)), \
+             patch("inference.get_gpu_process_details", return_value=[]):
+            preflight_model_load("krea2_turbo_fp8_scaled.safetensors", "fp8", blocks_to_swap=8)
 
     def test_raw_bf16_preflight_fails_when_vram_is_low(self) -> None:
         from inference import preflight_model_load

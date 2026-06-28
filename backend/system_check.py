@@ -24,6 +24,10 @@ VARIANT_REQS: dict[str, dict[str, Any]] = {
         "vram_gb": 20.0, "ram_gb": 48.0,
         "label": "Krea 2 RAW bf16 (needs ~20 GB VRAM and ~48 GB RAM with this single-file loader)",
     },
+    "raw_fp8": {
+        "vram_gb": 13.0, "ram_gb": 32.0,
+        "label": "Krea 2 RAW via dynamic fp8 (runs on ~13 GB VRAM; ~32 GB RAM to stream-quantize the bf16 file). Add block swap to lower VRAM further.",
+    },
 }
 
 

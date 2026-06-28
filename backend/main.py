@@ -438,15 +438,15 @@ async def startup():
     # Auto-load model if configured
     cp = settings.krea2_auto_checkpoint or settings.krea2_turbo_path
     if cp and Path(cp).exists():
-        asyncio.create_task(_auto_load_model(cp, settings.krea2_auto_quant))
+        asyncio.create_task(_auto_load_model(cp, settings.krea2_auto_quant, settings.krea2_blocks_to_swap))
 
 
-async def _auto_load_model(checkpoint_path: str, quantization: str):
+async def _auto_load_model(checkpoint_path: str, quantization: str, blocks_to_swap: int = 0):
     loop = asyncio.get_event_loop()
-    logger.info(f"Auto-loading {checkpoint_path} [{quantization}]...")
+    logger.info(f"Auto-loading {checkpoint_path} [{quantization}] (block_swap={blocks_to_swap})...")
     try:
         await loop.run_in_executor(
-            None, lambda: pipeline.load(checkpoint_path, quantization)
+            None, lambda: pipeline.load(checkpoint_path, quantization, blocks_to_swap=int(blocks_to_swap or 0))
         )
         logger.info("Auto-load complete.")
     except Exception as e:
@@ -714,7 +714,7 @@ async def load_model(req: LoadModelRequest):
     loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(
-            None, lambda: pipeline.load(req.checkpoint_path, req.quantization)
+            None, lambda: pipeline.load(req.checkpoint_path, req.quantization, blocks_to_swap=req.blocks_to_swap)
         )
     except Exception as exc:
         logger.exception("Model load failed")

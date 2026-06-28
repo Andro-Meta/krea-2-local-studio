@@ -26,6 +26,7 @@ export default function SystemStatus() {
   const [fetchError, setFetchError] = useState('')
   const [cpPath, setCpPath] = useState('')
   const [quant, setQuant] = useState('fp8')
+  const [blocksToSwap, setBlocksToSwap] = useState(0)
   const [pathTouched, setPathTouched] = useState(false)
   const [loadingModel, setLoadingModel] = useState(false)
   const [loadError, setLoadError] = useState('')
@@ -198,7 +199,7 @@ export default function SystemStatus() {
     if (!cpPath) return
     setLoadingModel(true); setLoadError('')
     try {
-      await apiFetch.loadModel(cpPath, quant)
+      await apiFetch.loadModel(cpPath, quant, blocksToSwap)
       await refresh()
     } catch (e: any) {
       setLoadError(e?.response?.data?.detail ?? e.message)
@@ -438,6 +439,11 @@ export default function SystemStatus() {
               <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                 Quantization: {report.model_status.quantization}
               </Typography>
+              {report.model_status.memory?.low_vram?.block_swap_active && (
+                <Typography variant="caption" sx={{ color: 'info.main' }}>
+                  Low-VRAM: streaming {report.model_status.memory.low_vram.blocks_to_swap} DiT blocks from RAM · encoder offloaded
+                </Typography>
+              )}
               {report.model_status.text_encoder_source && (
                 <Typography variant="caption" sx={{ color: 'text.secondary', wordBreak: 'break-all' }}>
                   Text encoder: {report.model_status.text_encoder_source.kind}
@@ -480,6 +486,16 @@ export default function SystemStatus() {
                   />
                 ))}
               </Stack>
+              <TextField
+                label="Block swap (low-VRAM)"
+                type="number"
+                value={blocksToSwap}
+                onChange={e => setBlocksToSwap(Math.max(0, Math.min(28, Number(e.target.value) || 0)))}
+                size="small"
+                disabled={!isAdmin}
+                inputProps={{ min: 0, max: 28, step: 1 }}
+                helperText="Stream the last N of 28 DiT blocks from RAM. 0 = off. Try fp8 + 8–16 to run RAW on 24GB (slower)."
+              />
               {loadError && <Alert severity="error" sx={{ py: 0 }}>{loadError}</Alert>}
               <Button
                 variant="contained" size="small" onClick={loadModel}

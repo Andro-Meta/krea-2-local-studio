@@ -230,6 +230,7 @@ class SystemInfoResponse(BaseModel):
 class LoadModelRequest(BaseModel):
     checkpoint_path: str
     quantization: str = "bf16"
+    blocks_to_swap: int = Field(default=0, ge=0, le=28)
 
 
 class MemoryStopProcessRequest(BaseModel):

@@ -28,6 +28,7 @@ class AppSettings(BaseSettings):
     krea_share_auto_funnel: bool = False
     krea2_auto_checkpoint: str = ""   # path to auto-load on startup
     krea2_auto_quant: str = "bf16"    # bf16 or fp8
+    krea2_blocks_to_swap: int = 0     # low-VRAM: stream last N DiT blocks from RAM (0 = off)
 
     class Config:
         env_file = str(BASE_DIR / ".env")

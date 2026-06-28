@@ -338,8 +338,8 @@ export const apiFetch = {
   cancelRealtimePreview: (jobId: string) =>
     api.post<{ ok: boolean; job_id: string; status: string }>(`/api/realtime/cancel/${jobId}`).then(r => r.data),
 
-  loadModel: (path: string, quant: string) =>
-    api.post('/api/load-model', { checkpoint_path: path, quantization: quant }).then(r => r.data),
+  loadModel: (path: string, quant: string, blocksToSwap = 0) =>
+    api.post('/api/load-model', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap }).then(r => r.data),
 
   unloadModel: () => api.post('/api/unload-model').then(r => r.data),
 

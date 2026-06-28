@@ -29,6 +29,8 @@ from PIL import Image
 from conditioning import blend_split_conditioning, rebalance, resolve_rebalance_weights
 from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
+from krea2.block_swap import BlockSwapController, resolve_swap_plan
+from krea2.fp8_quant import load_bf16_as_fp8_scaled
 from krea2.reference_image import cap_vision_megapixels, crop_image_to_mask
 from krea2.sampler_registry import validate_sampler_configuration
 from krea2.lanpaint_sampler import LanPaintSettings
@@ -232,13 +234,56 @@ def load_fp8_scaled_state_dict(checkpoint_path: str | Path) -> tuple[dict[str, t
     return sd, fp8_scales
 
 
-def preflight_model_load(checkpoint_path: str | Path, quantization: str) -> None:
-    """Fail early when the current machine cannot fit the requested load."""
+def _checkpoint_has_fp8_weights(checkpoint_path: str | Path) -> bool:
+    """Cheaply tell whether a safetensors file is already stored in float8.
+
+    Reads only the header dtype strings (no tensor materialization) so a bf16
+    file requested as fp8 is not loaded into RAM just to detect its dtype.
+    """
+    from safetensors import safe_open
+
+    try:
+        with safe_open(str(checkpoint_path), framework="pt", device="cpu") as handle:
+            for key in handle.keys():
+                if key.endswith(".weight_scale"):
+                    return True
+                try:
+                    dtype = str(handle.get_slice(key).get_dtype()).upper()
+                except Exception:
+                    continue
+                if "F8" in dtype or "FLOAT8" in dtype:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def preflight_model_load(
+    checkpoint_path: str | Path,
+    quantization: str,
+    *,
+    blocks_to_swap: int = 0,
+) -> None:
+    """Fail early when the current machine cannot fit the requested load.
+
+    fp8 loads (including dynamic fp8 of a bf16 file) resolve to the ~13GB VRAM
+    tier regardless of "raw"/"bf16" in the filename. Block swapping streams the
+    last N DiT blocks from RAM, lowering the resident VRAM requirement; we relax
+    the VRAM gate accordingly while keeping the RAM gate that the load itself
+    needs. A dynamic-fp8 load of a bf16 file is gated on RAM by the file size,
+    since the streaming quantizer still reads the bf16 tensors from disk.
+    """
     name = Path(checkpoint_path).name.lower()
-    is_turbo_fp8 = quantization == "fp8" and "fp8" in name
-    is_raw_or_bf16 = quantization == "bf16" or "raw" in name or "bf16" in name
-    if not is_turbo_fp8 and not is_raw_or_bf16:
+    is_fp8 = quantization == "fp8"
+    file_is_prequant_fp8 = "fp8" in name
+    is_bf16 = not is_fp8
+    if not is_fp8 and not ("raw" in name or "bf16" in name):
         return
+
+    try:
+        checkpoint_size_gb = Path(checkpoint_path).stat().st_size / (1024 ** 3)
+    except OSError:
+        checkpoint_size_gb = 0.0
 
     ram_total, ram_free = get_ram_gb()
     gpu_name, vram_total, vram_free = get_gpu_info()
@@ -251,40 +296,60 @@ def preflight_model_load(checkpoint_path: str | Path, quantization: str) -> None
         )
         process_hint = f" Other GPU Python/app processes: {formatted}."
 
-    if is_raw_or_bf16:
+    # Block swapping removes ~0.4GB resident VRAM per streamed fp8 block.
+    swap_vram_relief = max(0, int(blocks_to_swap)) * 0.4
+
+    if is_bf16:
+        # Full bf16 residency. Block swap can lower the VRAM need, but the
+        # single-file loader still materializes bf16 weights in RAM.
+        vram_need = max(10.0, 20.0 - swap_vram_relief)
         if ram_total is not None and ram_total < 48.0:
             raise RuntimeError(
-                f"RAW/BF16 variants need at least ~48GB system RAM with this loader; system has {ram_total:.1f}GB. "
-                "Use Turbo FP8 here, or run RAW/BF16 on a higher-RAM/offloaded loader."
+                f"RAW/BF16 (bf16 residency) needs ~48GB system RAM with this loader; system has {ram_total:.1f}GB. "
+                "Use fp8 quantization (works on 24GB VRAM), or run bf16 on a higher-RAM machine."
             )
         if ram_free is not None and ram_free < 32.0:
             raise RuntimeError(
-                f"Only {ram_free:.1f}GB system RAM free; RAW/BF16 variants need ~32GB free before loading. "
-                "Close other apps or duplicate Krea/ComfyUI servers and retry."
+                f"Only {ram_free:.1f}GB system RAM free; bf16 residency needs ~32GB free before loading. "
+                "Close other apps or switch to fp8 quantization."
             )
-        if vram_total is not None and vram_total + 0.5 < 20.0:
-            raise RuntimeError(f"{gpu_name or 'GPU'} has {vram_total:.1f}GB VRAM; RAW/BF16 variants need ~20GB.")
-        if vram_free is not None and vram_free + 0.5 < 20.0:
+        if vram_total is not None and vram_total + 0.5 < vram_need:
+            raise RuntimeError(f"{gpu_name or 'GPU'} has {vram_total:.1f}GB VRAM; bf16 residency needs ~{vram_need:.0f}GB.")
+        if vram_free is not None and vram_free + 0.5 < vram_need:
             raise RuntimeError(
-                f"Only {vram_free:.1f}GB VRAM free; RAW/BF16 variants need ~20GB free before loading."
+                f"Only {vram_free:.1f}GB VRAM free; bf16 residency needs ~{vram_need:.0f}GB free before loading."
                 f"{process_hint}"
             )
         return
 
-    if vram_total is not None and vram_total + 0.5 < 13.0:
-        raise RuntimeError(f"{gpu_name or 'GPU'} has {vram_total:.1f}GB VRAM; Turbo FP8 needs ~13GB.")
-    if vram_free is not None and vram_free + 0.5 < 13.0:
+    # fp8 path (pre-quantized or dynamic). Resident VRAM ~13GB, minus swap relief.
+    vram_need = max(8.0, 13.0 - swap_vram_relief)
+    if vram_total is not None and vram_total + 0.5 < vram_need:
+        raise RuntimeError(f"{gpu_name or 'GPU'} has {vram_total:.1f}GB VRAM; fp8 needs ~{vram_need:.0f}GB.")
+    if vram_free is not None and vram_free + 0.5 < vram_need:
         raise RuntimeError(
-            f"Only {vram_free:.1f}GB VRAM free; Turbo FP8 needs ~13GB free before loading."
+            f"Only {vram_free:.1f}GB VRAM free; fp8 needs ~{vram_need:.0f}GB free before loading."
             f"{process_hint}"
         )
-    if ram_free is not None and ram_free < 10.0:
+
+    gpu_present = vram_total is not None
+    if file_is_prequant_fp8 or gpu_present:
+        # Pre-quantized fp8 reads straight to fp8 (~12GB); dynamic fp8 streams
+        # each quantized weight onto the GPU as it is produced. Either way the
+        # host-RAM peak is dominated by the ~8GB text encoder, not the file size.
+        ram_need_free, ram_need_total = 10.0, 16.0
+    else:
+        # CPU-only dynamic fp8 cannot stream to VRAM, so it must hold the fp8
+        # state in RAM; gate on the file size in that (impractical) case.
+        ram_need_free = max(12.0, checkpoint_size_gb * 0.6 + 6.0)
+        ram_need_total = max(16.0, checkpoint_size_gb * 0.6 + 10.0)
+    if ram_free is not None and ram_free < ram_need_free:
         raise RuntimeError(
-            f"Only {ram_free:.1f}GB system RAM free; this loader needs ~10GB free for Turbo FP8. "
+            f"Only {ram_free:.1f}GB system RAM free; this fp8 load needs ~{ram_need_free:.0f}GB free. "
             "Close other apps or duplicate Krea/ComfyUI servers and retry."
         )
-    if ram_total is not None and ram_total < 16.0:
-        raise RuntimeError(f"System has {ram_total:.1f}GB RAM; Turbo FP8 needs at least ~16GB total.")
+    if ram_total is not None and ram_total < ram_need_total:
+        raise RuntimeError(f"System has {ram_total:.1f}GB RAM; this fp8 load needs at least ~{ram_need_total:.0f}GB total.")
 
 
 @contextlib.contextmanager
@@ -473,11 +538,20 @@ class Krea2Pipeline:
         self._lock = threading.Lock()
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
         self._dtype = torch.bfloat16
+        self._block_swap: Optional[BlockSwapController] = None
+        self._blocks_to_swap = 0
 
     def is_loaded(self) -> bool:
         return self.mmdit is not None
 
     def unload(self):
+        if self._block_swap is not None:
+            try:
+                self._block_swap.remove()
+            except Exception:
+                pass
+            self._block_swap = None
+        self._blocks_to_swap = 0
         self.mmdit = None
         self.ae = None
         self.encoder = None
@@ -514,10 +588,15 @@ class Krea2Pipeline:
                 "encoder": self.encoder is not None,
             },
             "conditioning_cache_size": len(self._conditioning_cache),
+            "low_vram": {
+                "blocks_to_swap": self._blocks_to_swap,
+                "block_swap_active": self._block_swap is not None and self._block_swap.active,
+                "encoder_offload": True,
+            },
             "memory": mem_snapshot(),
         }
 
-    def load(self, checkpoint_path: str, quantization: str = "bf16") -> None:
+    def load(self, checkpoint_path: str, quantization: str = "bf16", *, blocks_to_swap: int = 0) -> None:
         backend_dir = str(Path(__file__).parent)
         if backend_dir not in sys.path:
             sys.path.insert(0, backend_dir)
@@ -532,11 +611,12 @@ class Krea2Pipeline:
                 "krea2/mmdit.py not found. Run install.bat to download it."
             )
 
-        from safetensors.torch import load_file, load_model
+        from safetensors.torch import load_model
 
         if not Path(checkpoint_path).exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        preflight_model_load(checkpoint_path, quantization)
+        blocks_to_swap = max(0, int(blocks_to_swap))
+        preflight_model_load(checkpoint_path, quantization, blocks_to_swap=blocks_to_swap)
         checkpoint_size_gb = Path(checkpoint_path).stat().st_size / (1024 ** 3)
         total_ram_gb, _ = get_ram_gb()
         if quantization == "bf16" and checkpoint_size_gb > 20 and total_ram_gb is not None and total_ram_gb < 48:
@@ -565,42 +645,37 @@ class Krea2Pipeline:
                             layers=28, patch=2, channels=16,
                             txtlayers=12,
                         ))
-                    sd = None
-                    fp8_scales: dict[str, float] = {}
-                    if quantization == "fp8":
-                        sd, fp8_scales = load_fp8_scaled_state_dict(checkpoint_path)
-                    # Detect pre-quantized fp8 checkpoint (krea2_turbo_fp8_scaled).
-                    # Must scan ALL tensors: the file's first key is a float32
-                    # weight_scale, so checking only sd[0] gives a false negative.
-                    checkpoint_is_fp8 = bool(sd) and any("float8" in str(v.dtype) for v in sd.values())
+                    # Detect a pre-quantized fp8 checkpoint cheaply from the
+                    # safetensors header (dtype strings only) so a bf16 file
+                    # requested as fp8 does NOT get fully materialized in RAM.
+                    checkpoint_is_fp8 = quantization == "fp8" and _checkpoint_has_fp8_weights(checkpoint_path)
 
                     if checkpoint_is_fp8:
+                        # Pre-quantized scaled fp8 (e.g. krea2_turbo_fp8_scaled):
+                        # weights stay float8 in VRAM, on-the-fly bf16 dequant.
+                        sd, fp8_scales = load_fp8_scaled_state_dict(checkpoint_path)
                         mmdit.load_state_dict(sd, strict=True, assign=True)
                         del sd
-                        # Patch each fp8 Linear to dequantize on-the-fly:
-                        # keeps 12GB fp8 in VRAM, transient bf16 only for active layer
                         _patch_fp8_linears(mmdit, fp8_scales)
                         mmdit = mmdit.to(device=self._device).eval()
                         logger.info(f"DiT loaded (fp8-scaled, {len(fp8_scales)} layers patched). {mem_snapshot()}")
                     elif quantization == "fp8":
-                        # bf16 weights + fp8 requested: quantize on CPU FIRST to avoid
-                        # 24GB bf16 spike in VRAM on 24GB cards
-                        if sd is None:
-                            sd = load_file(checkpoint_path, device="cpu")
-                        mmdit.load_state_dict(sd, strict=True, assign=True)
-                        del sd
-                        mmdit = mmdit.to(dtype=torch.bfloat16)
-                        try:
-                            from torchao.quantization import (
-                                quantize_,
-                                float8_dynamic_activation_float8_weight,
-                            )
-                            quantize_(mmdit, float8_dynamic_activation_float8_weight())
-                            logger.info("fp8 CPU quantization applied.")
-                        except Exception as e:
-                            logger.warning(f"fp8 CPU-quantize failed ({e}), will load bf16.")
+                        # bf16 source + fp8 requested → dynamic scaled fp8.
+                        # Stream-quantize tensor-by-tensor straight onto the target
+                        # device so the ~12GB of fp8 weights land in VRAM as they
+                        # are produced; host RAM peak stays near one transient
+                        # bf16 tensor. This is what lets RAW (24GB bf16) load on a
+                        # 24GB card without a 24GB host-RAM spike.
+                        sd_fp8, dyn_scales = load_bf16_as_fp8_scaled(
+                            checkpoint_path, device=self._device, compute_dtype=self._dtype
+                        )
+                        mmdit.load_state_dict(sd_fp8, strict=True, assign=True)
+                        del sd_fp8
+                        _patch_fp8_linears(mmdit, dyn_scales)
+                        # Moves the freshly-registered fp8 scale buffers onto the
+                        # device (weights are already there); cheap no-op for them.
                         mmdit = mmdit.to(device=self._device).eval()
-                        logger.info(f"DiT loaded (fp8). {mem_snapshot()}")
+                        logger.info(f"DiT loaded (dynamic fp8, {len(dyn_scales)} layers quantized). {mem_snapshot()}")
                     else:
                         mmdit = mmdit.to_empty(device="cpu")
                         missing, unexpected = load_model(mmdit, checkpoint_path, strict=True, device="cpu")
@@ -608,6 +683,28 @@ class Krea2Pipeline:
                             raise RuntimeError(f"Checkpoint load mismatch: missing={missing}, unexpected={unexpected}")
                         mmdit = mmdit.to(device=self._device, dtype=self._dtype).eval()
                         logger.info(f"DiT loaded. {mem_snapshot()}")
+
+                    # Low-VRAM block swapping: stream the last N DiT blocks from
+                    # RAM so the resident footprint drops further (CUDA only).
+                    self._block_swap = None
+                    self._blocks_to_swap = 0
+                    if blocks_to_swap > 0 and self._device == "cuda":
+                        plan = resolve_swap_plan(total_blocks=len(mmdit.blocks), blocks_to_swap=blocks_to_swap)
+                        if plan.swapped_indices:
+                            controller = BlockSwapController(
+                                mmdit,
+                                blocks_to_swap=blocks_to_swap,
+                                device=self._device,
+                                offload_device="cpu",
+                                prefetch=1,
+                                pin_memory=True,
+                            )
+                            controller.install()
+                            self._block_swap = controller
+                            self._blocks_to_swap = len(plan.swapped_indices)
+                            logger.info(
+                                f"Block swap active: {self._blocks_to_swap}/{len(mmdit.blocks)} DiT blocks streamed from RAM. {mem_snapshot()}"
+                            )
 
                 # 3. VAE
                 watchdog.check()
