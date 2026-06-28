@@ -446,7 +446,11 @@ async def _auto_load_model(checkpoint_path: str, quantization: str, blocks_to_sw
     logger.info(f"Auto-loading {checkpoint_path} [{quantization}] (block_swap={blocks_to_swap})...")
     try:
         await loop.run_in_executor(
-            None, lambda: pipeline.load(checkpoint_path, quantization, blocks_to_swap=int(blocks_to_swap or 0))
+            None, lambda: pipeline.load(
+                checkpoint_path, quantization,
+                blocks_to_swap=int(blocks_to_swap or 0),
+                fp8_fast_matmul=bool(getattr(settings, "krea2_fp8_fast_matmul", False)),
+            )
         )
         logger.info("Auto-load complete.")
     except Exception as e:
@@ -714,7 +718,11 @@ async def load_model(req: LoadModelRequest):
     loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(
-            None, lambda: pipeline.load(req.checkpoint_path, req.quantization, blocks_to_swap=req.blocks_to_swap)
+            None, lambda: pipeline.load(
+                req.checkpoint_path, req.quantization,
+                blocks_to_swap=req.blocks_to_swap,
+                fp8_fast_matmul=bool(getattr(req, "fp8_fast_matmul", False)),
+            )
         )
     except Exception as exc:
         logger.exception("Model load failed")
@@ -1023,7 +1031,7 @@ async def import_lora_url(req: LoraImportRequest):
 async def upscale(req: UpscaleRequest):
     from upscaler import (
         b64_to_pil, upscale_model_refine, upscale_realesrgan,
-        upscale_tiled_vae, upscale_ultimate,
+        upscale_refine_2pass, upscale_tiled_vae, upscale_ultimate,
     )
     from output_saver import encode_images
 
@@ -1058,6 +1066,17 @@ async def upscale(req: UpscaleRequest):
                 cfg=req.cfg, sampler=req.sampler, scheduler=req.scheduler,
                 seam_mode=req.seam_mode, tile_mode=req.tile_mode,
                 tiled_decode=req.tiled_decode, seam_fix=req.seam_fix,
+            )
+        )
+    elif req.method == "refine_2pass":
+        if not pipeline.is_loaded():
+            raise HTTPException(400, "Model must be loaded for 2-pass refine upscale")
+        result = await loop.run_in_executor(
+            None, lambda: upscale_refine_2pass(
+                img, pipeline, MODELS_DIR, prompt=req.prompt, scale=req.upscale_by,
+                denoise=req.denoise, steps=req.steps, cfg=req.cfg,
+                sampler=req.sampler, scheduler=req.scheduler,
+                tile_size=req.tile_width or req.tile_size, tiled_decode=req.tiled_decode,
             )
         )
     else:
@@ -1368,6 +1387,13 @@ async def resolution_options_endpoint():
     from resolution import resolution_options
 
     return resolution_options()
+
+
+@app.get("/api/sampler-catalog")
+async def sampler_catalog_endpoint(profile: str = "krea_turbo"):
+    from krea2.sampler_registry import sampler_catalog
+
+    return sampler_catalog(profile)
 
 
 @app.get("/api/runtime-advice")

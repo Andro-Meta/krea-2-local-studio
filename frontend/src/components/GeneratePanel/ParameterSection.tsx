@@ -1,11 +1,14 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   Accordion, AccordionDetails, AccordionSummary,
-  Box, FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, Tooltip, Typography,
+  Box, Chip, FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { useStore } from '../../store'
+import { apiFetch } from '../../api'
+
+type SamplerCatalog = Awaited<ReturnType<typeof apiFetch.samplerCatalog>>
 
 function InfoTip({ text }: { text: string }) {
   return (
@@ -48,6 +51,27 @@ export default function ParameterSection() {
   const { params, setParam, setParams } = useStore()
   const [advOpen, setAdvOpen] = useState(false)
   const isTurbo = params.checkpoint === 'turbo'
+  const [catalog, setCatalog] = useState<SamplerCatalog | null>(null)
+
+  useEffect(() => {
+    const profile = isTurbo ? 'krea_turbo' : 'krea_raw'
+    let alive = true
+    apiFetch.samplerCatalog(profile).then(c => { if (alive) setCatalog(c) }).catch(() => {})
+    return () => { alive = false }
+  }, [isTurbo])
+
+  const currentSampler = catalog?.samplers.find(s => s.id === params.sampler || (params.sampler === 'euler' && s.id === 'euler'))
+  const supportedSchedulers = currentSampler?.supported_schedulers ?? ['simple', 'normal', 'beta', 'sgm_uniform']
+  const recommendedSteps = currentSampler?.recommended_steps
+
+  const applyCombo = (c: { sampler: string; scheduler: string; steps: number; cfg: number }) => {
+    setParams({
+      sampler: c.sampler as typeof params.sampler,
+      scheduler: c.scheduler as typeof params.scheduler,
+      steps: c.steps,
+      cfg: c.cfg,
+    })
+  }
   const setEnhancerVariant = (variant: typeof params.krea_enhancer_variant) => {
     setParams({
       krea_enhancer_variant: variant,
@@ -189,22 +213,50 @@ export default function ParameterSection() {
           </AccordionSummary>
           <AccordionDetails>
             <Stack spacing={2}>
+              {catalog && catalog.recommended_combos.length > 0 && (
+                <Box>
+                  <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5 }}>
+                    Community presets {isTurbo ? '(Turbo)' : '(RAW/base)'}
+                  </Typography>
+                  <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                    {catalog.recommended_combos.map(c => (
+                      <Tooltip key={c.label} title={`${c.note} — ${c.sampler}/${c.scheduler}, ${c.steps} steps, CFG ${c.cfg}`} arrow>
+                        <Chip
+                          label={c.label}
+                          size="small"
+                          variant={params.sampler === c.sampler && params.scheduler === c.scheduler ? 'filled' : 'outlined'}
+                          color={params.sampler === c.sampler && params.scheduler === c.scheduler ? 'primary' : 'default'}
+                          onClick={() => applyCombo(c)}
+                          sx={{ cursor: 'pointer' }}
+                        />
+                      </Tooltip>
+                    ))}
+                  </Stack>
+                </Box>
+              )}
               <TextField
                 select
                 label="Sampler"
                 value={params.sampler}
-                onChange={e => setParam('sampler', e.target.value as typeof params.sampler)}
+                onChange={e => {
+                  const next = e.target.value as typeof params.sampler
+                  const spec = catalog?.samplers.find(s => s.id === next)
+                  // Keep the scheduler valid for the new sampler.
+                  const sched = spec && !spec.supported_schedulers.includes(params.scheduler)
+                    ? (spec.scheduler as typeof params.scheduler)
+                    : params.scheduler
+                  setParams({ sampler: next, scheduler: sched })
+                }}
                 size="small"
                 fullWidth
-                helperText="Comfy-style sampler selector. Unsupported standard diffusion samplers are shown for parity but guarded until non-Krea backends are available."
+                helperText={currentSampler?.note || 'Sampler integrator. Standard-diffusion-only samplers are guarded until a non-Krea backend is available.'}
               >
-                <MenuItem value="euler">Euler / Simple (Krea default)</MenuItem>
-                <MenuItem value="euler_flow">Euler Flow (native alias)</MenuItem>
-                <MenuItem value="exp_heun_2_x0_sde">Experimental Heun x0 SDE (detail refine)</MenuItem>
-                <MenuItem value="lcm" disabled>LCM (requires LCM-compatible profile)</MenuItem>
-                <MenuItem value="dpmpp_2m" disabled>DPM++ 2M (standard diffusion backend required)</MenuItem>
-                <MenuItem value="ddim" disabled>DDIM (standard diffusion backend required)</MenuItem>
-                <MenuItem value="uni_pc" disabled>UniPC (standard diffusion backend required)</MenuItem>
+                {(catalog?.samplers ?? []).map(s => (
+                  <MenuItem key={s.id} value={s.id} disabled={s.disabled}>
+                    {s.label}{s.disabled ? '' : ` (${s.recommended_steps} steps)`}
+                  </MenuItem>
+                ))}
+                {!catalog && <MenuItem value="euler">Euler / Simple (Krea default)</MenuItem>}
               </TextField>
               <TextField
                 select
@@ -213,10 +265,24 @@ export default function ParameterSection() {
                 onChange={e => setParam('scheduler', e.target.value as typeof params.scheduler)}
                 size="small"
                 fullWidth
-                helperText="Krea flow profiles currently support Comfy's simple scheduler semantics only."
+                helperText={
+                  (catalog?.schedulers.find(s => s.id === params.scheduler)?.note)
+                  || 'Reshapes where steps are spent on the flow trajectory. Beta = crisper detail.'
+                }
               >
-                <MenuItem value="simple">Simple (Krea flow)</MenuItem>
+                {(catalog?.schedulers ?? [{ id: 'simple', label: 'Simple (Krea flow)', recommended: true, note: '' }])
+                  .filter(s => supportedSchedulers.includes(s.id))
+                  .map(s => (
+                    <MenuItem key={s.id} value={s.id}>
+                      {s.label}{s.recommended ? '' : ' — experimental'}
+                    </MenuItem>
+                  ))}
               </TextField>
+              {recommendedSteps != null && params.steps !== recommendedSteps && (
+                <Typography variant="caption" sx={{ color: 'warning.main', mt: -1 }}>
+                  Tip: {currentSampler?.label} usually looks best around {recommendedSteps} steps (currently {params.steps}).
+                </Typography>
+              )}
               {(params.mode === 'inpaint' || params.mode === 'outpaint') && (
                 <TextField
                   select
@@ -231,6 +297,29 @@ export default function ParameterSection() {
                   {params.mode === 'inpaint' && <MenuItem value="lanpaint_experimental">LanPaint experimental (inpaint)</MenuItem>}
                   <MenuItem value="flux_fill">FLUX Fill provider</MenuItem>
                 </TextField>
+              )}
+              {params.mode === 'inpaint' && params.inpaint_method === 'native' && (
+                <Box>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        size="small"
+                        checked={params.differential_inpaint}
+                        onChange={e => setParam('differential_inpaint', e.target.checked)}
+                      />
+                    }
+                    label={<>Differential diffusion (soft masks)<InfoTip text="Grayscale mask values join the denoise at different timesteps, so feathered/soft edits blend seamlessly into the kept region. Paint your mask with soft brush edges for the best result." /></>}
+                  />
+                  {params.differential_inpaint && (
+                    <LabeledSlider
+                      label="Differential blend strength"
+                      value={params.differential_strength}
+                      min={0} max={1} step={0.05}
+                      onChange={v => setParam('differential_strength', v)}
+                      helperText="1.0 = full per-step threshold (sharpest transition). Lower keeps more of the raw soft mask each step (gentler blend)."
+                    />
+                  )}
+                </Box>
               )}
               {params.mode === 'inpaint' && params.inpaint_method === 'lanpaint_experimental' && (
                 <>

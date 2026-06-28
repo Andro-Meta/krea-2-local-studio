@@ -11,6 +11,12 @@ import { downloadImage } from '../../lib/imageActions'
 
 const UPSCALE_METHODS = [
   {
+    key: 'refine_2pass',
+    label: '2× refine (recommended)',
+    sub: 'pre-upscale + 2 low-denoise refine passes · quick',
+    opts: { upscale_by: 2, steps: 8, cfg: 1, denoise: 0.25, sampler: 'euler', scheduler: 'beta' },
+  },
+  {
     key: 'ultimate',
     label: 'Ultimate SD Upscale 2× balanced',
     sub: 'Euler/simple · 8 steps · 1024 tile · band-pass seams',

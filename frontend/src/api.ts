@@ -31,9 +31,11 @@ export interface GenerationRequest {
   num_images?: number
   seed?: number
   denoise?: number
-  sampler?: 'euler' | 'euler_flow' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
-  scheduler?: 'simple'
+  sampler?: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
+  scheduler?: 'simple' | 'normal' | 'beta' | 'sgm_uniform' | 'karras' | 'exponential'
   inpaint_method?: 'native' | 'lanpaint_experimental' | 'flux_fill'
+  differential_inpaint?: boolean
+  differential_strength?: number
   lanpaint_inner_steps?: number
   lanpaint_strength?: number
   lanpaint_lambda?: number
@@ -343,8 +345,16 @@ export const apiFetch = {
   cancelRealtimePreview: (jobId: string) =>
     api.post<{ ok: boolean; job_id: string; status: string }>(`/api/realtime/cancel/${jobId}`).then(r => r.data),
 
-  loadModel: (path: string, quant: string, blocksToSwap = 0) =>
-    api.post('/api/load-model', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap }).then(r => r.data),
+  loadModel: (path: string, quant: string, blocksToSwap = 0, fp8FastMatmul = false) =>
+    api.post('/api/load-model', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap, fp8_fast_matmul: fp8FastMatmul }).then(r => r.data),
+
+  samplerCatalog: (profile = 'krea_turbo') =>
+    api.get<{
+      profile: string
+      samplers: { id: string; label: string; scheduler: string; default_steps: number; default_cfg: number; supported_schedulers: string[]; recommended_steps: number; disabled: boolean; note: string }[]
+      schedulers: { id: string; label: string; recommended: boolean; note: string }[]
+      recommended_combos: { sampler: string; scheduler: string; steps: number; cfg: number; label: string; note: string }[]
+    }>('/api/sampler-catalog', { params: { profile } }).then(r => r.data),
 
   unloadModel: () => api.post('/api/unload-model').then(r => r.data),
 

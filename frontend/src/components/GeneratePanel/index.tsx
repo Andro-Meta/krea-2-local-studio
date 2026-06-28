@@ -64,6 +64,8 @@ export default function GeneratePanel() {
         sampler: params.sampler,
         scheduler: params.scheduler,
         inpaint_method: params.inpaint_method,
+        differential_inpaint: params.differential_inpaint,
+        differential_strength: params.differential_strength,
         lanpaint_inner_steps: params.lanpaint_inner_steps,
         lanpaint_strength: params.lanpaint_strength,
         lanpaint_lambda: params.lanpaint_lambda,

@@ -217,27 +217,68 @@ def _align_conditioning_pair(text_txt, text_mask, image_txt, image_mask):
     return text_txt, mask, image_txt
 
 
-def _patch_fp8_linears(model: torch.nn.Module, scales: dict[str, float]) -> None:
-    """Patch fp8 Linear layers to dequantize weights on-the-fly using stored scales.
+def _patch_fp8_linears(
+    model: torch.nn.Module,
+    scales: dict[str, float],
+    *,
+    fast_matmul: bool = False,
+) -> None:
+    """Patch fp8 Linear layers to run with stored per-tensor scales.
 
-    The krea2_turbo_fp8_scaled checkpoint stores weights as float8_e4m3fn with
-    separate per-tensor scale factors. nn.Linear doesn't know about scales, so
-    we patch each layer's forward to: w_bf16 = w_fp8.to(compute_dtype) * scale.
-    This keeps 12GB fp8 in VRAM; only the active layer's bf16 weight is transient.
+    The krea2_*_fp8_scaled weights are float8_e4m3fn with separate scale factors.
+    Two execution paths:
+      - default (dequant): w_bf16 = w_fp8.to(compute_dtype) * scale, then F.linear.
+        Works on every GPU; only the active layer's bf16 weight is transient.
+      - fast_matmul (opt-in, Ada/Blackwell): torch._scaled_mm runs the matmul in
+        fp8 on the tensor cores (faster, slightly lower precision). Any
+        shape/alignment/runtime issue falls back to the dequant path per-call,
+        so enabling it can never break a generation.
     """
     import torch.nn.functional as F
 
-    def _make_fwd(m: torch.nn.Linear, scale: torch.Tensor):
+    fp8_dtype = torch.float8_e4m3fn
+
+    def _make_dequant_fwd(m: torch.nn.Linear, scale: torch.Tensor):
         def fwd(x: torch.Tensor) -> torch.Tensor:
             w = m.weight.to(x.dtype) * scale.to(x.dtype)
             return F.linear(x, w, m.bias)
         return fwd
 
+    def _make_fast_fwd(m: torch.nn.Linear, scale: torch.Tensor):
+        dequant = _make_dequant_fwd(m, scale)
+
+        def fwd(x: torch.Tensor) -> torch.Tensor:
+            try:
+                if m.weight.dtype != fp8_dtype:
+                    return dequant(x)
+                orig_shape = x.shape
+                x2 = x if x.dim() == 2 else x.reshape(-1, orig_shape[-1])
+                # Clamp to the e4m3 finite range, then cast activations to fp8.
+                xin = torch.clamp(x2, -448.0, 448.0).to(fp8_dtype).contiguous()
+                w_t = m.weight.t()  # [K, N] column-major view _scaled_mm wants
+                scale_a = torch.ones((), device=x.device, dtype=torch.float32)
+                scale_b = scale.to(device=x.device, dtype=torch.float32)
+                bias = m.bias.to(x.dtype) if m.bias is not None else None
+                out = torch._scaled_mm(
+                    xin, w_t, out_dtype=x.dtype, bias=bias,
+                    scale_a=scale_a, scale_b=scale_b,
+                )
+                if isinstance(out, tuple):
+                    out = out[0]
+                if x.dim() == 2:
+                    return out
+                return out.reshape(*orig_shape[:-1], out.shape[-1])
+            except Exception:
+                # Alignment/shape/runtime issues must never break generation.
+                return dequant(x)
+        return fwd
+
+    make_fwd = _make_fast_fwd if fast_matmul else _make_dequant_fwd
     for name, mod in model.named_modules():
         if isinstance(mod, torch.nn.Linear) and name in scales:
             s = torch.tensor(scales[name], dtype=torch.float32)
             mod.register_buffer("_fp8_scale", s)
-            mod.forward = _make_fwd(mod, mod._fp8_scale)
+            mod.forward = make_fwd(mod, mod._fp8_scale)
 
 
 def load_fp8_scaled_state_dict(checkpoint_path: str | Path) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
@@ -654,7 +695,7 @@ class Krea2Pipeline:
             "memory": mem_snapshot(),
         }
 
-    def load(self, checkpoint_path: str, quantization: str = "bf16", *, blocks_to_swap: int = 0) -> None:
+    def load(self, checkpoint_path: str, quantization: str = "bf16", *, blocks_to_swap: int = 0, fp8_fast_matmul: bool = False) -> None:
         backend_dir = str(Path(__file__).parent)
         if backend_dir not in sys.path:
             sys.path.insert(0, backend_dir)
@@ -682,6 +723,16 @@ class Krea2Pipeline:
             verdict = assess_runnability(caps, _ram_total)
             if not verdict["can_run"]:
                 raise RuntimeError(f"This GPU/system can't run Krea 2: {verdict['reason']}")
+
+        # Opt-in fp8 fast matmul (torch._scaled_mm) — only on GPUs with real fp8
+        # tensor-core compute (Ada/Hopper/Blackwell). Ampere (3090) is fp8
+        # storage-only, so the flag is ignored there (no speed benefit anyway).
+        # Enabled by either the per-load request flag or the global setting.
+        fp8_fast_matmul = (
+            bool(fp8_fast_matmul) or bool(getattr(settings, "krea2_fp8_fast_matmul", False))
+        ) and bool(caps.get("supports_fp8_compute"))
+        if fp8_fast_matmul:
+            logger.info("fp8 fast matmul enabled (torch._scaled_mm on %s).", caps.get("name") or "GPU")
 
         blocks_to_swap = max(0, int(blocks_to_swap))
         # Capacity-aware auto block-swap: when the caller didn't request swapping,
@@ -764,7 +815,7 @@ class Krea2Pipeline:
                         sd, fp8_scales = load_fp8_scaled_state_dict(checkpoint_path)
                         mmdit.load_state_dict(sd, strict=True, assign=True)
                         del sd
-                        _patch_fp8_linears(mmdit, fp8_scales)
+                        _patch_fp8_linears(mmdit, fp8_scales, fast_matmul=fp8_fast_matmul)
                         mmdit = mmdit.to(device=self._device).eval()
                         logger.info(f"DiT loaded (fp8-scaled, {len(fp8_scales)} layers patched). {mem_snapshot()}")
                     elif quantization == "fp8":
@@ -779,7 +830,7 @@ class Krea2Pipeline:
                         )
                         mmdit.load_state_dict(sd_fp8, strict=True, assign=True)
                         del sd_fp8
-                        _patch_fp8_linears(mmdit, dyn_scales)
+                        _patch_fp8_linears(mmdit, dyn_scales, fast_matmul=fp8_fast_matmul)
                         # Moves the freshly-registered fp8 scale buffers onto the
                         # device (weights are already there); cheap no-op for them.
                         mmdit = mmdit.to(device=self._device).eval()
@@ -1244,8 +1295,13 @@ class Krea2Pipeline:
                 denoise=req.denoise,
                 mask=mask_tensor,
                 init_latent_clean=init_latent_clean,
-                differential_mask=req.mode == "outpaint",
+                differential_mask=(
+                    req.mode == "outpaint"
+                    or (req.mode == "inpaint" and bool(getattr(req, "differential_inpaint", False)))
+                ),
+                differential_strength=float(getattr(req, "differential_strength", 1.0)),
                 sampler=native_sampler,
+                scheduler=getattr(req, "scheduler", "simple"),
                 lanpaint_inner_steps=getattr(req, "lanpaint_inner_steps", 3),
                 lanpaint_strength=getattr(req, "lanpaint_strength", 1.0),
                 lanpaint_settings=_lanpaint_settings_from_request(req),
@@ -1296,6 +1352,7 @@ class Krea2Pipeline:
                         mask=seam_mask_tensor,
                         differential_mask=True,
                         sampler=getattr(req, "sampler", "euler_flow"),
+                        scheduler=getattr(req, "scheduler", "simple"),
                         progress_cb=None,
                     )
                     images = _outpaint_stitch(images, init_img_for_stitch, mask_img_for_stitch)
@@ -1332,6 +1389,7 @@ class Krea2Pipeline:
                     init_latent=harmonize_latent,
                     denoise=0.12,
                     sampler=getattr(req, "sampler", "euler_flow"),
+                    scheduler=getattr(req, "scheduler", "simple"),
                     progress_cb=None,
                 )
                 logger.info("Outpaint harmonization pass done.")
@@ -1357,6 +1415,7 @@ class Krea2Pipeline:
                     y1=req.y1, y2=req.y2, batch_size=len(images),
                     init_latent=rlat, denoise=float(req.refine_denoise),
                     sampler=getattr(req, "sampler", "euler_flow"),
+                    scheduler=getattr(req, "scheduler", "simple"),
                     progress_cb=progress_cb,
                 )
                 logger.info(f"Detail refine pass done (denoise={req.refine_denoise}).")

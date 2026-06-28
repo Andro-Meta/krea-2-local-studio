@@ -52,6 +52,11 @@ class GenerationRequest(BaseModel):
     sampler: str = "euler_flow"       # euler | euler_flow | exp_heun_2_x0_sde | guarded Comfy names
     scheduler: str = "simple"
     inpaint_method: str = "native"    # native | lanpaint_experimental | flux_fill
+    # Differential diffusion (soft masks): grayscale mask values join the denoise
+    # at different timesteps, so feathered edits blend seamlessly into the keep
+    # region. strength<1 keeps some of the raw soft mask each step.
+    differential_inpaint: bool = False
+    differential_strength: float = Field(default=1.0, ge=0.0, le=1.0)
     lanpaint_inner_steps: int = 3
     lanpaint_strength: float = 1.0
     lanpaint_lambda: float = 16.0
@@ -235,6 +240,7 @@ class LoadModelRequest(BaseModel):
     checkpoint_path: str
     quantization: str = "bf16"
     blocks_to_swap: int = Field(default=0, ge=0, le=28)
+    fp8_fast_matmul: bool = False  # opt-in fp8 _scaled_mm (Ada/Blackwell only)
 
 
 class MemoryStopProcessRequest(BaseModel):

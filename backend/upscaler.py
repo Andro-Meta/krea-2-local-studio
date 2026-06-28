@@ -298,6 +298,79 @@ def upscale_ultimate(
     return work
 
 
+def upscale_refine_2pass(
+    img: Image.Image,
+    pipeline,                # Krea2Pipeline
+    models_dir: Path,
+    prompt: str = "",
+    scale: float = 2.0,
+    denoise: float = 0.25,
+    steps: int = 8,
+    cfg: float = 1.0,
+    sampler: str = "euler",
+    scheduler: str = "simple",
+    tile_size: int = 1280,
+    tiled_decode: bool = False,
+) -> Image.Image:
+    """Quick 2-pass low-denoise refine upscale (the recommended default preset).
+
+    Pass 1: pre-upscale the whole image (RealESRGAN -> bicubic fallback).
+    Pass 2a: a full-image img2img refine at the chosen low denoise (adds detail).
+    Pass 2b: a second, even-lower-denoise refine that cleans residual artifacts
+             without drifting from the structure.
+
+    For images that exceed a single-pass size after upscaling, it delegates to
+    the tiled Ultimate upscaler so VRAM stays bounded.
+    """
+    from schemas import GenerationRequest
+
+    W, H = int(round(img.width * scale)), int(round(img.height * scale))
+    try:
+        work = upscale_realesrgan(img, models_dir, scale)
+        if work.size != (W, H):
+            work = work.resize((W, H), Image.LANCZOS)
+    except Exception:  # noqa: BLE001
+        work = img.resize((W, H), Image.LANCZOS)
+    work = work.convert("RGB")
+
+    if not pipeline.is_loaded():
+        logger.warning("Model not loaded; 2-pass refine -> pre-upscale only.")
+        return work
+
+    # Large results would OOM a single-pass refine -> hand off to tiled Ultimate.
+    if W > tile_size or H > tile_size:
+        logger.info("2-pass refine: image too large for single-pass; using tiled Ultimate refine.")
+        return upscale_ultimate(
+            img, pipeline, models_dir, prompt=prompt, scale=scale,
+            tile=tile_size, denoise=denoise, steps=steps, cfg=cfg,
+            sampler=sampler, scheduler=scheduler, tiled_decode=tiled_decode,
+        )
+
+    align = 16  # COMPRESSION(8) * PATCH(2)
+    gw = ((W + align - 1) // align) * align
+    gh = ((H + align - 1) // align) * align
+
+    def _refine(src: Image.Image, dn: float, seed: int) -> Image.Image:
+        gen_in = src.resize((gw, gh), Image.LANCZOS) if (gw, gh) != src.size else src
+        buf = io.BytesIO()
+        gen_in.save(buf, format="PNG")
+        req = GenerationRequest(
+            prompt=prompt or "high quality, sharp fine detail",
+            mode="img2img", checkpoint="turbo", steps=steps, cfg=cfg,
+            width=gw, height=gh, num_images=1, seed=seed, denoise=dn,
+            sampler=sampler, scheduler=scheduler,
+            init_image_b64=base64.b64encode(buf.getvalue()).decode(),
+        )
+        out = pipeline.generate(req)[0]
+        result = Image.open(io.BytesIO(base64.b64decode(out[0]))).convert("RGB")
+        return result.resize((W, H), Image.LANCZOS) if result.size != (W, H) else result
+
+    work = _refine(work, denoise, 42)
+    work = _refine(work, max(0.1, denoise * 0.6), 43)
+    logger.info(f"2-pass refine upscale done (denoise={denoise:.2f} -> {max(0.1, denoise * 0.6):.2f}).")
+    return work
+
+
 def pil_to_b64(img: Image.Image) -> str:
     buf = io.BytesIO()
     img.save(buf, format="PNG")

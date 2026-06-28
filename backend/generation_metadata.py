@@ -96,6 +96,8 @@ def build_generation_metadata(
         "scheduler": str(getattr(req, "scheduler", "simple")),
         "inpaint": {
             "method": str(getattr(req, "inpaint_method", "native")),
+            "differential_inpaint": bool(getattr(req, "differential_inpaint", False)),
+            "differential_strength": float(getattr(req, "differential_strength", 1.0)),
             "lanpaint_inner_steps": int(getattr(req, "lanpaint_inner_steps", 3)),
             "lanpaint_strength": float(getattr(req, "lanpaint_strength", 1.0)),
             "lanpaint_lambda": float(getattr(req, "lanpaint_lambda", 16.0)),

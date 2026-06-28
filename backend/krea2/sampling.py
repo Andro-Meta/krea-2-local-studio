@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from PIL import Image
 
+from . import schedulers
 from .lanpaint_sampler import lanpaint_masked_inner_update
 from .lanpaint_sampler import LanPaintSettings
 from .sampler_registry import normalize_sampler_name
@@ -59,19 +60,30 @@ def prepare(img, txtlen, patch, txtmask):
     return img, pos, mask
 
 
-def timesteps(seq_len, steps, x1, x2, y1=0.5, y2=1.15, sigma=1.0, mu=None):
+def timesteps(seq_len, steps, x1, x2, y1=0.5, y2=1.15, sigma=1.0, mu=None, scheduler="simple"):
     """Resolution-aware flow-matching schedule (t: 1 -> 0).
 
     mu is interpolated in image-sequence length between (x1,y1) and (x2,y2),
-    then time-shifts a uniform 1->0 grid. Pass explicit mu to pin a constant
-    shift (Turbo was distilled at mu=1.15).
+    then time-shifts a base 1->0 grid. The grid's *density* is set by the
+    scheduler (simple/normal = uniform default; beta = U-shaped; etc). Pass
+    explicit mu to pin a constant shift (Turbo was distilled at mu=1.15).
     """
-    ts = torch.linspace(1, 0, steps + 1)
+    base = schedulers.base_grid(steps, scheduler)
     if mu is None:
         slope = (y2 - y1) / (x2 - x1)
         mu = slope * seq_len + (y1 - slope * x1)
-    ts = math.exp(mu) / (math.exp(mu) + (1.0 / ts - 1.0) ** sigma)
-    return ts.tolist()
+    # exp(mu) time-shift (ComfyUI flux_time_shift). Endpoints 1->1 and 0->0 are
+    # preserved; the shift only pushes interior density toward high noise.
+    shifted = []
+    e_mu = math.exp(mu)
+    for t in base:
+        if t <= 0.0:
+            shifted.append(0.0)
+        elif t >= 1.0:
+            shifted.append(1.0)
+        else:
+            shifted.append(e_mu / (e_mu + (1.0 / t - 1.0) ** sigma))
+    return shifted
 
 
 def _differential_mask_for_timestep(
@@ -114,8 +126,92 @@ def heun_flow_step(
     return img + (tprev - tcurr) * 0.5 * (velocity + corrected)
 
 
+def euler_ancestral_flow_step(
+    img: torch.Tensor,
+    velocity: torch.Tensor,
+    *,
+    tcurr: float,
+    tprev: float,
+    noise: torch.Tensor,
+    eta: float = 1.0,
+    s_noise: float = 1.0,
+) -> torch.Tensor:
+    """Ancestral Euler step for rectified flow.
+
+    Port of ComfyUI ``sample_euler_ancestral_RF`` using alpha = 1 - t. The model
+    ``velocity`` at tcurr yields ``denoised = img - v*tcurr``; we step down a
+    fraction (eta controls stochasticity) and re-inject fresh Gaussian noise.
+    """
+    denoised = img - velocity * tcurr
+    if tprev <= 0.0:
+        return denoised
+    downstep_ratio = 1.0 + (tprev / tcurr - 1.0) * eta
+    sigma_down = tprev * downstep_ratio
+    alpha_ip1 = 1.0 - tprev
+    alpha_down = 1.0 - sigma_down
+    renoise = (tprev ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
+    ratio = sigma_down / tcurr
+    x = ratio * img + (1.0 - ratio) * denoised
+    if eta > 0.0:
+        x = (alpha_ip1 / alpha_down) * x + noise * s_noise * renoise
+    return x
+
+
+def euler_cfgpp_flow_step(
+    img: torch.Tensor,
+    v_cond: torch.Tensor,
+    v_uncond: torch.Tensor,
+    *,
+    tcurr: float,
+    tprev: float,
+    noise: torch.Tensor,
+    eta: float = 1.0,
+    s_noise: float = 1.0,
+) -> torch.Tensor:
+    """CFG++ (ancestral) Euler step for rectified flow.
+
+    Port of ComfyUI ``sample_euler_ancestral_cfg_pp`` with the CONST
+    (alpha = 1 - t) mapping. The integration *base* is the full CFG ``denoised``
+    while the step *direction* is taken from the uncond prediction — this is the
+    CFG++ trick that tames over-saturation and improves few-step adherence.
+    ``eta = s_noise = 0`` reduces this to deterministic ``euler_cfg_pp``.
+    """
+    denoised = img - v_cond * tcurr
+    uncond_denoised = img - v_uncond * tcurr
+    if tprev <= 0.0:
+        return denoised
+    alpha_s = 1.0 - tcurr
+    alpha_t = 1.0 - tprev
+    # Direction from the uncond prediction (the CFG++ trick). tcurr is always > 0
+    # inside the loop, so this division is safe.
+    d = (img - alpha_s * uncond_denoised) / tcurr
+    # Ancestral split rewritten via the product ratio r = (tprev*alpha_s)/(tcurr*alpha_t)
+    # to avoid dividing by alpha_s, which is 0 at the t=1 starting step.
+    if eta > 0.0 and alpha_t > 0.0:
+        r = (tprev * alpha_s) / (tcurr * alpha_t)
+        factor = min(1.0, eta * max(0.0, 1.0 - r * r) ** 0.5)
+    else:
+        factor = 0.0
+    sigma_down_scaled = tprev * (max(0.0, 1.0 - factor * factor) ** 0.5)
+    x = alpha_t * denoised + sigma_down_scaled * d
+    if eta > 0.0 and s_noise > 0.0:
+        x = x + noise * s_noise * (tprev * factor)
+    return x
+
+
+# Samplers actually integrated by sample(). Aliases normalize into these.
+_FLOW_SAMPLERS = {
+    "euler_flow",
+    "euler_ancestral",
+    "euler_ancestral_cfg_pp",
+    "euler_cfg_pp",
+    "exp_heun_2_x0_sde",
+    "lanpaint_experimental",
+}
+
+
 def _validate_sampler(sampler: str) -> None:
-    if normalize_sampler_name(sampler) not in {"euler_flow", "exp_heun_2_x0_sde", "lanpaint_experimental"}:
+    if normalize_sampler_name(sampler) not in _FLOW_SAMPLERS:
         raise ValueError(f"Unknown sampler: {sampler}")
 
 
@@ -154,6 +250,7 @@ def sample(
     differential_mask: bool = False,
     differential_strength: float = 1.0,
     sampler: str = "euler_flow",
+    scheduler: str = "simple",
     lanpaint_inner_steps: int = 3,
     lanpaint_strength: float = 1.0,
     lanpaint_settings: LanPaintSettings | None = None,
@@ -211,7 +308,7 @@ def sample(
     img_tokens = (lh // PATCH) * (lw // PATCH)
     x1 = (minres // align) ** 2
     x2 = (maxres // align) ** 2
-    ts = timesteps(img_tokens, steps, x1, x2, y1=y1, y2=y2, mu=mu)
+    ts = timesteps(img_tokens, steps, x1, x2, y1=y1, y2=y2, mu=mu, scheduler=scheduler)
 
     # Patchify pure noise → tokens (also builds RoPE positions + attention mask).
     x_noise, pos, seq_mask = prepare(noise, txt.shape[1], PATCH, txtmask)
@@ -248,6 +345,16 @@ def sample(
         # txt2img, or full-denoise inpaint: start from pure noise (t≈1).
         img = x_noise
 
+    # Ancestral / CFG++ samplers re-inject fresh noise each step; use a dedicated
+    # seeded generator so results stay reproducible and independent of the init noise.
+    ancestral = sampler in ("euler_ancestral", "euler_ancestral_cfg_pp", "euler_cfg_pp")
+    cfgpp = sampler in ("euler_ancestral_cfg_pp", "euler_cfg_pp")
+    step_eta = 0.0 if sampler == "euler_cfg_pp" else 1.0
+    anc_gen = torch.Generator(device=device).manual_seed(seed + 0x5EED)
+
+    def _step_noise(ref: torch.Tensor) -> torch.Tensor:
+        return torch.randn(ref.shape, dtype=ref.dtype, device=ref.device, generator=anc_gen)
+
     # --- Euler ODE integration (with per-step inpaint keep-region compositing) ---
     n_steps = len(ts) - 1
     t_start = ts[0] if ts else 1.0
@@ -271,15 +378,21 @@ def sample(
             img = active_mask * img + (1.0 - active_mask) * _traj(tcurr)
         else:
             active_mask = None
-        def _velocity(latent: torch.Tensor, local_t: float) -> torch.Tensor:
+        def _velocity_parts(latent: torch.Tensor, local_t: float):
             t_local = torch.full((len(latent),), local_t, dtype=latent.dtype, device=latent.device)
             cond_local = model(img=latent, context=txt, t=t_local, pos=pos, mask=seq_mask)
             if cfg:
                 if neg_context is None or unpos is None:
                     raise ValueError("negative conditioning is required when guidance is enabled")
                 uncond_local = model(img=latent, context=neg_context, t=t_local, pos=unpos, mask=unmask)
-                return uncond_local + guidance * (cond_local - uncond_local)
-            return cond_local
+                return cond_local, uncond_local
+            return cond_local, None
+
+        def _velocity(latent: torch.Tensor, local_t: float) -> torch.Tensor:
+            cond_local, uncond_local = _velocity_parts(latent, local_t)
+            if uncond_local is None:
+                return cond_local
+            return uncond_local + guidance * (cond_local - uncond_local)
 
         if sampler == "lanpaint_experimental":
             if active_mask is None:
@@ -296,10 +409,26 @@ def sample(
                 settings=lanpaint_settings,
             )
 
-        v = _velocity(img, tcurr)
-        if sampler == "exp_heun_2_x0_sde":
+        if cfgpp:
+            cond_v, uncond_v = _velocity_parts(img, tcurr)
+            v_cond = cond_v if uncond_v is None else uncond_v + guidance * (cond_v - uncond_v)
+            v_uncond = cond_v if uncond_v is None else uncond_v
+            img = euler_cfgpp_flow_step(
+                img, v_cond, v_uncond,
+                tcurr=tcurr, tprev=tprev,
+                noise=_step_noise(img), eta=step_eta, s_noise=1.0,
+            )
+        elif ancestral:
+            v = _velocity(img, tcurr)
+            img = euler_ancestral_flow_step(
+                img, v, tcurr=tcurr, tprev=tprev,
+                noise=_step_noise(img), eta=step_eta, s_noise=1.0,
+            )
+        elif sampler == "exp_heun_2_x0_sde":
+            v = _velocity(img, tcurr)
             img = heun_flow_step(img, v, tcurr=tcurr, tprev=tprev, velocity_fn=_velocity)
         else:
+            v = _velocity(img, tcurr)
             img = euler_flow_step(img, v, tcurr=tcurr, tprev=tprev)
     if progress_cb is not None:
         progress_cb(n_steps, n_steps)

@@ -27,6 +27,7 @@ export default function SystemStatus() {
   const [cpPath, setCpPath] = useState('')
   const [quant, setQuant] = useState('fp8')
   const [blocksToSwap, setBlocksToSwap] = useState(0)
+  const [fp8FastMatmul, setFp8FastMatmul] = useState(false)
   const [pathTouched, setPathTouched] = useState(false)
   const [loadingModel, setLoadingModel] = useState(false)
   const [loadError, setLoadError] = useState('')
@@ -199,7 +200,7 @@ export default function SystemStatus() {
     if (!cpPath) return
     setLoadingModel(true); setLoadError('')
     try {
-      await apiFetch.loadModel(cpPath, quant, blocksToSwap)
+      await apiFetch.loadModel(cpPath, quant, blocksToSwap, fp8FastMatmul)
       await refresh()
     } catch (e: any) {
       setLoadError(e?.response?.data?.detail ?? e.message)
@@ -530,6 +531,21 @@ export default function SystemStatus() {
                 disabled={!isAdmin}
                 inputProps={{ min: 0, max: 28, step: 1 }}
                 helperText="Stream the last N of 28 DiT blocks from RAM. 0 = off. Try fp8 + 8–16 to run RAW on 24GB (slower)."
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={fp8FastMatmul}
+                    onChange={e => setFp8FastMatmul(e.target.checked)}
+                    disabled={!isAdmin || quant !== 'fp8' || !report?.gpu_capabilities?.supports_fp8_compute}
+                  />
+                }
+                label={
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    fp8 fast matmul (experimental){report && !report.gpu_capabilities?.supports_fp8_compute ? ' — needs Ada/Blackwell' : quant !== 'fp8' ? ' — fp8 only' : ' — faster on Ada/Blackwell'}
+                  </Typography>
+                }
               />
               {loadError && <Alert severity="error" sx={{ py: 0 }}>{loadError}</Alert>}
               <Button
