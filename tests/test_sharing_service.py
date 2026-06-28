@@ -121,6 +121,7 @@ class SharingServiceTests(unittest.TestCase):
             patch("sharing_service.find_tailscale", return_value="tailscale"),
             patch("sharing_service._run_tailscale", side_effect=fake_run),
             patch("sharing_service.local_krea_target_status", return_value={"ok": True, "auth_required": True, "message": "ok"}),
+            patch("sharing_service.public_funnel_probe", return_value={"ok": True, "message": "public ok"}),
         ):
             result = sharing_service.repair_funnel(port=45678)
 
@@ -130,6 +131,36 @@ class SharingServiceTests(unittest.TestCase):
         self.assertTrue(result["funnel"]["running"])
         self.assertIn(["up"], calls)
         self.assertIn(["funnel", "--set-path=/krea", "--bg", "--yes", "127.0.0.1:45678"], calls)
+
+    def test_repair_funnel_warns_when_public_probe_fails(self) -> None:
+        class Result:
+            def __init__(self, returncode=0, stdout="", stderr=""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        def fake_run(args, timeout=30):
+            if args[:2] == ["status", "--json"]:
+                return Result(stdout='{"Self":{"DNSName":"diffusion.tail.ts.net."}}')
+            if args[:2] == ["funnel", "status"]:
+                return Result(stdout="https://diffusion.tail.ts.net/krea\n")
+            if args[:1] == ["up"]:
+                return Result()
+            if args[:1] == ["funnel"]:
+                return Result(stdout="https://diffusion.tail.ts.net\n")
+            return Result()
+
+        with (
+            patch("sharing_service.find_tailscale", return_value="tailscale"),
+            patch("sharing_service._run_tailscale", side_effect=fake_run),
+            patch("sharing_service.local_krea_target_status", return_value={"ok": True, "auth_required": True, "message": "ok"}),
+            patch("sharing_service.public_funnel_probe", return_value={"ok": False, "message": "TLS failed"}),
+        ):
+            result = sharing_service.repair_funnel(port=45678)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["needs_admin_service_restart"])
+        self.assertIn("restart", result["message"].lower())
 
 
 if __name__ == "__main__":

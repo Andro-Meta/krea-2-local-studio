@@ -177,6 +177,26 @@ def local_krea_target_status(port: int = PORT) -> dict:
     return {"ok": True, "url": url, "auth_required": True, "message": "Local Krea is reachable and login-gated."}
 
 
+def public_funnel_probe(url: str) -> dict:
+    if not url:
+        return {"ok": False, "message": "No public Funnel URL is configured."}
+    probe_url = public_krea_url(url).rstrip("/") + "/api/auth/me"
+    try:
+        with urllib.request.urlopen(probe_url, timeout=12) as response:
+            status = getattr(response, "status", 200)
+            body = response.read(512).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "url": probe_url, "message": f"Public Funnel returned HTTP {exc.code} before reaching Krea."}
+    except Exception:
+        return {"ok": False, "url": probe_url, "message": "Public Funnel TLS/proxy check failed before reaching Krea."}
+    ok = 200 <= int(status) < 400 and ("authenticated" in body or "share_auth" in body)
+    return {
+        "ok": ok,
+        "url": probe_url,
+        "message": "Public Funnel reached Krea." if ok else "Public Funnel responded, but not with the Krea auth endpoint.",
+    }
+
+
 def repair_funnel(port: int = PORT) -> dict:
     local = local_krea_target_status(port)
     tailscale = tailscale_status()
@@ -188,8 +208,9 @@ def repair_funnel(port: int = PORT) -> dict:
             up_result = {"ok": False, "message": "Could not run tailscale up from the GUI. Try opening Tailscale or running tailscale up manually."}
     funnel_result = start_funnel(port) if local.get("ok") and tailscale.get("installed") else {"ok": False, "url": "", "message": "Local Krea or Tailscale is not ready."}
     funnel = funnel_status()
-    ok = bool(local.get("ok") and local.get("auth_required") and tailscale.get("installed") and funnel.get("running"))
-    needs_admin_restart = bool(tailscale.get("installed") and funnel.get("running") and local.get("ok") and not ok)
+    public_probe = public_funnel_probe(funnel.get("url", "")) if funnel.get("running") else {"ok": False, "message": "Funnel is not running."}
+    ok = bool(local.get("ok") and local.get("auth_required") and tailscale.get("installed") and funnel.get("running") and public_probe.get("ok"))
+    needs_admin_restart = bool(tailscale.get("installed") and funnel.get("running") and local.get("ok") and not public_probe.get("ok"))
     message = "Sharing is configured." if ok else (
         "Funnel is configured but public access may still fail. If the public URL returns 500/TLS errors, restart the Tailscale Windows service as Administrator."
         if needs_admin_restart else "Sharing is not ready. Check local Krea, login gate, and Tailscale status."
@@ -202,6 +223,7 @@ def repair_funnel(port: int = PORT) -> dict:
         "tailscale_up": up_result,
         "start_funnel": funnel_result,
         "funnel": funnel,
+        "public_probe": public_probe,
         "needs_admin_service_restart": needs_admin_restart,
     }
 
