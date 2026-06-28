@@ -42,6 +42,63 @@ class GalleryMetadataTests(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_gallery_scopes_rows_by_owner(self) -> None:
+        import gallery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "app.db"
+            out_dir = Path(tmp) / "outputs"
+            out_dir.mkdir()
+
+            async def run() -> None:
+                with (
+                    patch.object(gallery, "DB_PATH", db_path),
+                    patch.object(gallery, "OUTPUTS_DIR", out_dir),
+                ):
+                    await gallery.init_db()
+                    await gallery.save_image("alice.png", prompt="a", owner_username="alice")
+                    await gallery.save_image("bob.png", prompt="b", owner_username="bob")
+                    await gallery.save_image("legacy.png", prompt="legacy")
+
+                    alice = await gallery.get_gallery(owner_username="alice", is_admin=False)
+                    bob = await gallery.get_gallery(owner_username="bob", is_admin=False)
+                    admin = await gallery.get_gallery(is_admin=True)
+
+                self.assertEqual([item["filename"] for item in alice["items"]], ["alice.png"])
+                self.assertEqual([item["filename"] for item in bob["items"]], ["bob.png"])
+                self.assertEqual(admin["total"], 3)
+
+            asyncio.run(run())
+
+    def test_gallery_mutations_are_owner_scoped(self) -> None:
+        import gallery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "app.db"
+            out_dir = Path(tmp) / "outputs"
+            out_dir.mkdir()
+            (out_dir / "alice.png").write_bytes(b"fake")
+            (out_dir / "bob.png").write_bytes(b"fake")
+
+            async def run() -> None:
+                with (
+                    patch.object(gallery, "DB_PATH", db_path),
+                    patch.object(gallery, "OUTPUTS_DIR", out_dir),
+                ):
+                    await gallery.init_db()
+                    alice_id = await gallery.save_image("alice.png", owner_username="alice")
+                    bob_id = await gallery.save_image("bob.png", owner_username="bob")
+
+                    self.assertFalse(await gallery.set_favorite(bob_id, True, owner_username="alice", is_admin=False))
+                    self.assertTrue(await gallery.set_favorite(bob_id, True, owner_username="bob", is_admin=False))
+                    self.assertIsNone(await gallery.delete_image(bob_id, owner_username="alice", is_admin=False))
+                    self.assertEqual(await gallery.delete_image(alice_id, owner_username="admin", is_admin=True), "alice.png")
+
+                self.assertFalse((out_dir / "alice.png").exists())
+                self.assertTrue((out_dir / "bob.png").exists())
+
+            asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

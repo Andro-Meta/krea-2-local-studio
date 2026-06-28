@@ -60,6 +60,26 @@ class ShareAuthTests(unittest.TestCase):
             self.assertEqual([r["username"] for r in records], ["admin", "viewer"])
             self.assertEqual(records[1]["role"], "admin")
 
+    def test_child_role_can_be_managed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = Path(td) / "auth.json"
+            share_auth.add_user(store, "admin", "correct horse", role="admin")
+            share_auth.add_user(store, "kid", "correct horse", role="child")
+
+            self.assertEqual(share_auth.get_user_role(store, "kid"), "child")
+            self.assertFalse(share_auth.is_admin(store, "kid"))
+
+            records = share_auth.list_user_records(store)
+            self.assertEqual(
+                {r["username"]: r["role"] for r in records},
+                {"admin": "admin", "kid": "child"},
+            )
+
+            self.assertTrue(share_auth.set_user_role(store, "kid", "user"))
+            self.assertEqual(share_auth.get_user_role(store, "kid"), "user")
+            self.assertTrue(share_auth.set_user_role(store, "kid", "child"))
+            self.assertEqual(share_auth.get_user_role(store, "kid"), "child")
+
     def test_refuses_to_remove_or_demote_last_admin(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             store = Path(td) / "auth.json"
@@ -72,6 +92,16 @@ class ShareAuthTests(unittest.TestCase):
                 share_auth.remove_user(store, "admin")
 
             self.assertTrue(share_auth.has_admin(store))
+            self.assertEqual(share_auth.get_user_role(store, "admin"), "admin")
+
+    def test_refuses_to_demote_last_admin_to_child(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = Path(td) / "auth.json"
+            share_auth.add_user(store, "admin", "correct horse", role="admin")
+
+            with self.assertRaisesRegex(ValueError, "last admin"):
+                share_auth.set_user_role(store, "admin", "child")
+
             self.assertEqual(share_auth.get_user_role(store, "admin"), "admin")
 
     def test_session_token_round_trip_and_revocation(self) -> None:

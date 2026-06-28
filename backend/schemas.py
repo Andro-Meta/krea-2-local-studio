@@ -152,6 +152,7 @@ class GalleryItem(BaseModel):
     favorite: bool = False
     thumbnail_b64: Optional[str] = None
     metadata: dict = {}
+    owner_username: Optional[str] = None
 
 
 class GalleryListResponse(BaseModel):
@@ -316,11 +317,11 @@ class ShareLoginRequest(BaseModel):
 class ShareUserCreateRequest(BaseModel):
     username: str
     password: str
-    role: str = "user"
+    role: Literal["admin", "user", "child"] = "user"
 
 
 class ShareUserRoleRequest(BaseModel):
-    role: str
+    role: Literal["admin", "user", "child"]
 
 
 class ShareUserPasswordRequest(BaseModel):

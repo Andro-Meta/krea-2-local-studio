@@ -5,7 +5,7 @@ import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder'
 import DeleteIcon from '@mui/icons-material/Delete'
 import DownloadIcon from '@mui/icons-material/Download'
 import RefreshIcon from '@mui/icons-material/Refresh'
-import { apiFetch, publicUrl, type GalleryItem } from '../../api'
+import { apiFetch, publicUrl, type AuthSession, type GalleryItem } from '../../api'
 import { useStore } from '../../store'
 
 export default function GalleryPanel() {
@@ -14,7 +14,13 @@ export default function GalleryPanel() {
   const [page, setPage] = useState(1)
   const [favoritesOnly, setFavoritesOnly] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [auth, setAuth] = useState<AuthSession | null>(null)
   const { openLightbox } = useStore()
+  const canDelete = (item: GalleryItem) => auth?.role === 'admin' || (!!auth?.username && item.owner_username === auth.username)
+
+  useEffect(() => {
+    apiFetch.authMe().then(setAuth).catch(() => setAuth(null))
+  }, [])
 
   const load = useCallback(async (pg = 1, favs = favoritesOnly) => {
     setLoading(true)
@@ -65,6 +71,7 @@ export default function GalleryPanel() {
       prompt: item.prompt,
       favorite: item.favorite,
       metadata: item.metadata,
+      owner_username: item.owner_username,
     })), idx)
   }
 
@@ -127,9 +134,11 @@ export default function GalleryPanel() {
                   <IconButton size="small" component="a" href={publicUrl(`/api/outputs/${item.filename}`)} download onClick={e => e.stopPropagation()}>
                     <DownloadIcon fontSize="small" />
                   </IconButton>
-                  <IconButton size="small" onClick={(e) => { e.stopPropagation(); deleteItem(item.id) }} sx={{ color: 'error.light' }}>
-                    <DeleteIcon fontSize="small" />
-                  </IconButton>
+                  {canDelete(item) && (
+                    <IconButton size="small" onClick={(e) => { e.stopPropagation(); deleteItem(item.id) }} sx={{ color: 'error.light' }}>
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  )}
                 </Stack>
               </Box>
             </Grid>

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import logging
 import os
 import secrets
@@ -18,13 +20,15 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 
 # Ensure backend dir is on path
 _BACKEND = Path(__file__).parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from gallery import delete_image, get_gallery, init_db, save_image, set_favorite
+from gallery import delete_image, get_gallery, get_image_record_by_filename, init_db, save_image, set_favorite
+from generation_queue import GenerationQueue
 from inference import pipeline
 from log_setup import setup_logging
 from lora_manager import inspect_lora, list_loras
@@ -107,12 +111,19 @@ from memory_manager import (
     stop_krea_server_process,
     unload_pipeline,
 )
+from moderation import (
+    init_moderation_db,
+    list_moderation_events,
+    moderate_images,
+    moderate_prompt,
+    save_moderation_event,
+)
 
 logger = logging.getLogger(__name__)
 setup_logging(LOGS_DIR)
 
 app = FastAPI(title="Krea 2 Studio", version="1.0.0")
-app.mount("/api/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
+QUARANTINE_DIR = BASE_DIR / "moderation_quarantine"
 
 app.add_middleware(
     CORSMiddleware,
@@ -179,8 +190,17 @@ def _auth_username_from_cookie(cookie: str | None) -> str | None:
     return username
 
 
+def _request_user_role(request: Request) -> tuple[str | None, str, bool]:
+    if not SHARE_AUTH_ENABLED:
+        return None, "admin", True
+    username = getattr(request.state, "share_user", None)
+    role = get_user_role(SHARE_AUTH_FILE, username) if username else None
+    role = role or "user"
+    return username, role, role == "admin"
+
+
 def _requires_admin(path: str, method: str) -> bool:
-    if path.startswith("/api/admin/") or path.startswith("/api/sharing/"):
+    if path.startswith("/api/admin/") or path.startswith("/api/sharing/") or path.startswith("/api/moderation/"):
         return True
     if path.startswith("/api/memory/"):
         return True
@@ -189,8 +209,6 @@ def _requires_admin(path: str, method: str) -> bool:
     if path.startswith("/api/loras/") and method != "GET":
         return True
     if path == "/api/loras/import":
-        return True
-    if path.startswith("/api/gallery/") and method == "DELETE":
         return True
     if path == "/api/moodboards/import":
         return True
@@ -378,11 +396,21 @@ async def sharing_funnel_stop():
 
 _jobs: dict[str, dict] = {}
 _JOBS_MAX = 200  # ponytail: simple FIFO cap; raise if clients poll very old jobs
+generation_queue: GenerationQueue | None = None
 
 
-def _new_job() -> str:
+def _new_job(username: str | None = None, role: str = "admin") -> str:
     jid = uuid.uuid4().hex
-    _jobs[jid] = {"status": "queued", "progress": 0, "images": [], "error": None, "seed": None}
+    _jobs[jid] = {
+        "status": "queued",
+        "progress": 0,
+        "images": [],
+        "error": None,
+        "seed": None,
+        "username": username,
+        "role": role,
+        "moderation_event_id": None,
+    }
     # Evict oldest finished jobs to bound memory (dicts keep insertion order).
     while len(_jobs) > _JOBS_MAX:
         oldest = next(iter(_jobs))
@@ -390,6 +418,41 @@ def _new_job() -> str:
             break
         del _jobs[oldest]
     return jid
+
+
+def _sync_queue_state_to_jobs() -> None:
+    if generation_queue is None:
+        return
+    for job_id, state in generation_queue.all_statuses().items():
+        job = _jobs.get(job_id)
+        if not job or job.get("status") in {"done", "error", "blocked", "cancelled"}:
+            continue
+        job.update({
+            "status": state.get("status", job.get("status")),
+            "queue_position": state.get("queue_position"),
+            "queue_length": state.get("queue_length"),
+            "active_job_id": state.get("active_job_id"),
+            "queued_at": state.get("queued_at"),
+            "started_at": state.get("started_at"),
+        })
+
+
+async def _broadcast_queue_state() -> None:
+    _sync_queue_state_to_jobs()
+    for job_id, job in list(_jobs.items()):
+        if job.get("status") == "queued":
+            await ws_manager.broadcast(job_id, {"type": "queue", **job})
+
+
+async def _queued_generation_handler(job_id: str, payload: dict) -> None:
+    await _broadcast_queue_state()
+    await _run_generation(
+        job_id,
+        payload["req"],
+        username=payload.get("username"),
+        role=payload.get("role", "user"),
+    )
+    await _broadcast_queue_state()
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +492,13 @@ realtime_previews = RealtimePreviewRegistry(max_jobs=64)
 
 @app.on_event("startup")
 async def startup():
+    global generation_queue
     await init_db()
+    await init_moderation_db()
     await init_moodboard_db()
+    if generation_queue is None:
+        generation_queue = GenerationQueue(_queued_generation_handler)
+        asyncio.create_task(generation_queue.run())
     logger.info("Krea 2 Studio ready on port 8200")
     if await should_sync_moodboards(mark=True):
         asyncio.create_task(_sync_krea_moodboards())
@@ -479,7 +547,7 @@ def _generation_busy() -> bool:
     The Qwen guidance pass loads its own LLM and competes for VRAM, so the
     background enricher only runs while the studio is idle.
     """
-    if any(j.get("status") in ("queued", "running") for j in _jobs.values()):
+    if generation_queue is not None and generation_queue.has_active_or_pending():
         return True
     return bool(getattr(pipeline, "_loading", False))
 
@@ -507,7 +575,7 @@ async def _moodboard_enrich_loop() -> None:
 # ---------------------------------------------------------------------------
 
 @app.post("/api/generate")
-async def generate(req: GenerationRequest):
+async def generate(req: GenerationRequest, request: Request):
     if req.use_prompt_planner:
         plan = plan_prompt(
             req.prompt,
@@ -534,9 +602,42 @@ async def generate(req: GenerationRequest):
             raise HTTPException(502, result.error)
         req.prompt = result.expanded
 
-    job_id = _new_job()
-    asyncio.create_task(_run_generation(job_id, req))
-    return {"job_id": job_id, "status": "queued"}
+    username, role, _is_admin = _request_user_role(request)
+    job_id = _new_job(username=username, role=role)
+
+    decision = moderate_prompt(req.prompt, req.negative_prompt, role=role)
+    if not decision.allowed:
+        event_id = await save_moderation_event(
+            username=username or "local",
+            role=role,
+            event_type=decision.event_type,
+            action="block_prompt",
+            prompt=req.prompt,
+            negative_prompt=req.negative_prompt,
+            mode=req.mode,
+            scores=decision.scores,
+            reason=decision.reason,
+            job_id=job_id,
+        )
+        job = _jobs[job_id]
+        job["status"] = "blocked"
+        job["error"] = "This prompt was blocked by the child safety filter and sent to an admin for review."
+        job["moderation_event_id"] = event_id
+        await ws_manager.broadcast(job_id, {"type": "blocked", "error": job["error"], "moderation_event_id": event_id})
+        return {"job_id": job_id, "status": "blocked", "moderation_event_id": event_id}
+
+    if generation_queue is None:
+        raise HTTPException(503, "Generation queue is not ready yet.")
+    queue_state = generation_queue.enqueue(job_id, {"req": req, "username": username, "role": role}, username=username, role=role)
+    _sync_queue_state_to_jobs()
+    job = _jobs[job_id]
+    await ws_manager.broadcast(job_id, {"type": "queue", **job})
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "queue_position": queue_state.get("queue_position"),
+        "queue_length": queue_state.get("queue_length"),
+    }
 
 
 def _fit_preview_dimensions(width: int, height: int, max_side: int = 512) -> tuple[int, int]:
@@ -546,6 +647,32 @@ def _fit_preview_dimensions(width: int, height: int, max_side: int = 512) -> tup
     w = max(64, int(width * scale))
     h = max(64, int(height * scale))
     return max(64, round(w / 16) * 16), max(64, round(h / 16) * 16)
+
+
+def _job_images_from_b64(results: list[str]) -> list[Image.Image]:
+    images: list[Image.Image] = []
+    for value in results:
+        payload = str(value or "")
+        if "," in payload:
+            payload = payload.split(",", 1)[1]
+        images.append(Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB"))
+    return images
+
+
+def _quarantine_output_files(filenames: list[str], job_id: str) -> str | None:
+    if not filenames:
+        return None
+    QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+    quarantined: str | None = None
+    for filename in filenames:
+        src = OUTPUTS_DIR / filename
+        if not src.exists():
+            continue
+        dst_name = f"{job_id}_{filename}"
+        dst = QUARANTINE_DIR / dst_name
+        src.replace(dst)
+        quarantined = quarantined or dst_name
+    return quarantined
 
 
 @app.post("/api/realtime/preview")
@@ -614,7 +741,7 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
         realtime_previews.fail(job_id, str(e))
 
 
-async def _run_generation(job_id: str, req: GenerationRequest):
+async def _run_generation(job_id: str, req: GenerationRequest, *, username: str | None = None, role: str = "user"):
     job = _jobs[job_id]
     job["status"] = "running"
     await ws_manager.broadcast(job_id, {"type": "status", "status": "running"})
@@ -659,6 +786,32 @@ async def _run_generation(job_id: str, req: GenerationRequest):
             results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
                 None, lambda: pipeline.generate(req, progress_cb=progress_cb)
             )
+        if role == "child":
+            image_decision = moderate_images(_job_images_from_b64(results), role=role)
+            if not image_decision.allowed:
+                quarantined = _quarantine_output_files(filenames, job_id)
+                event_id = await save_moderation_event(
+                    username=username or "local",
+                    role=role,
+                    event_type=image_decision.event_type,
+                    action="block_image",
+                    prompt=req.prompt,
+                    negative_prompt=req.negative_prompt,
+                    mode=req.mode,
+                    scores=image_decision.scores,
+                    reason=image_decision.reason,
+                    job_id=job_id,
+                    quarantined_filename=quarantined,
+                )
+                job["images"] = []
+                job["metadata"] = []
+                job["seed"] = seed
+                job["status"] = "blocked"
+                job["progress"] = 100
+                job["error"] = "That image was blocked by the child safety filter and sent to an admin for review."
+                job["moderation_event_id"] = event_id
+                await ws_manager.broadcast(job_id, {"type": "blocked", "error": job["error"], "moderation_event_id": event_id})
+                return
         job["images"] = results
         job["seed"] = seed
         job["metadata"] = metadata
@@ -685,6 +838,7 @@ async def _run_generation(job_id: str, req: GenerationRequest):
                     loras=[l.get("name", "") for l in req.loras],
                     mode=req.mode,
                     metadata=metadata[i] if i < len(metadata) else {},
+                    owner_username=username if SHARE_AUTH_ENABLED else None,
                 )
             except Exception:
                 logger.exception(f"Gallery save failed for {fname}")
@@ -746,6 +900,8 @@ def _load_model_error_detail(exc: Exception) -> str:
 
 @app.post("/api/load-model")
 async def load_model(req: LoadModelRequest):
+    if generation_queue is not None and generation_queue.has_active_or_pending():
+        raise HTTPException(409, "Generation queue is active. Wait for queued/running jobs before loading a model.")
     loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(
@@ -766,6 +922,8 @@ async def load_model(req: LoadModelRequest):
 
 @app.post("/api/unload-model")
 async def unload_model():
+    if generation_queue is not None and generation_queue.has_active_or_pending():
+        raise HTTPException(409, "Generation queue is active. Wait for queued/running jobs before unloading the model.")
     result = unload_pipeline(pipeline)
     return {"status": "unloaded", **result}
 
@@ -777,6 +935,8 @@ async def memory_release_transient():
 
 @app.post("/api/memory/unload-model")
 async def memory_unload_model():
+    if generation_queue is not None and generation_queue.has_active_or_pending():
+        raise HTTPException(409, "Generation queue is active. Wait for queued/running jobs before unloading the model.")
     result = unload_pipeline(pipeline)
     return {"status": "unloaded", **result}
 
@@ -801,22 +961,57 @@ async def memory_stop_process(req: MemoryStopProcessRequest):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/gallery")
-async def gallery(page: int = 1, page_size: int = 50, favorites: bool = False):
-    return await get_gallery(page, page_size, favorites)
+async def gallery(request: Request, page: int = 1, page_size: int = 50, favorites: bool = False):
+    username, _role, is_role_admin = _request_user_role(request)
+    return await get_gallery(page, page_size, favorites, owner_username=username, is_admin=is_role_admin)
 
 
 @app.put("/api/gallery/{gallery_id}/favorite")
-async def favorite(gallery_id: int, req: FavoriteRequest):
-    await set_favorite(gallery_id, req.favorite)
+async def favorite(gallery_id: int, req: FavoriteRequest, request: Request):
+    username, _role, is_role_admin = _request_user_role(request)
+    ok = await set_favorite(gallery_id, req.favorite, owner_username=username, is_admin=is_role_admin)
+    if not ok:
+        raise HTTPException(404, "Not found")
     return {"ok": True}
 
 
 @app.delete("/api/gallery/{gallery_id}")
-async def delete_gallery_item(gallery_id: int):
-    filename = await delete_image(gallery_id)
+async def delete_gallery_item(gallery_id: int, request: Request):
+    username, _role, is_role_admin = _request_user_role(request)
+    filename = await delete_image(gallery_id, owner_username=username, is_admin=is_role_admin)
     if filename is None:
         raise HTTPException(404, "Not found")
     return {"ok": True, "filename": filename}
+
+
+@app.get("/api/outputs/{filename}")
+async def output_file(filename: str, request: Request):
+    safe_name = Path(filename).name
+    row = await get_image_record_by_filename(safe_name)
+    if row is None:
+        raise HTTPException(404, "Not found")
+    username, _role, is_role_admin = _request_user_role(request)
+    owner = row.get("owner_username")
+    if not is_role_admin and owner != username:
+        raise HTTPException(404, "Not found")
+    path = OUTPUTS_DIR / safe_name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "Not found")
+    return FileResponse(path)
+
+
+@app.get("/api/moderation/events")
+async def moderation_events(username: str = "", limit: int = 100):
+    return await list_moderation_events(username=username or None, limit=limit)
+
+
+@app.get("/api/moderation/quarantine/{filename}")
+async def moderation_quarantine_file(filename: str):
+    safe_name = Path(filename).name
+    path = QUARANTINE_DIR / safe_name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "Not found")
+    return FileResponse(path)
 
 
 # ---------------------------------------------------------------------------

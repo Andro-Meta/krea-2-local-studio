@@ -16,6 +16,7 @@ SESSION_TTL_SECONDS = 12 * 60 * 60
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 TRUTHY = {"1", "true", "yes", "on"}
 FALSY = {"0", "false", "no", "off"}
+ROLES = {"admin", "user", "child"}
 
 
 def resolve_auth_enabled(config_value: str | None, *, has_users: bool) -> bool:
@@ -63,7 +64,8 @@ def _hash_password(password: str, salt_hex: str) -> str:
 
 
 def _normalize_role(role: str) -> str:
-    return "admin" if role == "admin" else "user"
+    normalized = str(role or "").strip().lower()
+    return normalized if normalized in ROLES else "user"
 
 
 def is_valid_username(username: str) -> bool:

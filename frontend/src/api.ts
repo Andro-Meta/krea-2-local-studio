@@ -234,6 +234,7 @@ export interface GalleryItem {
   favorite: boolean
   thumbnail_b64?: string
   metadata?: Record<string, any>
+  owner_username?: string | null
 }
 
 export interface LoraInfo {
@@ -278,12 +279,12 @@ export interface AuthSession {
   authenticated: boolean
   share_auth: boolean
   username?: string | null
-  role?: 'admin' | 'user' | null
+  role?: 'admin' | 'user' | 'child' | null
 }
 
 export interface ShareUser {
   username: string
-  role: 'admin' | 'user'
+  role: 'admin' | 'user' | 'child'
 }
 
 export interface SharingStatus {
@@ -332,12 +333,29 @@ export interface QualityAsset {
   setup_url: string
 }
 
+export interface ModerationEvent {
+  id: number
+  created_at: string
+  username: string
+  role: 'admin' | 'user' | 'child'
+  event_type: string
+  action: string
+  prompt: string
+  negative_prompt: string
+  mode: string
+  scores: Record<string, any>
+  reason: string
+  job_id: string
+  gallery_id?: number | null
+  quarantined_filename?: string | null
+}
+
 export const apiFetch = {
   generate: (req: GenerationRequest) =>
-    api.post<{ job_id: string; status: string }>('/api/generate', req).then(r => r.data),
+    api.post<{ job_id: string; status: string; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number }>('/api/generate', req).then(r => r.data),
 
   jobStatus: (jobId: string) =>
-    api.get<{ job_id: string; status: string; progress: number; images: string[]; error?: string; seed?: number; metadata?: Record<string, any>[] }>(`/api/generate/${jobId}`).then(r => r.data),
+    api.get<{ job_id: string; status: string; progress: number; images: string[]; error?: string; seed?: number; metadata?: Record<string, any>[]; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number }>(`/api/generate/${jobId}`).then(r => r.data),
 
   realtimePreview: (req: RealtimePreviewRequest) =>
     api.post<RealtimePreviewJob>('/api/realtime/preview', req, { timeout: 120000 }).then(r => r.data),
@@ -522,14 +540,17 @@ export const apiFetch = {
   logout: () => api.post('/api/auth/logout').then(r => r.data),
 
   listUsers: () => api.get<{ users: ShareUser[] }>('/api/admin/users').then(r => r.data.users),
-  addUser: (username: string, password: string, role: 'admin' | 'user') =>
+  addUser: (username: string, password: string, role: 'admin' | 'user' | 'child') =>
     api.post<{ users: ShareUser[] }>('/api/admin/users', { username, password, role }).then(r => r.data.users),
-  setUserRole: (username: string, role: 'admin' | 'user') =>
+  setUserRole: (username: string, role: 'admin' | 'user' | 'child') =>
     api.put<{ users: ShareUser[] }>(`/api/admin/users/${encodeURIComponent(username)}/role`, { role }).then(r => r.data.users),
   resetUserPassword: (username: string, password: string) =>
     api.put(`/api/admin/users/${encodeURIComponent(username)}/password`, { password }).then(r => r.data),
   removeUser: (username: string) =>
     api.delete<{ users: ShareUser[] }>(`/api/admin/users/${encodeURIComponent(username)}`).then(r => r.data.users),
+
+  moderationEvents: (username = '', limit = 100) =>
+    api.get<{ items: ModerationEvent[]; total: number }>('/api/moderation/events', { params: { username, limit } }).then(r => r.data),
 
   sharingStatus: () => api.get<SharingStatus>('/api/sharing/status').then(r => r.data),
   tailscaleUp: () => api.post('/api/sharing/tailscale-up').then(r => r.data),

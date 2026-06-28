@@ -37,8 +37,13 @@ async def init_db() -> None:
         names = {row[1] for row in columns}
         if "metadata_json" not in names:
             await db.execute("ALTER TABLE gallery ADD COLUMN metadata_json TEXT DEFAULT '{}'")
+        if "owner_username" not in names:
+            await db.execute("ALTER TABLE gallery ADD COLUMN owner_username TEXT DEFAULT NULL")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_gallery_created ON gallery(created_at DESC)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gallery_owner_created ON gallery(owner_username, created_at DESC)"
         )
         await db.commit()
 
@@ -56,16 +61,20 @@ async def save_image(
     loras: list | None = None,
     mode: str = "txt2img",
     metadata: dict | None = None,
+    owner_username: str | None = None,
 ) -> int:
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    metadata_payload = dict(metadata or {})
+    if owner_username:
+        metadata_payload["owner_username"] = owner_username
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
             """INSERT INTO gallery
                (filename, prompt, negative_prompt, checkpoint, steps, cfg,
-                width, height, seed, loras, mode, metadata_json, favorite, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                width, height, seed, loras, mode, metadata_json, owner_username, favorite, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
             (filename, prompt, negative_prompt, checkpoint, steps, cfg,
-             width, height, seed, json.dumps(loras or []), mode, json.dumps(metadata or {}), created_at),
+             width, height, seed, json.dumps(loras or []), mode, json.dumps(metadata_payload), owner_username, created_at),
         )
         await db.commit()
         return cursor.lastrowid
@@ -87,17 +96,26 @@ async def get_gallery(
     page: int = 1,
     page_size: int = 50,
     favorites_only: bool = False,
+    owner_username: str | None = None,
+    is_admin: bool = True,
 ) -> dict:
     offset = (page - 1) * page_size
-    where = "WHERE favorite = 1" if favorites_only else ""
+    clauses: list[str] = []
+    params: list[object] = []
+    if favorites_only:
+        clauses.append("favorite = 1")
+    if not is_admin:
+        clauses.append("owner_username = ?")
+        params.append(owner_username or "")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
-        total_row = await (await db.execute(f"SELECT COUNT(*) FROM gallery {where}")).fetchone()
+        total_row = await (await db.execute(f"SELECT COUNT(*) FROM gallery {where}", params)).fetchone()
         total = total_row[0]
         rows = await (
             await db.execute(
                 f"SELECT * FROM gallery {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (page_size, offset),
+                (*params, page_size, offset),
             )
         ).fetchall()
         items = []
@@ -114,20 +132,42 @@ async def get_gallery(
     return {"items": items, "total": total}
 
 
-async def set_favorite(gallery_id: int, favorite: bool) -> None:
+async def set_favorite(
+    gallery_id: int,
+    favorite: bool,
+    *,
+    owner_username: str | None = None,
+    is_admin: bool = False,
+) -> bool:
     async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "UPDATE gallery SET favorite = ? WHERE id = ?", (int(favorite), gallery_id)
-        )
+        if is_admin:
+            cur = await db.execute("UPDATE gallery SET favorite = ? WHERE id = ?", (int(favorite), gallery_id))
+        else:
+            cur = await db.execute(
+                "UPDATE gallery SET favorite = ? WHERE id = ? AND owner_username = ?",
+                (int(favorite), gallery_id, owner_username or ""),
+            )
         await db.commit()
+        return cur.rowcount > 0
 
 
-async def delete_image(gallery_id: int) -> Optional[str]:
+async def delete_image(
+    gallery_id: int,
+    *,
+    owner_username: str | None = None,
+    is_admin: bool = False,
+) -> Optional[str]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
-        row = await (
-            await db.execute("SELECT filename FROM gallery WHERE id = ?", (gallery_id,))
-        ).fetchone()
+        if is_admin:
+            row = await (await db.execute("SELECT filename FROM gallery WHERE id = ?", (gallery_id,))).fetchone()
+        else:
+            row = await (
+                await db.execute(
+                    "SELECT filename FROM gallery WHERE id = ? AND owner_username = ?",
+                    (gallery_id, owner_username or ""),
+                )
+            ).fetchone()
         if not row:
             return None
         filename = row["filename"]
@@ -136,3 +176,12 @@ async def delete_image(gallery_id: int) -> Optional[str]:
     img_path = OUTPUTS_DIR / filename
     img_path.unlink(missing_ok=True)
     return filename
+
+
+async def get_image_record_by_filename(filename: str) -> dict | None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (
+            await db.execute("SELECT id, filename, owner_username FROM gallery WHERE filename = ?", (filename,))
+        ).fetchone()
+    return dict(row) if row else None

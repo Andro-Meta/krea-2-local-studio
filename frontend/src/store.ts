@@ -128,6 +128,7 @@ export interface LightboxItem {
   prompt?: string
   favorite?: boolean
   metadata?: Record<string, any>
+  owner_username?: string | null
 }
 
 export interface LightboxState {
@@ -307,6 +308,8 @@ interface AppState {
   generating: boolean
   jobId: string | null
   progress: number
+  queuePosition: number | null
+  queueLength: number | null
   results: string[]
   resultsMetadata: Array<Record<string, any>>
   lastSeed: number | null
@@ -314,6 +317,7 @@ interface AppState {
   setGenerating: (v: boolean) => void
   setJobId: (id: string | null) => void
   setProgress: (n: number) => void
+  setQueue: (position: number | null, length: number | null) => void
   setResults: (imgs: string[], seed?: number, metadata?: Array<Record<string, any>>) => void
   setError: (e: string | null) => void
 
@@ -355,6 +359,8 @@ export const useStore = create<AppState>((set, get) => ({
   generating: false,
   jobId: null,
   progress: 0,
+  queuePosition: null,
+  queueLength: null,
   results: [],
   resultsMetadata: [],
   lastSeed: null,
@@ -362,6 +368,7 @@ export const useStore = create<AppState>((set, get) => ({
   setGenerating: (v) => set({ generating: v }),
   setJobId: (id) => set({ jobId: id }),
   setProgress: (n) => set({ progress: n }),
+  setQueue: (position, length) => set({ queuePosition: position, queueLength: length }),
   setResults: (imgs, seed, metadata) => set({ results: imgs, lastSeed: seed ?? null, resultsMetadata: metadata ?? [] }),
   setError: (e) => set({ generationError: e }),
 

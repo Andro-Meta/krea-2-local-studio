@@ -12,7 +12,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import ImageSearchIcon from '@mui/icons-material/ImageSearch'
 import BrushIcon from '@mui/icons-material/Brush'
 import OpenInFullIcon from '@mui/icons-material/OpenInFull'
-import { apiFetch } from '../../api'
+import { apiFetch, type AuthSession } from '../../api'
 import { useStore } from '../../store'
 import { downloadImage, srcToBase64 } from '../../lib/imageActions'
 import { metadataToGenerateParams, type ImportTargetMode } from '../../lib/galleryMetadataImport'
@@ -70,6 +70,7 @@ export default function Lightbox() {
   const [offset, setOffset] = useState<Point>({ x: 0, y: 0 })
   const [toast, setToast] = useState<{ text: string; severity: 'success' | 'info' | 'warning' | 'error' } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [auth, setAuth] = useState<AuthSession | null>(null)
   const pointers = useRef(new Map<number, Point>())
   const lastPan = useRef<Point | null>(null)
   const lastPinchDistance = useRef<number | null>(null)
@@ -82,6 +83,10 @@ export default function Lightbox() {
     setScale(1)
     setOffset({ x: 0, y: 0 })
   }, [item?.src])
+
+  useEffect(() => {
+    apiFetch.authMe().then(setAuth).catch(() => setAuth(null))
+  }, [])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -242,6 +247,7 @@ export default function Lightbox() {
   const actionSx = { bgcolor: 'rgba(0,0,0,0.55)', minWidth: 44, minHeight: 44, zIndex: 3 }
   const stopControlPointer = (e: React.PointerEvent) => e.stopPropagation()
   const rows = metadataRows(item.metadata)
+  const canDelete = auth?.role === 'admin' || (!!auth?.username && item.owner_username === auth.username)
 
   return (
     <Modal open onClose={closeLightbox}>
@@ -373,7 +379,7 @@ export default function Lightbox() {
               <DownloadIcon />
             </IconButton>
           </Tooltip>
-          {item.id && (
+          {item.id && canDelete && (
             <Tooltip title="Delete">
               <IconButton sx={{ ...actionSx, color: 'error.light' }} onClick={deleteCurrent}>
                 <DeleteIcon />

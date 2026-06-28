@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
 import GpuIcon from '@mui/icons-material/Memory'
-import { apiFetch, type AppSettings, type AuthSession, type KreaServerProcess, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
+import { apiFetch, publicUrl, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
 import { useStore } from '../../store'
 
 function GBBar({ label, used, total }: { label: string; used?: number; total?: number }) {
@@ -54,10 +54,12 @@ export default function SystemStatus() {
   const [sharingMessage, setSharingMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
   const [sharingAutoSaving, setSharingAutoSaving] = useState(false)
   const [userMessage, setUserMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
-  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'admin' | 'user' })
+  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'admin' | 'user' | 'child' })
   const [qualityAssets, setQualityAssets] = useState<{ has_hf_token: boolean; items: QualityAsset[] } | null>(null)
   const [qualityBusy, setQualityBusy] = useState<string | null>(null)
   const [qualityMessage, setQualityMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
+  const [moderationEvents, setModerationEvents] = useState<ModerationEvent[]>([])
+  const [moderationBusy, setModerationBusy] = useState(false)
   const [memoryBusy, setMemoryBusy] = useState<string | null>(null)
   const [memoryMessage, setMemoryMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
   const [kreaProcesses, setKreaProcesses] = useState<KreaServerProcess[]>([])
@@ -136,6 +138,18 @@ export default function SystemStatus() {
     }
   }
 
+  const loadModerationEvents = async () => {
+    setModerationBusy(true)
+    try {
+      const data = await apiFetch.moderationEvents('', 100)
+      setModerationEvents(data.items)
+    } catch {
+      setModerationEvents([])
+    } finally {
+      setModerationBusy(false)
+    }
+  }
+
   useEffect(() => {
     loadAuth().then(session => {
       if (session?.role === 'admin') {
@@ -143,6 +157,7 @@ export default function SystemStatus() {
         loadUsers()
         loadSharing()
         loadQualityAssets()
+        loadModerationEvents()
       }
     })
   }, [])
@@ -298,7 +313,7 @@ export default function SystemStatus() {
     }
   }
 
-  const changeUserRole = async (username: string, role: 'admin' | 'user') => {
+  const changeUserRole = async (username: string, role: 'admin' | 'user' | 'child') => {
     setUsers(await apiFetch.setUserRole(username, role))
   }
 
@@ -864,14 +879,14 @@ export default function SystemStatus() {
           <Stack spacing={1.5}>
             <Typography variant="h6">Users</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Admins can manage sharing, settings, models, and passwords. Users can generate and use the gallery.
+              Admins can manage sharing, settings, models, passwords, safety review, and all galleries. Users can generate normally. Child accounts generate with safety moderation and a private gallery.
             </Typography>
             <Stack spacing={1}>
               {users.map(user => (
                 <Stack key={user.username} direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1}>
                   <Typography variant="body2">{user.username}</Typography>
                   <Stack direction="row" spacing={1}>
-                    {(['user', 'admin'] as const).map(role => (
+                    {(['child', 'user', 'admin'] as const).map(role => (
                       <Chip
                         key={role}
                         size="small"
@@ -895,7 +910,8 @@ export default function SystemStatus() {
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
               <TextField label="Username" size="small" value={newUser.username} onChange={e => setNewUser(u => ({ ...u, username: e.target.value }))} />
               <TextField label="Password" size="small" type="password" value={newUser.password} onChange={e => setNewUser(u => ({ ...u, password: e.target.value }))} />
-              <TextField select SelectProps={{ native: true }} label="Role" size="small" value={newUser.role} onChange={e => setNewUser(u => ({ ...u, role: e.target.value as 'admin' | 'user' }))} sx={{ minWidth: 120 }}>
+              <TextField select SelectProps={{ native: true }} label="Role" size="small" value={newUser.role} onChange={e => setNewUser(u => ({ ...u, role: e.target.value as 'admin' | 'user' | 'child' }))} sx={{ minWidth: 120 }}>
+                <option value="child">child</option>
                 <option value="user">user</option>
                 <option value="admin">admin</option>
               </TextField>
@@ -904,6 +920,58 @@ export default function SystemStatus() {
               </Button>
             </Stack>
             {userMessage && <Alert severity={userMessage.severity} sx={{ py: 0 }}>{userMessage.text}</Alert>}
+          </Stack>
+        </Paper>}
+
+        {isAdmin && <Paper sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="h6">Child Safety Review</Typography>
+              <Button size="small" variant="outlined" onClick={loadModerationEvents} disabled={moderationBusy}>
+                {moderationBusy ? 'Refreshing…' : 'Refresh'}
+              </Button>
+            </Stack>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              Child prompt/image blocks are recorded here for admin review. Quarantined images are admin-only and never shown in a child gallery.
+            </Typography>
+            {moderationEvents.length === 0 ? (
+              <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                No moderation events yet.
+              </Typography>
+            ) : (
+              <Stack spacing={1}>
+                {moderationEvents.slice(0, 12).map(event => (
+                  <Box key={event.id} sx={{ p: 1, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 2 }}>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1}>
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          {event.username} · {event.action.replace(/_/g, ' ')} · {event.mode || event.event_type}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                          {event.created_at} · {event.reason || 'No reason recorded'}
+                        </Typography>
+                        {event.prompt && (
+                          <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5, wordBreak: 'break-word' }}>
+                            Prompt: {event.prompt.slice(0, 240)}
+                          </Typography>
+                        )}
+                      </Box>
+                      {event.quarantined_filename && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          href={publicUrl(`/api/moderation/quarantine/${encodeURIComponent(event.quarantined_filename)}`)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          View quarantine
+                        </Button>
+                      )}
+                    </Stack>
+                  </Box>
+                ))}
+              </Stack>
+            )}
           </Stack>
         </Paper>}
 

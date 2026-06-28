@@ -18,8 +18,9 @@ import ResultsView from './ResultsView'
 
 export default function GeneratePanel() {
   const { params, generating, progress, results, resultsMetadata, lastSeed, generationError,
+          queuePosition, queueLength,
           setGenerating, setJobId, setProgress, setResults, setError,
-          modelLoaded, setModelLoaded, setTab } = useStore()
+          setQueue, modelLoaded, setModelLoaded, setTab } = useStore()
   const inRedrawStudio = params.mode !== 'txt2img'
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -42,9 +43,10 @@ export default function GeneratePanel() {
     setError(null)
     setGenerating(true)
     setProgress(0)
+    setQueue(null, null)
     setResults([])
     try {
-      const { job_id } = await apiFetch.generate({
+      const { job_id, status, queue_position, queue_length } = await apiFetch.generate({
         prompt: params.prompt,
         negative_prompt: params.negative_prompt,
         mode: params.mode,
@@ -129,13 +131,26 @@ export default function GeneratePanel() {
         seed_variance_injection_end: params.seed_variance_injection_end,
       })
       setJobId(job_id)
+      setQueue(queue_position ?? null, queue_length ?? null)
+      if (status === 'blocked') {
+        setGenerating(false)
+        setError('This prompt was blocked by the child safety filter and sent to an admin for review.')
+        return
+      }
 
       wsRef.current = connectWS(job_id, (data: any) => {
+        if (data.type === 'init' || data.type === 'queue') {
+          setQueue(data.queue_position ?? null, data.queue_length ?? null)
+        }
+        if (data.type === 'status' && data.status === 'running') {
+          setQueue(null, data.queue_length ?? null)
+        }
         if (data.type === 'progress') setProgress(data.pct ?? 0)
         if (data.type === 'done') {
           setResults(data.images ?? [], data.seed, data.metadata ?? [])
           setGenerating(false)
           setProgress(100)
+          setQueue(null, null)
           const warns = data.lora_warnings ?? []
           if (warns.length) {
             setError('LoRA not applied — ' + warns
@@ -147,13 +162,20 @@ export default function GeneratePanel() {
         if (data.type === 'error') {
           setError(data.error ?? 'Unknown error')
           setGenerating(false)
+          setQueue(null, null)
+        }
+        if (data.type === 'blocked') {
+          setError(data.error ?? 'Blocked by child safety filter.')
+          setGenerating(false)
+          setQueue(null, null)
         }
       })
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? e.message ?? 'Request failed')
       setGenerating(false)
+      setQueue(null, null)
     }
-  }, [params, generating])
+  }, [params, generating, setQueue])
 
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 900, mx: 'auto' }}>
@@ -194,7 +216,7 @@ export default function GeneratePanel() {
           <Box>
             <LinearProgress variant="determinate" value={progress} />
             <Typography variant="caption" sx={{ color: 'text.secondary', mt: 0.5, display: 'block' }}>
-              {progress}% complete
+              {queuePosition ? `Queued — position ${queuePosition}${queueLength ? ` of ${queueLength}` : ''}` : `${progress}% complete`}
             </Typography>
           </Box>
         )}
