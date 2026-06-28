@@ -311,6 +311,7 @@ export interface AppSettings {
   openrouter_model: string
   openrouter_free_only: boolean
   krea_share_auto_funnel: boolean
+  krea2_vae_path: string
   has_hf_token: boolean
   has_civitai_token: boolean
   has_ideogram_api_key: boolean

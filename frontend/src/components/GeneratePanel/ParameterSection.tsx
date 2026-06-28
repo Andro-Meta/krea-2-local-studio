@@ -142,7 +142,7 @@ export default function ParameterSection() {
           helperText={isTurbo ? 'Turbo: keep at 0 (guidance built-in)' : 'RAW default: 3.5'}
         />
 
-        {(params.mode === 'inpaint' || params.mode === 'outpaint') && (
+        {params.mode !== 'txt2img' && (
           <LabeledSlider
             label="Denoise strength"
             value={params.denoise}
@@ -183,27 +183,41 @@ export default function ParameterSection() {
           </Grid>
         </Grid>
 
-        <Box>
-          <FormControlLabel
-            control={<Switch checked={params.refine} onChange={e => setParam('refine', e.target.checked)} size="small" />}
-            label={
-              <Typography variant="body2" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
-                Detail refine pass
-                <InfoTip text="Runs a second low-denoise Krea-2 pass over the result to sharpen fine detail. Adds roughly one extra generation of time. (Krea-2 self-refine — not a separate refiner model.)" />
-              </Typography>
-            }
-          />
-          {params.refine && (
-            <LabeledSlider
-              label="Refine denoise"
-              value={params.refine_denoise}
-              min={0.1} max={0.6} step={0.05}
-              onChange={v => setParam('refine_denoise', v)}
-              tip="How much the refine pass may change the image. 0.3 = balanced detail; lower = subtler."
-              helperText="0.3 = balanced · 0.1–0.2 = subtle sharpen · 0.5+ = stronger rework"
+        {/* Detail refine runs a second self-pass; the backend skips it for
+            inpaint/outpaint (must not re-touch kept pixels), so hide it there. */}
+        {params.mode !== 'inpaint' && params.mode !== 'outpaint' && (
+          <Box>
+            <FormControlLabel
+              control={<Switch checked={params.refine} onChange={e => setParam('refine', e.target.checked)} size="small" />}
+              label={
+                <Typography variant="body2" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
+                  Detail refine pass
+                  <InfoTip text="Runs a second low-denoise Krea-2 pass over the result to sharpen fine detail. Adds roughly one extra generation of time. (Krea-2 self-refine — not a separate refiner model.)" />
+                </Typography>
+              }
             />
-          )}
-        </Box>
+            {params.refine && (
+              <>
+                <LabeledSlider
+                  label="Refine denoise"
+                  value={params.refine_denoise}
+                  min={0.1} max={0.6} step={0.05}
+                  onChange={v => setParam('refine_denoise', v)}
+                  tip="How much the refine pass may change the image. 0.3 = balanced detail; lower = subtler."
+                  helperText="0.3 = balanced · 0.1–0.2 = subtle sharpen · 0.5+ = stronger rework"
+                />
+                <LabeledSlider
+                  label="Refine steps"
+                  value={params.refine_steps}
+                  min={2} max={20} step={1}
+                  onChange={v => setParam('refine_steps', v)}
+                  tip="Number of sampling steps for the refine pass. More = slower but finer."
+                  helperText="6 = balanced · fewer = faster"
+                />
+              </>
+            )}
+          </Box>
+        )}
 
         <Accordion expanded={advOpen} onChange={(_, v) => setAdvOpen(v)} disableGutters>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -249,11 +263,11 @@ export default function ParameterSection() {
                 }}
                 size="small"
                 fullWidth
-                helperText={currentSampler?.note || 'Sampler integrator. Standard-diffusion-only samplers are guarded until a non-Krea backend is available.'}
+                helperText={currentSampler?.note || 'Flow-matching samplers for the Krea profiles.'}
               >
-                {(catalog?.samplers ?? []).map(s => (
-                  <MenuItem key={s.id} value={s.id} disabled={s.disabled}>
-                    {s.label}{s.disabled ? '' : ` (${s.recommended_steps} steps)`}
+                {(catalog?.samplers ?? []).filter(s => !s.disabled).map(s => (
+                  <MenuItem key={s.id} value={s.id}>
+                    {s.label} ({s.recommended_steps} steps)
                   </MenuItem>
                 ))}
                 {!catalog && <MenuItem value="euler">Euler / Simple (Krea default)</MenuItem>}
@@ -393,28 +407,38 @@ export default function ParameterSection() {
                   </TextField>
                 </>
               )}
-              <LabeledSlider
-                label="μ — flow shift (ModelSamplingFlux)"
-                value={params.mu ?? 0}
-                min={0} max={2.0} step={0.05}
-                onChange={v => setParam('mu', v <= 0 ? null : v)}
-                tip="ModelSamplingFlux shift: shifts timestep density toward high-noise steps. Higher = better for large images (>1024px). Turbo default 1.15. Set 0 to auto-calculate from resolution."
-                helperText="0 = auto · Turbo: 1.15 · higher = better for large images"
-              />
-              <LabeledSlider
-                label="y1 (schedule lower bound)"
-                value={params.y1}
-                min={0.1} max={1.0} step={0.05}
-                onChange={v => setParam('y1', v)}
-                tip="Lower bound of the logit-normal timestep schedule. Lower = more denoising passes at fine detail. Default: 0.5"
-              />
-              <LabeledSlider
-                label="y2 (schedule upper bound)"
-                value={params.y2}
-                min={1.0} max={2.0} step={0.05}
-                onChange={v => setParam('y2', v)}
-                tip="Upper bound of the logit-normal timestep schedule. Higher = more passes at coarse structure. Default: 1.15"
-              />
+              {/* μ/y1/y2 only matter when μ is auto-derived from resolution
+                  (RAW). Turbo pins μ=1.15, so these are hidden there. */}
+              {isTurbo ? (
+                <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                  μ flow-shift is pinned to 1.15 for Turbo (frozen at 1024). Switch to RAW to tune μ / y1 / y2.
+                </Typography>
+              ) : (
+                <>
+                  <LabeledSlider
+                    label="μ — flow shift (ModelSamplingFlux)"
+                    value={params.mu ?? 0}
+                    min={0} max={2.0} step={0.05}
+                    onChange={v => setParam('mu', v <= 0 ? null : v)}
+                    tip="ModelSamplingFlux shift: shifts timestep density toward high-noise steps. Higher = better for large images (>1024px). Set 0 to auto-calculate from resolution."
+                    helperText="0 = auto (resolution-adaptive) · higher = better for large images"
+                  />
+                  <LabeledSlider
+                    label="y1 (schedule lower bound)"
+                    value={params.y1}
+                    min={0.1} max={1.0} step={0.05}
+                    onChange={v => setParam('y1', v)}
+                    tip="Lower bound of the auto-μ interpolation. Only used when μ = 0 (auto). Default: 0.5"
+                  />
+                  <LabeledSlider
+                    label="y2 (schedule upper bound)"
+                    value={params.y2}
+                    min={1.0} max={2.0} step={0.05}
+                    onChange={v => setParam('y2', v)}
+                    tip="Upper bound of the auto-μ interpolation. Only used when μ = 0 (auto). Default: 1.15"
+                  />
+                </>
+              )}
               <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', mt: 0.5 }}>
                 Conditioning Rebalance
                 <InfoTip text="Artifact-safe presets rebalance the 12 Qwen3-VL encoder layer taps while preserving overall conditioning magnitude. Legacy keeps the old multiply behavior for reproducible comparisons." />

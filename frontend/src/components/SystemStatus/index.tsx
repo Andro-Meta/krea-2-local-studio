@@ -28,6 +28,8 @@ export default function SystemStatus() {
   const [quant, setQuant] = useState('fp8')
   const [blocksToSwap, setBlocksToSwap] = useState(0)
   const [fp8FastMatmul, setFp8FastMatmul] = useState(false)
+  const [vaePath, setVaePath] = useState('')
+  const [vaeSaving, setVaeSaving] = useState(false)
   const [pathTouched, setPathTouched] = useState(false)
   const [loadingModel, setLoadingModel] = useState(false)
   const [loadError, setLoadError] = useState('')
@@ -95,6 +97,7 @@ export default function SystemStatus() {
     try {
       const s = await apiFetch.settings()
       setSettings(s)
+      setVaePath(s.krea2_vae_path ?? '')
       setSettingsDraft({
         prompt_expander_backend: s.prompt_expander_backend,
         ideogram_api_key: '',
@@ -547,6 +550,35 @@ export default function SystemStatus() {
                   </Typography>
                 }
               />
+              <Stack direction="row" spacing={1} alignItems="flex-start">
+                <TextField
+                  label="VAE override (optional)"
+                  value={vaePath}
+                  onChange={e => setVaePath(e.target.value)}
+                  size="small"
+                  fullWidth
+                  disabled={!isAdmin}
+                  placeholder="models\krea2\vae\qwen_image_hdr_vae.safetensors"
+                  helperText="Swap the decoder VAE (e.g. HDR/clear). Empty = stock Qwen VAE. Applies on the next model load."
+                />
+                <Button
+                  variant="outlined" size="small" sx={{ mt: 0.5 }}
+                  disabled={!isAdmin || vaeSaving}
+                  onClick={async () => {
+                    setVaeSaving(true)
+                    try {
+                      await apiFetch.updateSettings({ krea2_vae_path: vaePath })
+                      setSettingsMessage({ severity: 'success', text: 'VAE override saved. Reload the model to apply.' })
+                    } catch (e: any) {
+                      setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? 'Could not save VAE path.' })
+                    } finally {
+                      setVaeSaving(false)
+                    }
+                  }}
+                >
+                  Save
+                </Button>
+              </Stack>
               {loadError && <Alert severity="error" sx={{ py: 0 }}>{loadError}</Alert>}
               <Button
                 variant="contained" size="small" onClick={loadModel}
