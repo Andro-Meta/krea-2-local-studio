@@ -126,6 +126,7 @@ class QwenAutoencoder(nn.Module):
                 try:
                     torch.cuda.empty_cache()
                 except Exception:
+                    # Best-effort reclaim before the tiled retry; ignore if it fails.
                     pass
             self._set_tiling(True)
             out = self.ae.decode(x).sample
