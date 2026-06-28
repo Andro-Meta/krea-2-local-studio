@@ -153,13 +153,13 @@ export default function SystemStatus() {
     }
   }
 
-  const installNudeNet = async () => {
+  const installImageClassifier = async () => {
     setModerationInstallBusy(true)
     try {
-      await apiFetch.installNudeNet()
+      await apiFetch.installImageClassifier()
       setModerationStatus(await apiFetch.moderationStatus())
     } catch (e: any) {
-      setModerationStatus({ nudenet_available: false, child_image_moderation: 'install_failed', message: e?.response?.data?.detail ?? e.message ?? 'NudeNet install failed.' })
+      setModerationStatus({ image_classifier_available: false, child_image_moderation: 'install_failed', message: e?.response?.data?.detail ?? e.message ?? 'Image classifier setup failed.' })
     } finally {
       setModerationInstallBusy(false)
     }
@@ -950,19 +950,19 @@ export default function SystemStatus() {
               Child prompt/image blocks are recorded here for admin review. Quarantined images are admin-only and never shown in a child gallery.
             </Typography>
             {moderationStatus && (
-              <Alert severity={moderationStatus.nudenet_available ? 'success' : 'warning'} sx={{ py: 0 }}>
+              <Alert severity={moderationStatus.image_classifier_available ? 'success' : 'warning'} sx={{ py: 0 }}>
                 {moderationStatus.message}
               </Alert>
             )}
-            {!moderationStatus?.nudenet_available && (
+            {!moderationStatus?.image_classifier_available && (
               <Button
                 size="small"
                 variant="outlined"
-                onClick={installNudeNet}
+                onClick={installImageClassifier}
                 disabled={moderationInstallBusy}
                 sx={{ alignSelf: 'flex-start' }}
               >
-                {moderationInstallBusy ? 'Installing NudeNet…' : 'Install NudeNet for child image checks'}
+                {moderationInstallBusy ? 'Setting up classifier…' : 'Set up child image classifier'}
               </Button>
             )}
             {moderationEvents.length === 0 ? (

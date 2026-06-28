@@ -102,40 +102,33 @@ def moderate_prompt(prompt: str, negative_prompt: str = "", *, role: str = "user
     return ModerationDecision(action="allow", event_type="prompt", scores={"policy_score": 0.0})
 
 
-EXPLICIT_NUDENET_LABELS = {
-    "FEMALE_GENITALIA_EXPOSED",
-    "MALE_GENITALIA_EXPOSED",
-    "ANUS_EXPOSED",
-    "BUTTOCKS_EXPOSED",
-    "FEMALE_BREAST_EXPOSED",
-}
-PARTIAL_NUDENET_LABELS = {
-    "FEMALE_BREAST_COVERED",
-    "BUTTOCKS_COVERED",
-}
+NSFW_IMAGE_MODEL = "Falconsai/nsfw_image_detection"
 
 
-class NudeNetProvider:
-    """Optional local NudeNet v3 provider.
+class TransformersNSFWImageProvider:
+    """Lazy local image-classification provider for child image moderation.
 
-    The dependency is intentionally optional so Krea still runs if the package is
-    not installed. Admins can install `nudenet` later for stronger image checks.
+    Uses the existing Transformers stack. The model is loaded
+    only when a child image check is requested, and the pipeline is CPU-bound by
+    default so it does not compete for VRAM with Krea generation.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, model_name: str = NSFW_IMAGE_MODEL) -> None:
         try:
-            from nudenet import NudeDetector  # type: ignore
-        except Exception as exc:  # pragma: no cover - dependency optional
-            raise RuntimeError("NudeNet is not installed") from exc
-        self.detector = NudeDetector()
+            from transformers import pipeline
+        except Exception as exc:  # pragma: no cover - dependency optional in light CI
+            raise RuntimeError("Transformers image classifier is not available") from exc
+        self.model_name = model_name
+        self.classifier = pipeline("image-classification", model=model_name, device=-1)
 
-    def detect(self, image: Image.Image) -> list[dict[str, Any]]:
-        return list(self.detector.detect(image.convert("RGB")))
+    def classify(self, image: Image.Image) -> list[dict[str, Any]]:
+        result = self.classifier(image.convert("RGB"))
+        return list(result if isinstance(result, list) else [result])
 
 
-def nudenet_available() -> bool:
+def image_classifier_available() -> bool:
     try:
-        from nudenet import NudeDetector  # type: ignore  # noqa: F401
+        from transformers import pipeline  # noqa: F401
     except Exception:
         return False
     return True
@@ -146,51 +139,48 @@ def moderate_image(
     *,
     role: str = "user",
     provider: Any | None = None,
-    explicit_threshold: float = 0.55,
-    partial_threshold: float = 0.75,
+    nsfw_threshold: float = 0.72,
 ) -> ModerationDecision:
     if str(role or "").lower() != "child":
         return ModerationDecision(action="allow", event_type="image")
     if provider is None:
         try:
-            provider = NudeNetProvider()
+            provider = TransformersNSFWImageProvider()
         except RuntimeError:
             return ModerationDecision(
                 action="block",
                 event_type="image",
-                reason="image moderation provider unavailable; child output requires local NudeNet review",
+                reason="image moderation provider unavailable; child output requires local image classifier review",
                 scores={"provider_available": 0.0},
             )
 
-    detections = provider.detect(image)
+    predictions = provider.classify(image)
+    nsfw_score = 0.0
+    safe_score = 0.0
     labels: list[str] = []
-    max_explicit = 0.0
-    max_partial = 0.0
-    for det in detections:
-        label = str(det.get("class", ""))
-        score = float(det.get("score", 0.0) or 0.0)
-        if label in EXPLICIT_NUDENET_LABELS:
-            max_explicit = max(max_explicit, score)
-            if score >= explicit_threshold:
-                labels.append(label)
-        if label in PARTIAL_NUDENET_LABELS:
-            max_partial = max(max_partial, score)
-            if score >= partial_threshold:
-                labels.append(label)
+    for pred in predictions:
+        label = str(pred.get("label", "")).lower()
+        score = float(pred.get("score", 0.0) or 0.0)
+        if "nsfw" in label or "unsafe" in label or "porn" in label:
+            nsfw_score = max(nsfw_score, score)
+            if score >= nsfw_threshold:
+                labels.append(label or "nsfw")
+        elif "normal" in label or "safe" in label or "sfw" in label:
+            safe_score = max(safe_score, score)
 
     if labels:
         return ModerationDecision(
             action="block",
             event_type="image",
             reason="Unsafe image content detected: " + ", ".join(sorted(set(labels))),
-            scores={"explicit_score": max_explicit, "partial_score": max_partial},
+            scores={"nsfw_score": nsfw_score, "safe_score": safe_score},
             labels=sorted(set(labels)),
         )
 
     return ModerationDecision(
         action="allow",
         event_type="image",
-        scores={"explicit_score": max_explicit, "partial_score": max_partial},
+        scores={"nsfw_score": nsfw_score, "safe_score": safe_score},
     )
 
 

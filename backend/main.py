@@ -114,11 +114,11 @@ from memory_manager import (
     unload_pipeline,
 )
 from moderation import (
+    image_classifier_available,
     init_moderation_db,
     list_moderation_events,
     moderate_images,
     moderate_prompt,
-    nudenet_available,
     save_moderation_event,
 )
 
@@ -1025,35 +1025,35 @@ async def moderation_events(username: str = "", limit: int = 100):
 
 @app.get("/api/moderation/status")
 async def moderation_status():
-    available = nudenet_available()
+    available = image_classifier_available()
     return {
-        "nudenet_available": available,
-        "child_image_moderation": "ready" if available else "blocked_until_nudenet_installed",
+        "image_classifier_available": available,
+        "child_image_moderation": "ready" if available else "blocked_until_image_classifier_installed",
         "message": (
-            "NudeNet is installed. Child image outputs are checked after generation."
+            "Child image classifier is available. Child image outputs are checked after generation."
             if available
-            else "NudeNet is not installed. Child prompt blocking still works, but child generated images fail closed until NudeNet is installed."
+            else "Child prompt blocking still works, but child generated images fail closed until the image classifier is installed."
         ),
     }
 
 
-@app.post("/api/moderation/install-nudenet")
-async def moderation_install_nudenet():
-    if nudenet_available():
-        return {"ok": True, "installed": True, "message": "NudeNet is already installed."}
+@app.post("/api/moderation/install-image-classifier")
+async def moderation_install_image_classifier():
+    if image_classifier_available():
+        return {"ok": True, "installed": True, "message": "Transformers image classifier dependencies are already available."}
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "nudenet"],
+            [sys.executable, "-m", "pip", "install", "transformers"],
             capture_output=True,
             text=True,
             timeout=600,
         )
     except Exception as exc:
-        raise HTTPException(500, f"NudeNet install failed: {exc}") from exc
+        raise HTTPException(500, f"Image classifier setup failed: {exc}") from exc
     output = (proc.stdout + "\n" + proc.stderr).strip()
     if proc.returncode != 0:
-        raise HTTPException(500, output[-2000:] or "NudeNet install failed.")
-    return {"ok": True, "installed": nudenet_available(), "message": output[-2000:]}
+        raise HTTPException(500, output[-2000:] or "Image classifier setup failed.")
+    return {"ok": True, "installed": image_classifier_available(), "message": output[-2000:]}
 
 
 @app.get("/api/moderation/quarantine/{filename}")

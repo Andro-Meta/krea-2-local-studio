@@ -39,21 +39,35 @@ class ModerationTests(unittest.TestCase):
                 decision = moderate_prompt("photorealistic nude figure study", role=role)
                 self.assertEqual(decision.action, "allow")
 
-    def test_image_policy_blocks_explicit_detector_hit_for_child(self) -> None:
+    def test_image_policy_blocks_nsfw_classifier_hit_for_child(self) -> None:
         from PIL import Image
 
         from moderation import moderate_image
 
         class FakeProvider:
-            def detect(self, _image):
-                return [{"class": "FEMALE_BREAST_EXPOSED", "score": 0.92}]
+            def classify(self, _image):
+                return [{"label": "nsfw", "score": 0.92}]
 
         decision = moderate_image(Image.new("RGB", (8, 8)), role="child", provider=FakeProvider())
 
         self.assertEqual(decision.action, "block")
         self.assertEqual(decision.event_type, "image")
-        self.assertIn("FEMALE_BREAST_EXPOSED", decision.labels)
-        self.assertGreater(decision.scores["explicit_score"], 0.9)
+        self.assertIn("nsfw", decision.labels)
+        self.assertGreater(decision.scores["nsfw_score"], 0.9)
+
+    def test_image_policy_allows_normal_classifier_hit_for_child(self) -> None:
+        from PIL import Image
+
+        from moderation import moderate_image
+
+        class FakeProvider:
+            def classify(self, _image):
+                return [{"label": "normal", "score": 0.97}, {"label": "nsfw", "score": 0.03}]
+
+        decision = moderate_image(Image.new("RGB", (8, 8)), role="child", provider=FakeProvider())
+
+        self.assertEqual(decision.action, "allow")
+        self.assertLess(decision.scores["nsfw_score"], 0.1)
 
     def test_image_policy_fails_closed_when_provider_missing_for_child(self) -> None:
         from PIL import Image

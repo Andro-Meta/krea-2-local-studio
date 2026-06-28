@@ -351,7 +351,7 @@ export interface ModerationEvent {
 }
 
 export interface ModerationStatus {
-  nudenet_available: boolean
+  image_classifier_available: boolean
   child_image_moderation: string
   message: string
 }
@@ -558,7 +558,7 @@ export const apiFetch = {
   moderationEvents: (username = '', limit = 100) =>
     api.get<{ items: ModerationEvent[]; total: number }>('/api/moderation/events', { params: { username, limit } }).then(r => r.data),
   moderationStatus: () => api.get<ModerationStatus>('/api/moderation/status').then(r => r.data),
-  installNudeNet: () => api.post<{ ok: boolean; installed: boolean; message: string }>('/api/moderation/install-nudenet').then(r => r.data),
+  installImageClassifier: () => api.post<{ ok: boolean; installed: boolean; message: string }>('/api/moderation/install-image-classifier').then(r => r.data),
 
   sharingStatus: () => api.get<SharingStatus>('/api/sharing/status').then(r => r.data),
   tailscaleUp: () => api.post('/api/sharing/tailscale-up').then(r => r.data),
