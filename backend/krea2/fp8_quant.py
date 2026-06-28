@@ -10,6 +10,16 @@ roughly halved and the existing `_patch_fp8_linears` dequant closure
 
 This is a memory-only optimization: matmuls still run in bf16 after the
 on-the-fly upcast, so it works on any CUDA GPU (no fp8 tensor-core requirement).
+
+INT8 / conv-rotation note (researched, intentionally NOT implemented):
+ComfyUI's faster-than-fp8 INT8 path relies on a compiled CUTLASS backend
+(`comfy_kitchen`) that fuses a Hadamard/conv "rotation" into the int8 GEMM
+(needs CUDA >= cu130). PyTorch has `torch._scaled_mm` for scaled int8/fp8 GEMM
+but no fused rotated-int8 primitive, so a pure-PyTorch INT8 would do the rotation
+in a separate kernel and end up SLOWER than fp8 on Ada/Hopper/Blackwell. It only
+pays off on Ampere (no fp8 compute, e.g. RTX 3090) and only with fused kernels.
+Verdict: defer until a CUTLASS/torchao rotated-int8 kernel is available; fp8
+(native on Ada+) + block swap covers the VRAM/perf goals today.
 """
 from __future__ import annotations
 

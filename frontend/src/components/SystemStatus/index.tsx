@@ -418,6 +418,41 @@ export default function SystemStatus() {
           </Stack>
         </Paper>
 
+        {/* GPU profile + per-system recommendation */}
+        {report?.gpu_capabilities && (
+          <Paper sx={{ p: 2 }}>
+            <Typography variant="h6" mb={1}>GPU Profile</Typography>
+            <Stack spacing={0.5}>
+              {report.runnability && (
+                <Alert severity={report.runnability.can_run ? (report.runnability.tier === 'minimum' ? 'warning' : 'success') : 'error'} sx={{ py: 0, mb: 0.5 }}>
+                  {report.runnability.can_run
+                    ? `Can run — ${report.runnability.tier} tier (${report.runnability.compute_dtype} compute). ${report.runnability.reason}`
+                    : `Cannot run: ${report.runnability.reason}`}
+                </Alert>
+              )}
+              <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
+                {report.gpu_capabilities.name || 'GPU'} · {report.gpu_capabilities.arch}
+                {report.gpu_capabilities.compute_capability ? ` (sm_${report.gpu_capabilities.compute_capability.replace('.', '')})` : ''}
+                {report.gpu_capabilities.vram_total_gb != null ? ` · ${report.gpu_capabilities.vram_total_gb}GB` : ''}
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                bf16 {report.gpu_capabilities.supports_bf16 ? '✓' : '✗'} ·
+                {' '}fp8 compute {report.gpu_capabilities.supports_fp8_compute ? '✓' : '✗'} ·
+                {' '}nvfp4 {report.gpu_capabilities.supports_nvfp4 ? '✓' : '✗'}
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>{report.gpu_capabilities.fp8_note}</Typography>
+              {report.recommended_runtime && (
+                <Alert severity="info" sx={{ py: 0, mt: 0.5 }}>
+                  Recommended: <b>{report.recommended_runtime.quantization}</b>
+                  {report.recommended_runtime.blocks_to_swap ? `, block-swap ~${report.recommended_runtime.blocks_to_swap}` : ', no block-swap'}
+                  , up to <b>{report.recommended_runtime.max_tier.toUpperCase()}</b>.
+                  {report.recommended_runtime.notes ? ` ${report.recommended_runtime.notes}` : ''}
+                </Alert>
+              )}
+            </Stack>
+          </Paper>
+        )}
+
         {/* Model status */}
         <Paper sx={{ p: 2 }}>
           <Typography variant="h6" mb={1.5}>Model</Typography>

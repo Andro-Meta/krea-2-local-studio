@@ -89,8 +89,24 @@ class QwenAutoencoder(nn.Module):
         except Exception as exc:  # noqa: BLE001 - never let an override break loading
             logger.warning("VAE override failed (%s); keeping stock VAE.", exc)
 
-    def decode(self, x: torch.Tensor) -> torch.Tensor:
-        """Latents → pixel tensors.  x: (B, C, H, W) normalized latent."""
+    def _set_tiling(self, enabled: bool) -> None:
+        try:
+            if enabled:
+                self.ae.enable_tiling()
+            else:
+                self.ae.disable_tiling()
+        except Exception:
+            # Older diffusers may lack tiling toggles; non-tiled decode still works.
+            pass
+
+    def decode(self, x: torch.Tensor, *, tiled: bool = False) -> torch.Tensor:
+        """Latents → pixel tensors.  x: (B, C, H, W) normalized latent.
+
+        `tiled=True` proactively uses the diffusers tiled VAE decode (overlap +
+        blend) for large/low-VRAM cases. Either way, a CUDA OOM during decode is
+        caught and retried with tiling, mirroring ComfyUI's decode→tiled fallback,
+        so a 2K+ decode never hard-fails on VRAM.
+        """
         dtype = x.dtype
         x = x.float()
         # Denormalize in 4D: latents_std/mean are (1, C, 1, 1) and broadcast
@@ -98,8 +114,24 @@ class QwenAutoencoder(nn.Module):
         # right-align the std's channel dim onto the temporal axis and silently
         # expand T from 1 to C, making the video VAE emit C*4-3 frames.
         x = x * self.latents_std + self.latents_mean
-        x = rearrange(x, "b c h w -> b c 1 h w")
-        out = self.ae.decode(x.to(dtype)).sample
+        x = rearrange(x, "b c h w -> b c 1 h w").to(dtype)
+        oom = getattr(torch.cuda, "OutOfMemoryError", RuntimeError)
+        try:
+            if tiled:
+                self._set_tiling(True)
+            out = self.ae.decode(x).sample
+        except oom:
+            logger.warning("VAE decode hit CUDA OOM; retrying with tiled decode.")
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+            self._set_tiling(True)
+            out = self.ae.decode(x).sample
+        finally:
+            # Restore non-tiled state so later small decodes aren't slowed.
+            self._set_tiling(False)
         return rearrange(out, "b c 1 h w -> b c h w")
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:

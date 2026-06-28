@@ -255,6 +255,9 @@ export interface SystemReport {
   gpu_process_details?: Array<{ pid: number; name: string; used_memory_gb?: number }>
   model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null; text_encoder_source?: { kind: string; path: string; runtime?: string; status?: string } | null; memory?: Record<string, any> }
   attention_acceleration?: { status: string; available: boolean; reason: string; recommendation: string }
+  gpu_capabilities?: { name: string; arch: string; compute_capability: string | null; vram_total_gb: number | null; supports_bf16: boolean; supports_fp8_compute: boolean; supports_nvfp4: boolean; fp8_storage_only: boolean; fp8_note: string }
+  recommended_runtime?: { quantization: string; blocks_to_swap: number; max_tier: string; notes: string }
+  runnability?: { can_run: boolean; tier: string; compute_dtype: string; blocks_to_swap: number; max_tier: string; reason: string }
   support_models?: Array<{ id: string; label: string; repo_id: string; purpose: string; installed: boolean; optional?: boolean; cache_dir: string }>
   variants: Array<{ id: string; label: string; vram_gb: number; ram_gb: number; blockers: string[]; warnings: string[]; ok: boolean }>
 }
@@ -493,6 +496,10 @@ export const apiFetch = {
     api.get<{ guidelines: string; examples: string[]; source: string }>('/api/prompting-guide').then(r => r.data),
   resolutionOptions: () =>
     api.get<{ tiers: string[]; aspects: string[]; dimensions: Record<string, Record<string, [number, number]>> }>('/api/resolution-options').then(r => r.data),
+  runtimeAdvice: (width: number, height: number, quantization: string) =>
+    api.get<{ blocks_to_swap: number; tiled_decode: boolean; fits: boolean; estimated_vram_gb: number; megapixels: number; warnings: string[]; free_vram_gb: number | null }>(
+      `/api/runtime-advice?width=${width}&height=${height}&quantization=${encodeURIComponent(quantization)}`,
+    ).then(r => r.data),
   promptRecipes: () => api.get<{ items: PromptRecipe[] }>('/api/prompt-recipes').then(r => r.data),
   savePromptRecipe: (recipe: Partial<PromptRecipe> & { name: string }) =>
     api.post<PromptRecipe>('/api/prompt-recipes', recipe).then(r => r.data),

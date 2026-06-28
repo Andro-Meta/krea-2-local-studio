@@ -192,6 +192,8 @@ def get_gpu_process_details() -> list[dict[str, Any]]:
 
 def get_system_report() -> dict[str, Any]:
     from krea2.performance_guard import attention_acceleration_diagnostic
+    from gpu_caps import assess_runnability, detect_gpu_capabilities
+    from resource_manager import recommend_defaults
     from settings import settings, MODELS_DIR
 
     gpu_name, vram_total, vram_free = get_gpu_info()
@@ -199,6 +201,7 @@ def get_system_report() -> dict[str, Any]:
     disk_free = get_disk_free_gb()
     gpu_procs = get_gpu_processes()
     gpu_proc_details = get_gpu_process_details()
+    gpu_caps = detect_gpu_capabilities()
 
     # Adjust vram_free for memory already reserved by our own process
     vram_free_eff = vram_free
@@ -257,5 +260,8 @@ def get_system_report() -> dict[str, Any]:
             dtype="fp8",
             text_fusion=True,
         ),
+        "gpu_capabilities": gpu_caps,
+        "recommended_runtime": recommend_defaults(gpu_caps, free_vram_gb=vram_free_eff),
+        "runnability": assess_runnability(gpu_caps, ram_total),
         "variants": variants,
     }

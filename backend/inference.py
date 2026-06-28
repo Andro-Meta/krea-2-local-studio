@@ -41,6 +41,9 @@ from model_profiles import MODEL_PROFILES, apply_profile_defaults
 from moodboards_catalog import moodboard_generation_context
 from memory_manager import clear_cuda_cache
 from regional_scene import build_regional_prompt_text
+from gpu_caps import assess_runnability, detect_gpu_capabilities
+from image_guard import assess_image, summarize_quality
+from resource_manager import plan_generation, recommend_runtime, should_clear_after_render
 from output_saver import encode_images
 from seed_variance import apply_seed_variance
 from settings import OUTPUTS_DIR, settings
@@ -605,6 +608,35 @@ class Krea2Pipeline:
             "memory": mem_snapshot(),
         }
 
+    def _free_vram_gb(self) -> float | None:
+        if self._device == "cuda" and torch.cuda.is_available():
+            try:
+                free, _total = torch.cuda.mem_get_info()
+                return free / (1024 ** 3)
+            except Exception:
+                return None
+        return None
+
+    def _sample_with_oom_recovery(self, **kwargs):
+        """Run sampling; on CUDA OOM, free the cache and retry once, then raise a
+        clear, actionable error instead of a raw CUDA failure."""
+        from krea2 import sampling
+
+        oom = getattr(torch.cuda, "OutOfMemoryError", RuntimeError)
+        try:
+            return sampling.sample(**kwargs)
+        except oom:
+            logger.warning("CUDA OOM during sampling; clearing cache and retrying once.")
+            clear_cuda_cache()
+            try:
+                return sampling.sample(**kwargs)
+            except oom as exc:
+                clear_cuda_cache()
+                raise RuntimeError(
+                    "Out of VRAM during generation. Try: lower the resolution (2K is ~4x the VRAM of 1K), "
+                    "use fp8 quantization, enable Block swap in the System tab, or reduce the batch size."
+                ) from exc
+
     def memory_status(self) -> dict:
         return {
             "loaded": self.is_loaded(),
@@ -641,7 +673,37 @@ class Krea2Pipeline:
 
         if not Path(checkpoint_path).exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        # Hardware runnability gate: on a CUDA system that's too old / too small,
+        # fail fast with a clear reason instead of a confusing mid-load crash.
+        caps = detect_gpu_capabilities()
+        if torch.cuda.is_available():
+            _ram_total, _ = get_ram_gb()
+            verdict = assess_runnability(caps, _ram_total)
+            if not verdict["can_run"]:
+                raise RuntimeError(f"This GPU/system can't run Krea 2: {verdict['reason']}")
+
         blocks_to_swap = max(0, int(blocks_to_swap))
+        # Capacity-aware auto block-swap: when the caller didn't request swapping,
+        # check whether this model+precision fits the current free VRAM and, if not,
+        # auto-enable just enough block streaming so it loads end-to-end. Only ever
+        # ADDS swap (never overrides an explicit value), so well-provisioned cards
+        # (e.g. fp8 on a 24GB 4090) keep 0 swap and full speed.
+        if blocks_to_swap == 0 and torch.cuda.is_available():
+            try:
+                free_b, _total_b = torch.cuda.mem_get_info()
+                free_gb = free_b / (1024 ** 3)
+            except Exception:
+                free_gb = None
+            auto = recommend_runtime(
+                free_vram_gb=free_gb, width=1024, height=1024, quantization=quantization,
+            )
+            if auto.get("blocks_to_swap", 0) > 0:
+                blocks_to_swap = int(auto["blocks_to_swap"])
+                logger.info(
+                    "Auto-enabled %d block-swap: free VRAM (~%.1fGB) is tight for this model/precision.",
+                    blocks_to_swap, free_gb if free_gb is not None else -1.0,
+                )
         preflight_model_load(checkpoint_path, quantization, blocks_to_swap=blocks_to_swap)
         checkpoint_size_gb = Path(checkpoint_path).stat().st_size / (1024 ** 3)
         total_ram_gb, _ = get_ram_gb()
@@ -656,11 +718,20 @@ class Krea2Pipeline:
         with self._lock:
             self.unload()
 
-            # Compute dtype: fp16 (with fp16 reduced-precision accumulation) is a
-            # fast, high-quality full-precision option when VRAM allows; otherwise
-            # bf16 is the compute dtype (fp8 weights dequantize to bf16).
-            self._dtype = torch.float16 if quantization == "fp16" else torch.bfloat16
-            if quantization == "fp16" and torch.cuda.is_available():
+            # Compute dtype, adapted to the GPU. bf16 is preferred on Ampere+; on
+            # Turing/Volta (no bf16) we MUST use fp16, including as the dequant
+            # target for fp8 weights. Explicit fp16/bf16 requests are honored,
+            # except bf16 falls back to fp16 on GPUs without bf16 support.
+            supports_bf16 = bool(caps.get("supports_bf16", True))
+            if quantization == "fp16":
+                self._dtype = torch.float16
+            elif quantization == "bf16":
+                self._dtype = torch.bfloat16 if supports_bf16 else torch.float16
+                if not supports_bf16:
+                    logger.warning("GPU lacks bf16; using fp16 compute instead.")
+            else:  # fp8 / default — dequant target follows the GPU
+                self._dtype = torch.bfloat16 if supports_bf16 else torch.float16
+            if self._dtype == torch.float16 and torch.cuda.is_available():
                 try:
                     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
                 except Exception:
@@ -1120,6 +1191,24 @@ class Krea2Pipeline:
             cp = self._loaded_checkpoint.lower()
             mu = 1.15 if "turbo" in cp else None
 
+        # Proactive resource plan: estimate this generation's working set vs free
+        # VRAM and, if tight, free transient cache and/or use a tiled VAE decode
+        # BEFORE sampling — avoiding OOM instead of recovering from it. The model
+        # stays loaded (fast); we only reclaim cache and tile the decode.
+        gen_plan = plan_generation(
+            free_vram_gb=self._free_vram_gb(),
+            width=req.width,
+            height=req.height,
+            quantization=str(getattr(req, "quantization", "fp8") or "fp8"),
+            batch=int(getattr(req, "num_images", 1) or 1),
+            cfg_active=float(getattr(req, "cfg", 0.0)) > 0,
+        )
+        if gen_plan["clear_cache_first"]:
+            clear_cuda_cache()
+        for _w in gen_plan["warnings"]:
+            logger.info("Resource plan: %s", _w)
+        tiled_decode = bool(gen_plan["tiled_decode"])
+
         # Attach requested LoRAs as additive low-rank paths (resets any prior set).
         # Incompatible LoRAs are skipped; reports flow back to the UI.
         lora_reports = apply_loras(self.mmdit, req.loras or [], device=self._device)
@@ -1131,7 +1220,7 @@ class Krea2Pipeline:
             variant=str(getattr(req, "krea_enhancer_variant", "off")),
             delta_cap=float(getattr(req, "krea_enhancer_delta_cap", 0.75)),
         ):
-            images = sampling.sample(
+            images = self._sample_with_oom_recovery(
                 model=self.mmdit,
                 ae=self.ae,
                 encoder=None,
@@ -1161,6 +1250,7 @@ class Krea2Pipeline:
                 lanpaint_strength=getattr(req, "lanpaint_strength", 1.0),
                 lanpaint_settings=_lanpaint_settings_from_request(req),
                 progress_cb=progress_cb,
+                tiled_decode=tiled_decode,
             )
 
         if req.mode == "outpaint" and init_img_for_stitch is not None and mask_img_for_stitch is not None:
@@ -1273,10 +1363,26 @@ class Krea2Pipeline:
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Refine pass skipped ({e})")
 
+        # Post-render quality guard: catch blank/NaN/degenerate frames instead of
+        # silently returning garbage (e.g. an unstable precision path or OOM-partial).
+        quality_reports = [assess_image(im) for im in images]
+        quality = summarize_quality(quality_reports)
+        if quality["all_bad"]:
+            raise RuntimeError(
+                f"Generation produced only blank/invalid frames (issues: {quality['issues']}). "
+                "This usually means an unstable precision/attention path or an out-of-memory partial — "
+                "try fp8, turn off experimental options, or lower the resolution."
+            )
+        if quality["bad_count"]:
+            logger.warning("Quality guard flagged %d/%d frames: %s", quality["bad_count"], quality["total"], quality["issues"])
+
         # Save + return base64 + filenames. Realtime previews pass
         # save_outputs=False so they never spam the Gallery output directory.
         metadata = [
-            build_generation_metadata(req, base_seed=seed, image_index=i, filename="")
+            build_generation_metadata(
+                req, base_seed=seed, image_index=i, filename="",
+                extra={"quality": quality_reports[i]} if i < len(quality_reports) else None,
+            )
             for i in range(len(images))
         ]
         results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs, metadata=metadata)
@@ -1284,6 +1390,13 @@ class Krea2Pipeline:
             {**item, "filename": filenames[i] if i < len(filenames) else item.get("filename", "")}
             for i, item in enumerate(metadata)
         ]
+
+        # Smart VRAM hygiene: after a large (2K) render or when free VRAM is low,
+        # return the reserved blocks to the allocator so the next encode/decode or
+        # model switch isn't starved. Small renders keep the cache for speed.
+        if should_clear_after_render(req.width, req.height, self._free_vram_gb()):
+            clear_cuda_cache()
+
         return results, seed, filenames, lora_reports, metadata
 
 

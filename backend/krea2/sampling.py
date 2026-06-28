@@ -158,6 +158,7 @@ def sample(
     lanpaint_strength: float = 1.0,
     lanpaint_settings: LanPaintSettings | None = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
+    tiled_decode: bool = False,
 ) -> list[Image.Image]:
     sampler = normalize_sampler_name(sampler)
     _validate_sampler(sampler)
@@ -317,7 +318,7 @@ def sample(
     # --- Decode ---
     images: list[Image.Image] = []
     for i in range(B):
-        decoded = ae.decode(latents[i : i + 1])      # (1, C, H, W)
+        decoded = ae.decode(latents[i : i + 1], tiled=tiled_decode)   # (1, C, H, W)
         pixel = decoded.clamp(-1, 1).float()
         pixel = (pixel + 1.0) / 2.0
         pixel = pixel.squeeze(0).permute(1, 2, 0)    # (H, W, C)

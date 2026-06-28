@@ -19,12 +19,22 @@ const ASPECTS = ['1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16', '21:9']
 export default function DimensionSection() {
   const { params, setParam, setParams } = useStore()
   const [dims, setDims] = useState(FALLBACK_DIMS)
+  const [advice, setAdvice] = useState<{ blocks_to_swap: number; fits: boolean; free_vram_gb: number | null } | null>(null)
 
   useEffect(() => {
     apiFetch.resolutionOptions()
       .then(r => { if (r?.dimensions) setDims(r.dimensions) })
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (params.resolution_tier !== '2k') { setAdvice(null); return }
+    let cancelled = false
+    apiFetch.runtimeAdvice(params.width, params.height, params.quantization)
+      .then(a => { if (!cancelled) setAdvice({ blocks_to_swap: a.blocks_to_swap, fits: a.fits, free_vram_gb: a.free_vram_gb }) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [params.resolution_tier, params.width, params.height, params.quantization])
 
   const applyTierAspect = (tier: '1k' | '2k', aspect: string) => {
     const pair = dims[tier]?.[aspect] ?? FALLBACK_DIMS[tier][aspect] ?? [1024, 1024]
@@ -64,8 +74,13 @@ export default function DimensionSection() {
           ))}
         </Box>
         {params.resolution_tier === '2k' && (
-          <Alert severity="info" sx={{ py: 0 }}>
-            2K is ~4× the pixels of 1K — much slower and more VRAM-hungry (attention scales with token count). On 24GB, prefer Turbo fp8, or use Block swap for RAW. Turbo holds a fixed shift at 2K; RAW uses resolution-adaptive shift.
+          <Alert severity={advice && !advice.fits ? 'warning' : 'info'} sx={{ py: 0 }}>
+            2K is ~4× the pixels of 1K — much slower and more VRAM-hungry (attention scales with token count). Turbo holds a fixed shift at 2K; RAW uses resolution-adaptive shift.
+            {advice && (
+              advice.fits
+                ? ` Estimated to fit${advice.free_vram_gb != null ? ` (~${advice.free_vram_gb}GB free)` : ''}${advice.blocks_to_swap ? `; recommend loading with ~${advice.blocks_to_swap} block-swap.` : '.'}`
+                : ` May not fit${advice.free_vram_gb != null ? ` (~${advice.free_vram_gb}GB free)` : ''} — load with ~${advice.blocks_to_swap} block-swap (System tab), use fp8, or lower the resolution.`
+            )}
           </Alert>
         )}
         <Grid container spacing={1.5}>

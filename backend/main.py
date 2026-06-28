@@ -1370,6 +1370,17 @@ async def resolution_options_endpoint():
     return resolution_options()
 
 
+@app.get("/api/runtime-advice")
+async def runtime_advice_endpoint(width: int = 1024, height: int = 1024, quantization: str = "fp8"):
+    from resource_manager import recommend_runtime
+    from system_check import get_gpu_info
+
+    _name, _total, free = get_gpu_info()
+    advice = recommend_runtime(free_vram_gb=free, width=width, height=height, quantization=quantization)
+    advice["free_vram_gb"] = round(free, 1) if free is not None else None
+    return advice
+
+
 @app.get("/api/prompting-guide")
 async def prompting_guide_endpoint():
     from prompting_guide import prompting_guide_payload
