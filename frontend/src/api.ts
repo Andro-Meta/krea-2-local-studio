@@ -31,8 +31,8 @@ export interface GenerationRequest {
   num_images?: number
   seed?: number
   denoise?: number
-  sampler?: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
-  scheduler?: 'simple' | 'normal' | 'beta' | 'sgm_uniform' | 'karras' | 'exponential'
+  sampler?: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
+  scheduler?: 'simple' | 'normal' | 'beta' | 'sgm_uniform' | 'bong_tangent' | 'karras' | 'exponential'
   inpaint_method?: 'native' | 'lanpaint_experimental' | 'flux_fill'
   differential_inpaint?: boolean
   differential_strength?: number
@@ -346,8 +346,8 @@ export const apiFetch = {
   cancelRealtimePreview: (jobId: string) =>
     api.post<{ ok: boolean; job_id: string; status: string }>(`/api/realtime/cancel/${jobId}`).then(r => r.data),
 
-  loadModel: (path: string, quant: string, blocksToSwap = 0, fp8FastMatmul = false) =>
-    api.post('/api/load-model', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap, fp8_fast_matmul: fp8FastMatmul }).then(r => r.data),
+  loadModel: (path: string, quant: string, blocksToSwap = 0, fp8FastMatmul = false, torchCompile = false) =>
+    api.post('/api/load-model', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap, fp8_fast_matmul: fp8FastMatmul, torch_compile: torchCompile }).then(r => r.data),
 
   samplerCatalog: (profile = 'krea_turbo') =>
     api.get<{

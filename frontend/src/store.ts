@@ -53,8 +53,8 @@ export interface GenerateParams {
   num_images: number
   seed: number
   denoise: number
-  sampler: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
-  scheduler: 'simple' | 'normal' | 'beta' | 'sgm_uniform' | 'karras' | 'exponential'
+  sampler: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
+  scheduler: 'simple' | 'normal' | 'beta' | 'sgm_uniform' | 'bong_tangent' | 'karras' | 'exponential'
   inpaint_method: 'native' | 'lanpaint_experimental' | 'flux_fill'
   differential_inpaint: boolean
   differential_strength: number

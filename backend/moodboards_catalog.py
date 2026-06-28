@@ -847,7 +847,7 @@ def moodboard_generation_context(
         if normalized and normalized not in uuids:
             uuids.append(normalized)
     if not ids and not uuids:
-        return {"items": [], "style_text": "", "image_urls": [], "uuids": []}
+        return {"items": [], "style_text": "", "negative_text": "", "image_urls": [], "uuids": []}
 
     clauses: list[str] = []
     params: list[object] = []
@@ -883,19 +883,29 @@ def moodboard_generation_context(
             seen_item_ids.add(int(item["id"]))
 
     parts: list[str] = []
+    negative_parts: list[str] = []
     image_urls: list[str] = []
     seen_images: set[str] = set()
     for item in items:
         guidance = item.get("qwen_guidance") or {}
+        style_axes = guidance.get("style_axes") or []
+        if isinstance(style_axes, (list, tuple)):
+            style_axes_text = ", ".join(str(a).strip() for a in style_axes if str(a).strip())
+        else:
+            style_axes_text = str(style_axes).strip()
         style_bits = [
             item.get("title", ""),
             str(guidance.get("prompt_guidance") or item.get("taste_profile", "")),
             f"Style keywords: {', '.join(item.get('keywords', []))}" if item.get("keywords") else "",
-            f"Negative guidance: {guidance.get('negative_guidance')}" if guidance.get("negative_guidance") else "",
+            f"Style axes: {style_axes_text}" if style_axes_text else "",
         ]
         text = ". ".join(bit.strip().rstrip(".") for bit in style_bits if bit.strip())
         if text:
             parts.append(text)
+        # Qwen negative guidance belongs in the negative prompt, not the positive.
+        neg = str(guidance.get("negative_guidance") or "").strip()
+        if neg and neg not in negative_parts:
+            negative_parts.append(neg)
         for url in _moodboard_image_urls([item.get("primary_image_url", ""), *item.get("image_urls", [])]):
             if url and url not in seen_images:
                 image_urls.append(url)
@@ -903,9 +913,11 @@ def moodboard_generation_context(
             if len(image_urls) >= max_images:
                 break
     style_text = "Apply these Krea moodboard styles: " + " | ".join(parts) if parts else ""
+    negative_text = ", ".join(negative_parts)
     return {
         "items": items,
         "style_text": style_text,
+        "negative_text": negative_text,
         "image_urls": image_urls,
         "uuids": [str(item.get("uuid", "")) for item in items if item.get("uuid")],
     }

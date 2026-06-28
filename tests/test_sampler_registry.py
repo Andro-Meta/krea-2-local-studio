@@ -63,11 +63,21 @@ class SamplerRegistryTests(unittest.TestCase):
             validate_sampler_configuration("euler", "ddim_uniform", "krea_turbo")
 
     def test_new_flow_samplers_registered(self) -> None:
-        for sid in ("euler_ancestral", "euler_ancestral_cfg_pp", "euler_cfg_pp"):
+        for sid in ("euler_ancestral", "euler_ancestral_cfg_pp", "euler_cfg_pp", "er_sde", "res_2s"):
             self.assertIn(sid, SAMPLER_SPECS)
             self.assertIn(sid, KREA_FLOW_SAMPLERS)
             cfg = validate_sampler_configuration(sid, "beta", "krea_raw")
             self.assertEqual(cfg["scheduler"], "beta")
+
+    def test_bong_tangent_scheduler_supported(self) -> None:
+        cfg = validate_sampler_configuration("res_2s", "bong_tangent", "krea_raw")
+        self.assertEqual(cfg["scheduler"], "bong_tangent")
+        opts = {o["id"] for o in scheduler_options()}
+        self.assertIn("bong_tangent", opts)
+
+    def test_er_sde_recommended_steps(self) -> None:
+        self.assertEqual(recommended_steps("er_sde", "simple", "krea_turbo"), 8)
+        self.assertEqual(recommended_steps("er_sde", "beta", "krea_turbo"), 10)
 
     def test_scheduler_options_marks_recommended(self) -> None:
         opts = {o["id"]: o for o in scheduler_options()}

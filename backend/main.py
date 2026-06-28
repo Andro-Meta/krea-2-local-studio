@@ -435,6 +435,7 @@ async def startup():
     if await should_sync_moodboards(mark=True):
         asyncio.create_task(_sync_krea_moodboards())
     asyncio.create_task(_moodboard_sync_loop())
+    asyncio.create_task(_moodboard_enrich_loop())
     # Auto-load model if configured
     cp = settings.krea2_auto_checkpoint or settings.krea2_turbo_path
     if cp and Path(cp).exists():
@@ -450,6 +451,7 @@ async def _auto_load_model(checkpoint_path: str, quantization: str, blocks_to_sw
                 checkpoint_path, quantization,
                 blocks_to_swap=int(blocks_to_swap or 0),
                 fp8_fast_matmul=bool(getattr(settings, "krea2_fp8_fast_matmul", False)),
+                torch_compile=bool(getattr(settings, "krea2_torch_compile", False)),
             )
         )
         logger.info("Auto-load complete.")
@@ -469,6 +471,35 @@ async def _moodboard_sync_loop() -> None:
         await asyncio.sleep(60 * 60)
         if await should_sync_moodboards(mark=True):
             await _sync_krea_moodboards()
+
+
+def _generation_busy() -> bool:
+    """True if a generation job is queued/running or the model is loading.
+
+    The Qwen guidance pass loads its own LLM and competes for VRAM, so the
+    background enricher only runs while the studio is idle.
+    """
+    if any(j.get("status") in ("queued", "running") for j in _jobs.values()):
+        return True
+    return bool(getattr(pipeline, "_loading", False))
+
+
+async def _moodboard_enrich_loop() -> None:
+    """Precompute Qwen guidance for moodboards missing it, in small idle batches.
+
+    Runs only when enabled and the studio is idle. Tiny batches + long sleeps
+    keep it from contending with generation; stops once nothing is missing."""
+    await asyncio.sleep(180)  # let startup / auto-load settle first
+    while True:
+        try:
+            if getattr(settings, "krea2_moodboard_auto_enrich", True) and not _generation_busy():
+                result = await generate_missing_moodboard_qwen_guidance(limit=4)
+                if int(result.get("processed", 0)) == 0:
+                    await asyncio.sleep(60 * 60)  # nothing left; idle check hourly
+                    continue
+        except Exception:
+            logger.exception("Background moodboard enrichment batch failed")
+        await asyncio.sleep(300)
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +753,7 @@ async def load_model(req: LoadModelRequest):
                 req.checkpoint_path, req.quantization,
                 blocks_to_swap=req.blocks_to_swap,
                 fp8_fast_matmul=bool(getattr(req, "fp8_fast_matmul", False)),
+                torch_compile=bool(getattr(req, "torch_compile", False)),
             )
         )
     except Exception as exc:

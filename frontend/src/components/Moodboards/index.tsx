@@ -12,6 +12,7 @@ import {
   Grid,
   IconButton,
   InputAdornment,
+  Slider,
   Stack,
   Tab,
   Tabs,
@@ -71,6 +72,7 @@ export default function MoodboardsPanel() {
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
   const [mashupIds, setMashupIds] = useState<number[]>([])
+  const [mashupWeights, setMashupWeights] = useState<Record<number, number>>({})
   const customFileRef = useRef<HTMLInputElement>(null)
   const { params, setParams, setTab, moodboardView, setMoodboardView } = useStore()
 
@@ -277,7 +279,14 @@ export default function MoodboardsPanel() {
     setMashupIds(prev => prev.includes(board.id)
       ? prev.filter(id => id !== board.id)
       : [...prev, board.id].slice(0, 5))
+    setMashupWeights(prev => {
+      const next = { ...prev }
+      if (prev[board.id] != null) delete next[board.id]
+      else next[board.id] = 1.0
+      return next
+    })
   }
+  const mashupTitle = (id: number) => items.find(b => b.id === id)?.title || `Moodboard #${id}`
 
   const createMashup = async () => {
     if (mashupIds.length < 2) {
@@ -287,8 +296,12 @@ export default function MoodboardsPanel() {
     setBusy('Creating Qwen moodboard mashup')
     setMessage(null)
     try {
-      const created = await apiFetch.createMoodboardMashup({ moodboard_ids: mashupIds })
+      const created = await apiFetch.createMoodboardMashup({
+        moodboard_ids: mashupIds,
+        weights: mashupIds.map(id => mashupWeights[id] ?? 1.0),
+      })
       setMashupIds([])
+      setMashupWeights({})
       setMoodboardView('custom')
       setQuery('')
       setItems([created])
@@ -334,6 +347,36 @@ export default function MoodboardsPanel() {
             </Button>
           </Stack>
         </Stack>
+
+        {mashupIds.length >= 2 && (
+          <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Mashup weights<Typography component="span" variant="caption" sx={{ color: 'text.secondary', ml: 1 }}>
+                — how strongly each source influences the Qwen-synthesized blend
+              </Typography>
+            </Typography>
+            <Stack spacing={1}>
+              {mashupIds.map(id => (
+                <Stack key={id} direction="row" spacing={2} alignItems="center">
+                  <Typography variant="body2" sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {mashupTitle(id)}
+                  </Typography>
+                  <Slider
+                    sx={{ width: 160 }}
+                    size="small"
+                    value={mashupWeights[id] ?? 1.0}
+                    min={0.1} max={3.0} step={0.1}
+                    valueLabelDisplay="auto"
+                    onChange={(_, v) => setMashupWeights(prev => ({ ...prev, [id]: v as number }))}
+                  />
+                  <Typography variant="caption" sx={{ width: 28, fontFamily: 'Roboto Mono' }}>
+                    {(mashupWeights[id] ?? 1.0).toFixed(1)}
+                  </Typography>
+                </Stack>
+              ))}
+            </Stack>
+          </Box>
+        )}
 
         {message && <Alert severity={message.severity} onClose={() => setMessage(null)}>{message.text}</Alert>}
         {busy && <Alert severity="info" icon={<CircularProgress size={18} />}>{busy}</Alert>}

@@ -39,6 +39,7 @@ SCHEDULER_SPECS: dict[str, SchedulerSpec] = {
     "normal": SchedulerSpec("normal", "Normal", note="Uniform-in-time, identical to Simple for Krea flow."),
     "beta": SchedulerSpec("beta", "Beta (crisper detail)", note="Beta(0.6,0.6) U-shaped spacing (arXiv:2407.12173). Most-cited 'sharper' scheduler for flow models."),
     "sgm_uniform": SchedulerSpec("sgm_uniform", "SGM Uniform", note="Uniform but drops the sigma_min endpoint; slightly denser near the clean end."),
+    "bong_tangent": SchedulerSpec("bong_tangent", "Bong Tangent", note="RES4LYF tangent S-curve; clusters steps mid-trajectory. Community pairs it with res_2s / euler_ancestral_cfg_pp."),
     "karras": SchedulerSpec("karras", "Karras (experimental for flow)", recommended=False, note="EDM-shaped (rho=7). Designed for EPS/EDM models; experimental on flow."),
     "exponential": SchedulerSpec("exponential", "Exponential (experimental for flow)", recommended=False, note="Log-linear EDM spacing. Experimental on flow."),
 }
@@ -69,6 +70,16 @@ SAMPLER_SPECS: dict[str, SamplerSpec] = {
         "euler_cfg_pp", "Euler CFG++ (deterministic)", default_steps=28,
         supported_schedulers=FLOW_SCHED,
         note="Deterministic CFG++ (no ancestral noise). Cleaner high-CFG renders on RAW.",
+    ),
+    "er_sde": SamplerSpec(
+        "er_sde", "ER-SDE (community favorite)", default_steps=8,
+        supported_schedulers=FLOW_SCHED,
+        note="Extended Reverse-Time SDE (order-adaptive). The most-used Krea 2 sampler on Discord: er_sde/simple at 8 steps or er_sde/beta at 10.",
+    ),
+    "res_2s": SamplerSpec(
+        "res_2s", "RES 2S (2nd-order)", default_steps=20,
+        supported_schedulers=FLOW_SCHED,
+        note="2nd-order exponential-RK (RES4LYF res_2s). Two model calls/step. Pairs well with the bong_tangent scheduler.",
     ),
     "exp_heun_2_x0_sde": SamplerSpec(
         "exp_heun_2_x0_sde",
@@ -143,12 +154,18 @@ class ComboSpec:
 RECOMMENDED_COMBOS: tuple[ComboSpec, ...] = (
     ComboSpec("euler_flow", "simple", 8, 1.0, "Turbo default", "turbo",
               "The shipped Krea Turbo recipe. Fast and reliable."),
+    ComboSpec("er_sde", "simple", 8, 1.0, "Turbo ER-SDE", "turbo",
+              "The Krea community's most-used recipe — er_sde/simple at 8 steps."),
     ComboSpec("euler_flow", "beta", 10, 1.0, "Turbo crisp", "turbo",
               "Beta spacing squeezes a little extra detail out of Turbo."),
     ComboSpec("euler_flow", "simple", 28, 4.0, "RAW balanced", "raw",
               "Base/RAW workhorse. Even, predictable."),
     ComboSpec("euler_flow", "beta", 28, 4.0, "RAW crisp detail", "raw",
               "Most-cited Flux quality combo — sharper textures than simple."),
+    ComboSpec("er_sde", "beta", 10, 4.0, "RAW ER-SDE", "raw",
+              "Community favorite on base: er_sde/beta around 10 steps."),
+    ComboSpec("res_2s", "bong_tangent", 24, 4.0, "RAW res_2s max", "raw",
+              "2nd-order res_2s + bong_tangent — the cited 'max quality' combo."),
     ComboSpec("euler_ancestral_cfg_pp", "beta", 30, 3.0, "RAW CFG++ adherence", "raw",
               "CFG++ ancestral + beta: best prompt adherence with lower CFG and less burn-in."),
     ComboSpec("euler_ancestral", "beta", 30, 4.0, "RAW variation", "raw",
@@ -182,10 +199,16 @@ def recommended_steps(sampler: str, scheduler: str = "simple", profile: str = "k
     if name == "lcm":
         return 4
     if _is_turbo_profile(profile):
+        if name == "er_sde":
+            return 10 if scheduler == "beta" else 8
+        if name == "res_2s":
+            return 12
         return 10 if name in ("euler_ancestral", "euler_ancestral_cfg_pp", "euler_cfg_pp") else 8
     base = 28
-    if name in ("euler_ancestral", "euler_ancestral_cfg_pp"):
+    if name in ("euler_ancestral", "euler_ancestral_cfg_pp", "er_sde"):
         base = 30
+    if name == "res_2s":
+        base = 24  # 2 calls/step -> fewer steps for similar cost
     if scheduler == "beta":
         base = max(base, 28)
     return base

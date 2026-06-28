@@ -75,6 +75,38 @@ class TestFlowStepFunctions(unittest.TestCase):
         self.assertFalse(torch.allclose(base, alt, atol=1e-4))
 
 
+class TestRes2s(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+        self.img = torch.randn(1, 64, 16)
+        self.v = torch.randn(1, 64, 16)
+
+    def test_returns_denoised_at_final_step(self):
+        out = sampling.res_2s_flow_step(
+            self.img, self.v, tcurr=0.1, tprev=0.0,
+            velocity_fn=lambda x, t: torch.zeros_like(x),
+        )
+        self.assertTrue(torch.allclose(out, self.img - self.v * 0.1, atol=1e-5))
+
+    def test_two_calls_and_finite(self):
+        calls = []
+        def vf(x, t):
+            calls.append(t)
+            return torch.zeros_like(x)
+        out = sampling.res_2s_flow_step(self.img, self.v, tcurr=0.9, tprev=0.5, velocity_fn=vf)
+        self.assertEqual(len(calls), 1)  # one intermediate call (plus the caller's first v)
+        self.assertTrue(torch.isfinite(out).all())
+        self.assertGreater(calls[0], 0.5)
+        self.assertLess(calls[0], 0.9)
+
+    def test_first_step_t1_finite(self):
+        out = sampling.res_2s_flow_step(
+            self.img, self.v, tcurr=1.0, tprev=0.85,
+            velocity_fn=lambda x, t: torch.zeros_like(x),
+        )
+        self.assertTrue(torch.isfinite(out).all())
+
+
 class TestTimestepScheduler(unittest.TestCase):
     def test_scheduler_changes_schedule(self):
         simple = sampling.timesteps(256, 12, 1, 100, mu=1.15, scheduler="simple")

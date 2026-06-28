@@ -199,12 +199,61 @@ def euler_cfgpp_flow_step(
     return x
 
 
+def res_2s_flow_step(
+    img: torch.Tensor,
+    velocity: torch.Tensor,
+    *,
+    tcurr: float,
+    tprev: float,
+    velocity_fn: Callable[[torch.Tensor, float], torch.Tensor],
+    c2: float = 0.5,
+) -> torch.Tensor:
+    """2nd-order exponential-RK step (RES4LYF res_2s) for rectified flow.
+
+    DPM-Solver++(2S) data-prediction form in half-log-SNR space with the CONST
+    mapping (lambda = log((1-t)/t)). Two model calls per step: an intermediate
+    denoised at the c2 substep, then a 2nd-order combine. Community pairs this
+    with the bong_tangent scheduler.
+    """
+    eps = 1.0e-4
+    tc = min(max(float(tcurr), eps), 1.0 - eps)
+    denoised_s = img - velocity * tcurr
+    if tprev <= 0.0:
+        return denoised_s
+    tp = min(max(float(tprev), eps), 1.0 - eps)
+    lam_s = math.log((1.0 - tc) / tc)
+    lam_t = math.log((1.0 - tp) / tp)
+    h = lam_t - lam_s
+    lam_i = lam_s + c2 * h
+    t_i = 1.0 / (1.0 + math.exp(lam_i))          # inverse: sigmoid(-lambda)
+    sig_s, sig_i, sig_t = tc, t_i, tp            # sigma == t
+    al_i, al_t = 1.0 - t_i, 1.0 - tp             # alpha == 1 - t
+    # Stage 1 (exponential-integrator predictor at the c2 substep).
+    u = (sig_i / sig_s) * img - al_i * (math.exp(-c2 * h) - 1.0) * denoised_s
+    v_i = velocity_fn(u, t_i)
+    denoised_i = u - v_i * t_i
+    # Stage 2 combine; with c2=0.5 this reduces to the midpoint (uses denoised_i).
+    w2 = 1.0 / (2.0 * c2)
+    blended = (1.0 - w2) * denoised_s + w2 * denoised_i
+    return (sig_t / sig_s) * img - al_t * (math.exp(-h) - 1.0) * blended
+
+
+def _er_noise_scaler_scalar(x: float) -> float:
+    return x * (math.exp(x ** 0.3) + 10.0)
+
+
+def _er_noise_scaler_tensor(x: torch.Tensor) -> torch.Tensor:
+    return x * (torch.exp(x ** 0.3) + 10.0)
+
+
 # Samplers actually integrated by sample(). Aliases normalize into these.
 _FLOW_SAMPLERS = {
     "euler_flow",
     "euler_ancestral",
     "euler_ancestral_cfg_pp",
     "euler_cfg_pp",
+    "er_sde",
+    "res_2s",
     "exp_heun_2_x0_sde",
     "lanpaint_experimental",
 }
@@ -355,6 +404,13 @@ def sample(
     def _step_noise(ref: torch.Tensor) -> torch.Tensor:
         return torch.randn(ref.shape, dtype=ref.dtype, device=ref.device, generator=anc_gen)
 
+    # ER-SDE carries denoised history across steps (order-adaptive up to 3).
+    er_old_denoised: torch.Tensor | None = None
+    er_old_denoised_d: torch.Tensor | None = None
+    er_lam_prev: float | None = None
+    er_lam_prev2: float | None = None
+    ER_S_NOISE = 1.0
+
     # --- Euler ODE integration (with per-step inpaint keep-region compositing) ---
     n_steps = len(ts) - 1
     t_start = ts[0] if ts else 1.0
@@ -424,6 +480,47 @@ def sample(
                 img, v, tcurr=tcurr, tprev=tprev,
                 noise=_step_noise(img), eta=step_eta, s_noise=1.0,
             )
+        elif sampler == "res_2s":
+            v = _velocity(img, tcurr)
+            img = res_2s_flow_step(img, v, tcurr=tcurr, tprev=tprev, velocity_fn=_velocity)
+        elif sampler == "er_sde":
+            v = _velocity(img, tcurr)
+            denoised = img - v * tcurr
+            tc = min(max(float(tcurr), 1e-4), 1.0 - 1e-4)
+            if tprev <= 0.0:
+                img = denoised
+            else:
+                tp = min(max(float(tprev), 1e-4), 1.0 - 1e-4)
+                lam_s = tc / (1.0 - tc)          # er_lambda = sigma/alpha = t/(1-t)
+                lam_t = tp / (1.0 - tp)
+                alpha_s = 1.0 - tc
+                alpha_t = 1.0 - tp
+                r_alpha = alpha_t / alpha_s
+                r = _er_noise_scaler_scalar(lam_t) / _er_noise_scaler_scalar(lam_s)
+                x = r_alpha * r * img + alpha_t * (1.0 - r) * denoised
+                stage = min(3, step_idx + 1)
+                if stage >= 2 and er_old_denoised is not None and er_lam_prev is not None:
+                    dt = lam_t - lam_s
+                    n_int = 200
+                    idx = torch.arange(0, n_int, device=img.device, dtype=torch.float32)
+                    step_size = -dt / n_int
+                    lam_pos = lam_t + idx * step_size
+                    scaled = _er_noise_scaler_tensor(lam_pos)
+                    s_int = torch.sum(1.0 / scaled) * step_size
+                    denoised_d = (denoised - er_old_denoised) / (lam_s - er_lam_prev)
+                    x = x + alpha_t * (dt + s_int * _er_noise_scaler_scalar(lam_t)) * denoised_d
+                    if stage >= 3 and er_old_denoised_d is not None and er_lam_prev2 is not None:
+                        s_u = torch.sum((lam_pos - lam_s) / scaled) * step_size
+                        denoised_u = (denoised_d - er_old_denoised_d) / ((lam_s - er_lam_prev2) / 2.0)
+                        x = x + alpha_t * ((dt ** 2) / 2.0 + s_u * _er_noise_scaler_scalar(lam_t)) * denoised_u
+                    er_old_denoised_d = denoised_d
+                if ER_S_NOISE > 0:
+                    renoise = max(0.0, lam_t ** 2 - lam_s ** 2 * r ** 2) ** 0.5
+                    x = x + alpha_t * _step_noise(img) * ER_S_NOISE * renoise
+                img = x
+                er_lam_prev2 = er_lam_prev
+                er_lam_prev = lam_s
+                er_old_denoised = denoised
         elif sampler == "exp_heun_2_x0_sde":
             v = _velocity(img, tcurr)
             img = heun_flow_step(img, v, tcurr=tcurr, tprev=tprev, velocity_fn=_velocity)

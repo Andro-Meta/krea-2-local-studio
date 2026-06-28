@@ -695,7 +695,7 @@ class Krea2Pipeline:
             "memory": mem_snapshot(),
         }
 
-    def load(self, checkpoint_path: str, quantization: str = "bf16", *, blocks_to_swap: int = 0, fp8_fast_matmul: bool = False) -> None:
+    def load(self, checkpoint_path: str, quantization: str = "bf16", *, blocks_to_swap: int = 0, fp8_fast_matmul: bool = False, torch_compile: bool = False) -> None:
         backend_dir = str(Path(__file__).parent)
         if backend_dir not in sys.path:
             sys.path.insert(0, backend_dir)
@@ -902,6 +902,20 @@ class Krea2Pipeline:
             self._loaded_quant = quantization
             self._text_encoder_source = getattr(encoder, "source", None)
             self._last_load_error = None
+
+            # Opt-in torch.compile (experimental). Incompatible with block-swap
+            # hooks, so only when no swapping. Fully guarded: any failure (e.g. no
+            # Triton/inductor on Windows) falls back to the eager model.
+            want_compile = torch_compile or bool(getattr(settings, "krea2_torch_compile", False))
+            if want_compile and self._device == "cuda" and self._blocks_to_swap == 0:
+                try:
+                    self.mmdit = torch.compile(self.mmdit, mode="reduce-overhead", fullgraph=False)
+                    logger.info("torch.compile enabled on the DiT (first generation will be slower while it compiles).")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("torch.compile unavailable (%s); using eager model.", exc)
+            elif want_compile and self._blocks_to_swap > 0:
+                logger.info("torch.compile skipped: not compatible with block swap.")
+
             logger.info(f"Model ready. {mem_snapshot()}")
 
     def _get_conditioning_cache(self, key: tuple) -> tuple[torch.Tensor, torch.Tensor | None] | None:
@@ -983,6 +997,11 @@ class Krea2Pipeline:
             req.moodboard_uuids = catalog_context["uuids"]
         if catalog_context["style_text"]:
             prompt = f"{prompt}\n\n{catalog_context['style_text']}" if prompt.strip() else catalog_context["style_text"]
+        if catalog_context.get("negative_text"):
+            negative_prompt = (
+                f"{negative_prompt}, {catalog_context['negative_text']}"
+                if negative_prompt.strip() else catalog_context["negative_text"]
+            )
         style_fusion_mode = str(getattr(req, "style_fusion_mode", "semantic_fusion") or "semantic_fusion")
         if style_fusion_mode == "preserve_structure" and str(getattr(req, "mode", "")) in {"redraw", "img2img", "inpaint", "outpaint"}:
             prompt = (

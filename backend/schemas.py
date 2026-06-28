@@ -241,6 +241,7 @@ class LoadModelRequest(BaseModel):
     quantization: str = "bf16"
     blocks_to_swap: int = Field(default=0, ge=0, le=28)
     fp8_fast_matmul: bool = False  # opt-in fp8 _scaled_mm (Ada/Blackwell only)
+    torch_compile: bool = False    # opt-in torch.compile of the DiT (experimental)
 
 
 class MemoryStopProcessRequest(BaseModel):

@@ -28,6 +28,7 @@ export default function SystemStatus() {
   const [quant, setQuant] = useState('fp8')
   const [blocksToSwap, setBlocksToSwap] = useState(0)
   const [fp8FastMatmul, setFp8FastMatmul] = useState(false)
+  const [torchCompile, setTorchCompile] = useState(false)
   const [vaePath, setVaePath] = useState('')
   const [vaeSaving, setVaeSaving] = useState(false)
   const [pathTouched, setPathTouched] = useState(false)
@@ -203,7 +204,7 @@ export default function SystemStatus() {
     if (!cpPath) return
     setLoadingModel(true); setLoadError('')
     try {
-      await apiFetch.loadModel(cpPath, quant, blocksToSwap, fp8FastMatmul)
+      await apiFetch.loadModel(cpPath, quant, blocksToSwap, fp8FastMatmul, torchCompile)
       await refresh()
     } catch (e: any) {
       setLoadError(e?.response?.data?.detail ?? e.message)
@@ -547,6 +548,21 @@ export default function SystemStatus() {
                 label={
                   <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                     fp8 fast matmul (experimental){report && !report.gpu_capabilities?.supports_fp8_compute ? ' — needs Ada/Blackwell' : quant !== 'fp8' ? ' — fp8 only' : ' — faster on Ada/Blackwell'}
+                  </Typography>
+                }
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={torchCompile}
+                    onChange={e => setTorchCompile(e.target.checked)}
+                    disabled={!isAdmin || blocksToSwap > 0}
+                  />
+                }
+                label={
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    torch.compile (experimental){blocksToSwap > 0 ? ' — disable block swap to use' : ' — needs Triton/inductor; first gen slower'}
                   </Typography>
                 }
               />

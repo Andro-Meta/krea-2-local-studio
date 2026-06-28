@@ -31,6 +31,8 @@ class AppSettings(BaseSettings):
     krea2_blocks_to_swap: int = 0     # low-VRAM: stream last N DiT blocks from RAM (0 = off)
     krea2_vae_path: str = ""          # optional override VAE (HDR/real/clear); empty = stock Qwen VAE
     krea2_fp8_fast_matmul: bool = False  # opt-in: fp8 _scaled_mm on Ada/Blackwell (faster, slight quality trade)
+    krea2_moodboard_auto_enrich: bool = True  # background-precompute Qwen guidance for official moodboards when idle
+    krea2_torch_compile: bool = False  # opt-in: torch.compile the DiT (experimental; needs Triton/inductor)
 
     class Config:
         env_file = str(BASE_DIR / ".env")

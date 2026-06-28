@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 
-FLOW_SCHEDULERS: tuple[str, ...] = ("simple", "normal", "beta", "sgm_uniform")
+FLOW_SCHEDULERS: tuple[str, ...] = ("simple", "normal", "beta", "sgm_uniform", "bong_tangent")
 ALL_SCHEDULERS: tuple[str, ...] = FLOW_SCHEDULERS + ("karras", "exponential")
 
 # Default Beta(alpha, beta) shape parameters (ComfyUI beta_scheduler defaults).
@@ -122,6 +122,46 @@ def _exponential_grid(steps: int, *, sigma_min: float = 1.0e-3) -> list[float]:
     return grid
 
 
+def _bong_tangent_segment(steps: int, slope: float, pivot: float, start: float, end: float) -> list[float]:
+    # RES4LYF get_bong_tangent_sigmas: normalized arctan S-curve from start->end.
+    if steps <= 1:
+        return [start, end][:max(1, steps)]
+    smax = ((2.0 / math.pi) * math.atan(-slope * (0 - pivot)) + 1.0) / 2.0
+    smin = ((2.0 / math.pi) * math.atan(-slope * ((steps - 1) - pivot)) + 1.0) / 2.0
+    srange = (smax - smin) or 1e-9
+    sscale = start - end
+    return [
+        ((((2.0 / math.pi) * math.atan(-slope * (x - pivot)) + 1.0) / 2.0) - smin) * (1.0 / srange) * sscale + end
+        for x in range(steps)
+    ]
+
+
+def _bong_tangent_grid(steps: int, *, middle: float = 0.5, pivot_1: float = 0.6,
+                       pivot_2: float = 0.6, slope_1: float = 0.2, slope_2: float = 0.2) -> list[float]:
+    """RES4LYF bong_tangent: a two-stage tangent S-curve, normalized 1 -> 0.
+
+    Returns steps+1 descending values clustering density mid-trajectory — the
+    combo the Krea community pairs with res_2s / euler_ancestral_cfg_pp.
+    """
+    n = max(1, int(steps))
+    total = n + 2
+    midpoint = int((total * pivot_1 + total * pivot_2) / 2)
+    p1 = int(total * pivot_1)
+    p2 = int(total * pivot_2)
+    s1 = slope_1 / (total / 40.0)
+    s2 = slope_2 / (total / 40.0)
+    stage_2_len = total - midpoint
+    stage_1_len = total - stage_2_len
+    seg1 = _bong_tangent_segment(stage_1_len, s1, p1, 1.0, middle)[:-1]
+    seg2 = _bong_tangent_segment(stage_2_len, s2, p2 - stage_1_len, middle, 0.0)
+    grid = seg1 + seg2
+    # Guarantee exact, monotonic endpoints for the downstream mu-shift.
+    if grid:
+        grid[0] = 1.0
+        grid[-1] = 0.0
+    return grid
+
+
 def base_grid(steps: int, scheduler: str = "simple") -> list[float]:
     """Return the base flow-time grid (len steps+1, descending 1 -> 0).
 
@@ -145,6 +185,9 @@ def base_grid(steps: int, scheduler: str = "simple") -> list[float]:
         grid = [beta_ppf(1.0 - k / n) for k in range(n)]
         grid.append(0.0)
         return grid
+
+    if name == "bong_tangent":
+        return _bong_tangent_grid(n)
 
     if name == "karras":
         return _karras_grid(n)
