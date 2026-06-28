@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 PORT = int(os.environ.get("KREA_SERVER_PORT", "8200"))
@@ -147,6 +149,61 @@ def start_funnel(port: int = PORT) -> dict:
         status = funnel_status()
         url = status.get("url", "")
     return {"ok": True, "url": url, "message": output}
+
+
+def local_krea_target_status(port: int = PORT) -> dict:
+    url = f"http://127.0.0.1:{int(port)}{PUBLIC_PATH}/api/auth/me"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "url": url, "auth_required": False, "message": f"Local Krea returned HTTP {exc.code}."}
+    except Exception as exc:
+        return {"ok": False, "url": url, "auth_required": False, "message": f"Local Krea is not reachable: {exc}"}
+    try:
+        data = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    # Auth-enabled /api/auth/me returns authenticated=false with no share_auth=false.
+    # Auth-disabled local mode returns share_auth=false.
+    auth_required = data.get("share_auth") is not False
+    if not auth_required:
+        return {
+            "ok": True,
+            "url": url,
+            "auth_required": False,
+            "message": "Local Krea is reachable, but the login gate is off. Restart with run.bat sharing mode before exposing Funnel.",
+        }
+    return {"ok": True, "url": url, "auth_required": True, "message": "Local Krea is reachable and login-gated."}
+
+
+def repair_funnel(port: int = PORT) -> dict:
+    local = local_krea_target_status(port)
+    tailscale = tailscale_status()
+    up_result = {"ok": False, "message": ""}
+    if tailscale.get("installed"):
+        try:
+            up_result = tailscale_up()
+        except Exception as exc:
+            up_result = {"ok": False, "message": str(exc)}
+    funnel_result = start_funnel(port) if local.get("ok") and tailscale.get("installed") else {"ok": False, "url": "", "message": "Local Krea or Tailscale is not ready."}
+    funnel = funnel_status()
+    ok = bool(local.get("ok") and local.get("auth_required") and tailscale.get("installed") and funnel.get("running"))
+    needs_admin_restart = bool(tailscale.get("installed") and funnel.get("running") and local.get("ok") and not ok)
+    message = "Sharing is configured." if ok else (
+        "Funnel is configured but public access may still fail. If the public URL returns 500/TLS errors, restart the Tailscale Windows service as Administrator."
+        if needs_admin_restart else "Sharing is not ready. Check local Krea, login gate, and Tailscale status."
+    )
+    return {
+        "ok": ok,
+        "message": message,
+        "local_target": local,
+        "tailscale": tailscale_status(),
+        "tailscale_up": up_result,
+        "start_funnel": funnel_result,
+        "funnel": funnel,
+        "needs_admin_service_restart": needs_admin_restart,
+    }
 
 
 def stop_funnel() -> dict:

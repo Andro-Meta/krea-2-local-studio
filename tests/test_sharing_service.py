@@ -78,6 +78,59 @@ class SharingServiceTests(unittest.TestCase):
         self.assertEqual(calls[2], ["tailscale", "funnel", "--set-path=/", "--bg", "--yes", "127.0.0.1:9000"])
         self.assertEqual(calls[3], ["tailscale", "funnel", "--set-path=/krea", "--bg", "--yes", "127.0.0.1:45678"])
 
+    def test_local_krea_target_reports_auth_state(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"authenticated":false,"username":null,"role":null}'
+
+        with patch("sharing_service.urllib.request.urlopen", return_value=Response()):
+            status = sharing_service.local_krea_target_status(port=45678)
+
+        self.assertTrue(status["ok"])
+        self.assertTrue(status["auth_required"])
+        self.assertIn("45678", status["url"])
+
+    def test_repair_funnel_runs_tailscale_up_and_reapplies_krea_path(self) -> None:
+        calls = []
+
+        class Result:
+            def __init__(self, returncode=0, stdout="", stderr=""):
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        def fake_run(args, timeout=30):
+            calls.append(args)
+            if args[:2] == ["status", "--json"]:
+                return Result(stdout='{"Self":{"DNSName":"diffusion.tail.ts.net."}}')
+            if args[:2] == ["funnel", "status"]:
+                return Result(stdout="https://diffusion.tail.ts.net/krea\n")
+            if args[:1] == ["up"]:
+                return Result()
+            if args[:1] == ["funnel"]:
+                return Result(stdout="https://diffusion.tail.ts.net\n")
+            return Result()
+
+        with (
+            patch("sharing_service.find_tailscale", return_value="tailscale"),
+            patch("sharing_service._run_tailscale", side_effect=fake_run),
+            patch("sharing_service.local_krea_target_status", return_value={"ok": True, "auth_required": True, "message": "ok"}),
+        ):
+            result = sharing_service.repair_funnel(port=45678)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["local_target"]["ok"])
+        self.assertTrue(result["tailscale"]["connected"])
+        self.assertTrue(result["funnel"]["running"])
+        self.assertIn(["up"], calls)
+        self.assertIn(["funnel", "--set-path=/krea", "--bg", "--yes", "127.0.0.1:45678"], calls)
+
 
 if __name__ == "__main__":
     unittest.main()

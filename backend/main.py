@@ -104,7 +104,7 @@ from share_auth import (
     verify_user,
 )
 from support_models import download_support_models, support_model_status
-from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, start_funnel, stop_funnel, tailscale_status, tailscale_up
+from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, repair_funnel, start_funnel, stop_funnel, tailscale_status, tailscale_up
 from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_lora_filename
 from system_check import get_system_report
 from memory_manager import (
@@ -390,6 +390,11 @@ async def sharing_funnel_start():
     if not result.get("ok"):
         raise HTTPException(502, result.get("message", "Tailscale Funnel failed to start."))
     return result
+
+
+@app.post("/api/sharing/funnel/repair")
+async def sharing_funnel_repair():
+    return repair_funnel()
 
 
 @app.post("/api/sharing/funnel/stop")

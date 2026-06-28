@@ -304,6 +304,16 @@ export interface SharingStatus {
   public_path: string
 }
 
+export interface SharingRepairResult {
+  ok: boolean
+  message: string
+  needs_admin_service_restart?: boolean
+  local_target?: { ok: boolean; auth_required: boolean; url: string; message: string }
+  tailscale?: SharingStatus['tailscale']
+  funnel?: SharingStatus['funnel']
+  start_funnel?: { ok: boolean; url: string; message: string }
+}
+
 export interface AppSettings {
   hf_token: string
   civitai_token: string
@@ -563,6 +573,7 @@ export const apiFetch = {
   sharingStatus: () => api.get<SharingStatus>('/api/sharing/status').then(r => r.data),
   tailscaleUp: () => api.post('/api/sharing/tailscale-up').then(r => r.data),
   startSharing: () => api.post<{ ok: boolean; url: string; message: string }>('/api/sharing/funnel/start').then(r => r.data),
+  repairSharing: () => api.post<SharingRepairResult>('/api/sharing/funnel/repair').then(r => r.data),
   stopSharing: () => api.post<{ ok: boolean; message: string }>('/api/sharing/funnel/stop').then(r => r.data),
 
   downloadLora: (name: string) =>

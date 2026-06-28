@@ -51,7 +51,7 @@ export default function SystemStatus() {
   const [users, setUsers] = useState<ShareUser[]>([])
   const [sharing, setSharing] = useState<SharingStatus | null>(null)
   const [sharingBusy, setSharingBusy] = useState(false)
-  const [sharingMessage, setSharingMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
+  const [sharingMessage, setSharingMessage] = useState<{ severity: 'success' | 'warning' | 'error'; text: string } | null>(null)
   const [sharingAutoSaving, setSharingAutoSaving] = useState(false)
   const [userMessage, setUserMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'admin' | 'user' | 'child' })
@@ -355,6 +355,22 @@ export default function SystemStatus() {
       setSharingMessage({ severity: 'success', text: result.url ? `Sharing at ${result.url}` : 'Sharing started.' })
     } catch (e: any) {
       setSharingMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not start sharing.' })
+    } finally {
+      setSharingBusy(false)
+    }
+  }
+
+  const repairSharing = async () => {
+    setSharingBusy(true); setSharingMessage(null)
+    try {
+      const result = await apiFetch.repairSharing()
+      await loadSharing()
+      setSharingMessage({
+        severity: result.ok ? 'success' : result.needs_admin_service_restart ? 'error' : 'warning',
+        text: result.message,
+      })
+    } catch (e: any) {
+      setSharingMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not repair sharing.' })
     } finally {
       setSharingBusy(false)
     }
@@ -1050,6 +1066,9 @@ export default function SystemStatus() {
               </Button>
               <Button size="small" variant="contained" onClick={startSharing} disabled={sharingBusy || !sharing?.tailscale.installed}>
                 Start /krea Funnel
+              </Button>
+              <Button size="small" variant="outlined" onClick={repairSharing} disabled={sharingBusy || !sharing?.tailscale.installed}>
+                Repair /krea Sharing
               </Button>
               <Button size="small" color="error" variant="outlined" onClick={stopSharing} disabled={sharingBusy || !sharing?.tailscale.installed}>
                 Stop /krea Funnel
