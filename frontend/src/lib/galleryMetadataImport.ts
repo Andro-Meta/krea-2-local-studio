@@ -91,7 +91,7 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     prompt: String(metadata.prompt || ''),
     negative_prompt: String(metadata.negative_prompt || ''),
     checkpoint: oneOf(metadata.checkpoint, ['turbo', 'raw'] as const),
-    quantization: oneOf(metadata.quantization, ['bf16', 'fp8'] as const),
+    quantization: oneOf(metadata.quantization, ['bf16', 'fp8', 'fp16'] as const),
     steps: numberValue(metadata.steps),
     cfg: numberValue(metadata.cfg),
     mu: numberValue(metadata.mu) ?? null,
@@ -137,7 +137,7 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     rebalance_multiplier: numberValue(metadata.rebalance?.multiplier),
     rebalance_weights: typeof metadata.rebalance?.weights === 'string' ? metadata.rebalance.weights : undefined,
     rebalance_mode: oneOf(metadata.rebalance?.mode, ['legacy_multiply', 'rms_renorm'] as const),
-    rebalance_preset: oneOf(metadata.rebalance?.preset, ['legacy', 'subtle', 'balanced', 'detail', 'uniform', 'custom'] as const),
+    rebalance_preset: oneOf(metadata.rebalance?.preset, ['legacy', 'subtle', 'balanced', 'detail', 'emotion', 'uniform', 'custom'] as const),
     rebalance_renormalize: booleanValue(metadata.rebalance?.renormalize),
     edit_rebalance_enabled: booleanValue(metadata.rebalance?.edit_enabled),
     edit_rebalance_profile: oneOf(metadata.rebalance?.edit_profile, ['default', 'edit', 'conservative'] as const),
@@ -153,6 +153,8 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     prompt_planner_show_output: booleanValue(metadata.prompt_planner?.enabled),
     prompt_planner_lock_original: booleanValue(metadata.prompt_planner?.lock_original),
     prompt_planner_use_regions: booleanValue(metadata.prompt_planner?.use_regions),
+    think_steering_enabled: booleanValue(metadata.think_steering?.enabled),
+    think_text: typeof metadata.think_steering?.text === 'string' ? metadata.think_steering.text : undefined,
   }
 
   if (targetMode === 'txt2img') {

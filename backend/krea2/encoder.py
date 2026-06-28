@@ -24,6 +24,7 @@ from .reference_image import (
     IMAGE_TOKEN_SIZES,
     wrap_image_prompt,
 )
+from .text_prompt import assistant_suffix
 from support_models import support_model_path
 
 logger = logging.getLogger(__name__)
@@ -147,23 +148,26 @@ class Qwen3VLConditioner(nn.Module):
             [hidden_states[i] for i in self.select_layers], dim=2
         )
 
-    def forward(self, prompts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, prompts: list[str], *, think: str | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode text-only prompts.
+
+        `think`, when set, appends a `<think>...</think>` reasoning span to the
+        assistant turn as an in-distribution expression-steering lever.
 
         Returns:
             txt:     (B, seq, 12, 2560) conditioning (4D, txtfusion-ready)
             txtmask: (B, seq) attention mask
         """
         if len(prompts) > 1 and len(set(prompts)) == 1:
-            txt, mask = self._encode_unique_text([prompts[0]])
+            txt, mask = self._encode_unique_text([prompts[0]], think=think)
             return txt.expand(len(prompts), -1, -1, -1), mask.expand(len(prompts), -1)
-        return self._encode_unique_text(prompts)
+        return self._encode_unique_text(prompts, think=think)
 
-    def _encode_unique_text(self, prompts: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
+    def _encode_unique_text(self, prompts: list[str], *, think: str | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         device = next(self.qwen.parameters()).device
 
         text = [PROMPT_PREFIX + p for p in prompts]
-        suffix_text = [PROMPT_SUFFIX] * len(text)
+        suffix_text = [assistant_suffix(PROMPT_SUFFIX, think)] * len(text)
         suffix_inputs = self.processor(text=suffix_text, return_tensors="pt").to(device)
         suffix_ids = suffix_inputs["input_ids"]
         suffix_mask = suffix_inputs["attention_mask"].bool()

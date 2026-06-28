@@ -106,6 +106,8 @@ export default function GeneratePanel() {
         prompt_planner_lock_original: params.prompt_planner_lock_original,
         prompt_planner_use_regions: params.prompt_planner_use_regions,
         use_prompt_expander: params.use_prompt_expander,
+        think_steering_enabled: params.think_steering_enabled,
+        think_text: params.think_text || undefined,
         refine: params.refine,
         refine_denoise: params.refine_denoise,
         refine_steps: params.refine_steps,

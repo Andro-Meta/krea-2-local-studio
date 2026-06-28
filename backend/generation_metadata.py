@@ -174,6 +174,10 @@ def build_generation_metadata(
             "output": getattr(req, "prompt_planner_output", {}) or {},
         },
         "use_prompt_expander": bool(getattr(req, "use_prompt_expander", False)),
+        "think_steering": {
+            "enabled": bool(getattr(req, "think_steering_enabled", False)),
+            "text": str(getattr(req, "think_text", "") or ""),
+        },
     }
     if extra:
         metadata["extra"] = extra

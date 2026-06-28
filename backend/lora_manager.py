@@ -17,6 +17,11 @@ OFFICIAL_LORAS: dict[str, dict] = {
     "krea2_softwatercolor": {"display_name": "Soft Watercolor", "trigger_words": ["art deco watercolor style"], "strength": 1.0},
     "krea2_sunsetblur":     {"display_name": "Sunset Blur",     "trigger_words": ["ethereal motion blur style"], "strength": 1.0},
     "krea2_vintagetarot":   {"display_name": "Vintage Tarot",   "trigger_words": ["vintage tarot style"], "strength": 1.0},
+    "krea2_warmpastel":     {"display_name": "Warm Pastel",     "trigger_words": ["warm pastel style"], "strength": 1.0},
+    # Turbo distillation extracted as a LoRA. Applying it to RAW at ~0.6 speeds
+    # RAW up toward Turbo behavior (Banodoco 6/27: "raw + turbo lora @0.6 works
+    # well"); it carries no trigger words.
+    "krea2_turbo_lora_rank_64_bf16": {"display_name": "Turbo Distill (speeds RAW @0.6)", "trigger_words": [], "strength": 0.6},
 }
 
 OFFICIAL_LORA_HF_IDS: dict[str, str] = {
@@ -29,6 +34,8 @@ OFFICIAL_LORA_HF_IDS: dict[str, str] = {
     "krea2_softwatercolor": "Comfy-Org/Krea-2",
     "krea2_sunsetblur":     "Comfy-Org/Krea-2",
     "krea2_vintagetarot":   "Comfy-Org/Krea-2",
+    "krea2_warmpastel":     "Comfy-Org/Krea-2",
+    "krea2_turbo_lora_rank_64_bf16": "Comfy-Org/Krea-2",
 }
 
 

@@ -478,7 +478,7 @@ export default function SystemStatus() {
                 placeholder="models\krea2\diffusion_models\krea2_turbo_fp8_scaled.safetensors"
               />
               <Stack direction="row" spacing={1}>
-                {['bf16', 'fp8'].map(q => (
+                {['fp8', 'bf16', 'fp16'].map(q => (
                   <Chip key={q} label={q} size="small" clickable
                     variant={quant === q ? 'filled' : 'outlined'}
                     color={quant === q ? 'primary' : 'default'}

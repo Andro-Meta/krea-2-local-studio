@@ -36,8 +36,9 @@ const PROFILES = [
 ]
 
 const QUANTS = [
-  { id: 'bf16', label: 'bf16', desc: '~16–20 GB VRAM · full precision' },
-  { id: 'fp8',  label: 'fp8',  desc: '~8–13 GB VRAM · quantized' },
+  { id: 'fp8',  label: 'fp8',  desc: '~8–13 GB VRAM · quantized (dynamic-fp8 lets RAW/bf16 run on 24GB)' },
+  { id: 'bf16', label: 'bf16', desc: '~24 GB VRAM + ~48 GB RAM · full precision' },
+  { id: 'fp16', label: 'fp16', desc: '~24 GB VRAM · full precision + fp16 accumulation (fast, high-VRAM)' },
 ]
 
 export default function ModelSection() {
@@ -51,24 +52,26 @@ export default function ModelSection() {
         checkpoint: 'turbo',
         steps: 8,
         cfg: 1.0,
-        mu: 1.15,
+        mu: 1.15,            // pinned shift; Turbo is frozen to 1024 — never scale by resolution
         quantization: 'fp8',
         sampler: 'euler',
         scheduler: 'simple',
         conditioning_mode: 'auto',
+        negative_prompt: '', // LLM-conditioned model: negatives are unused at CFG 1
       })
     }
     if (profileId === 'krea_raw') {
       setParams({
         model_profile: profileId,
         checkpoint: 'raw',
-        steps: 52,
+        steps: 52,           // RAW needs ~40–60; <40 looks washed out
         cfg: 3.5,
-        mu: null,
-        quantization: 'bf16',
+        mu: null,            // documented default sampling
+        quantization: 'fp8', // dynamic-fp8 runs RAW on 24GB; switch to bf16/fp16 if you have the VRAM/RAM
         sampler: 'euler',
         scheduler: 'simple',
         conditioning_mode: 'auto',
+        negative_prompt: '', // Krea RAW works best with an empty negative prompt
       })
     }
   }
@@ -103,7 +106,7 @@ export default function ModelSection() {
                 label={q.label}
                 variant={params.quantization === q.id ? 'filled' : 'outlined'}
                 color={params.quantization === q.id ? 'secondary' : 'default'}
-                onClick={() => setParam('quantization', q.id as 'bf16' | 'fp8')}
+                onClick={() => setParam('quantization', q.id as 'bf16' | 'fp8' | 'fp16')}
                 clickable
                 size="small"
               />

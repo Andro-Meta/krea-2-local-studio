@@ -36,7 +36,7 @@ class QwenEncoderEfficiencyTests(unittest.TestCase):
         conditioner = object.__new__(Qwen3VLConditioner)
         calls = []
 
-        def fake_encode_unique(self, prompts):
+        def fake_encode_unique(self, prompts, *, think=None):
             calls.append(list(prompts))
             return (
                 torch.ones(1, 2, 3, 4, dtype=torch.bfloat16),

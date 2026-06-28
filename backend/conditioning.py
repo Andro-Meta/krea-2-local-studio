@@ -14,6 +14,11 @@ PRESET_LAYER_WEIGHTS = {
     "balanced": DEFAULT_LAYER_WEIGHTS,
     "detail": [0.8, 0.8, 0.9, 0.9, 1.0, 1.0, 1.2, 3.0, 6.0, 1.5, 5.0, 1.2],
     "subtle": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 2.0, 1.0, 1.5, 1.0],
+    # Community "restore emotion" weights (Banodoco 6/27): nudges the mid band
+    # (index 7) and the L20/L23 hub (index 10) to recover expression that Turbo's
+    # distillation flattens, while keeping the deep band (index 8) at 1.0 to avoid
+    # the over-saturation / text damage the heavier presets cause. Use multiplier 1.
+    "emotion": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.75, 1.0, 1.1, 4.0, 1.0],
     "uniform": [1.0] * 12,
 }
 DEFAULT_MULTIPLIER = 1.0

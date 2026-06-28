@@ -3,13 +3,18 @@ Adds encode() for img2img support (not in official release).
 """
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 from einops import rearrange
 
+logger = logging.getLogger(__name__)
+
 
 class QwenAutoencoder(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, vae_override_path: str | None = None) -> None:
         super().__init__()
         from diffusers import AutoencoderKLQwenImage
         from support_models import support_model_path
@@ -17,6 +22,12 @@ class QwenAutoencoder(nn.Module):
         self.ae = AutoencoderKLQwenImage.from_pretrained(
             str(support_model_path("qwen_image_vae")), subfolder="vae"
         )
+        self.vae_source = "stock"
+        # Optional experimental override (Qwen HDR / "real" / clear VAE). Any
+        # failure falls back to the stock VAE already loaded above, so default
+        # behavior is never affected.
+        if vae_override_path:
+            self._apply_override(vae_override_path)
         self.ae.requires_grad_(False)
 
         # Normalization constants — load from model config when available
@@ -36,6 +47,47 @@ class QwenAutoencoder(nn.Module):
             )
         elif hasattr(cfg, "scaling_factor") and cfg.scaling_factor:
             self.latents_std.fill_(1.0 / cfg.scaling_factor)
+
+    def _apply_override(self, path: str) -> None:
+        """Best-effort load of an alternative Qwen-Image VAE; keep stock on failure.
+
+        Supports a diffusers VAE directory (with a `vae/` subfolder or root config)
+        or a single comfy-style safetensors whose keys substantially match the
+        stock VAE. Anything unexpected -> keep the already-loaded stock VAE.
+        """
+        try:
+            from diffusers import AutoencoderKLQwenImage
+
+            p = Path(path)
+            if p.is_dir():
+                sub = "vae" if (p / "vae").exists() else ""
+                self.ae = AutoencoderKLQwenImage.from_pretrained(str(p), subfolder=sub or None)
+                self.vae_source = f"override:dir:{p.name}"
+                logger.info("Loaded override VAE directory: %s", p)
+                return
+            if p.is_file() and p.suffix == ".safetensors":
+                from safetensors.torch import load_file
+
+                sd = load_file(str(p))
+                ref_keys = set(self.ae.state_dict().keys())
+                matched = sum(1 for k in sd if k in ref_keys)
+                if matched < max(1, len(ref_keys) // 2):
+                    logger.warning(
+                        "Override VAE %s matched only %d/%d keys; keeping stock VAE. "
+                        "Use a diffusers-format Qwen Image VAE directory for overrides.",
+                        p.name, matched, len(ref_keys),
+                    )
+                    return
+                missing, unexpected = self.ae.load_state_dict(sd, strict=False)
+                self.vae_source = f"override:file:{p.name}"
+                logger.info(
+                    "Applied override VAE %s (matched=%d, missing=%d, unexpected=%d)",
+                    p.name, matched, len(missing), len(unexpected),
+                )
+                return
+            logger.warning("VAE override path is not a usable file/dir: %s", path)
+        except Exception as exc:  # noqa: BLE001 - never let an override break loading
+            logger.warning("VAE override failed (%s); keeping stock VAE.", exc)
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
         """Latents → pixel tensors.  x: (B, C, H, W) normalized latent."""

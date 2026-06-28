@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Alert, Box, Button, Checkbox, CircularProgress, Collapse, FormControlLabel, IconButton, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
+import TipsAndUpdatesIcon from '@mui/icons-material/TipsAndUpdates'
 import { useStore } from '../../store'
 import { apiFetch, type PromptPlan } from '../../api'
 import CreatePromptFromImage from '../CreatePromptFromImage'
@@ -66,7 +67,20 @@ export default function PromptSection() {
           onChange={e => setParam('prompt', e.target.value)}
           placeholder="Describe the image you want to create…"
         />
-        <Tooltip title="Expand prompt with AI">
+        <Tooltip
+          title={
+            <span>
+              <b>Krea 2 prompting (official):</b><br />
+              • Use natural language; describe the scene as to a person.<br />
+              • Long, detailed prompts work best; Turbo handles up to 2k.<br />
+              • Put words to render in quotes, e.g. a sign that says "OPEN".<br />
+              • The wand applies Krea's official expansion prompt.
+            </span>
+          }
+        >
+          <IconButton sx={{ mt: 0.5 }} size="small"><TipsAndUpdatesIcon fontSize="small" /></IconButton>
+        </Tooltip>
+        <Tooltip title="Expand prompt with AI (Krea official expansion)">
           <span>
             <IconButton onClick={handleExpand} disabled={expanding || !params.prompt} sx={{ mt: 0.5 }}>
               {expanding ? <CircularProgress size={20} /> : <AutoFixHighIcon />}
@@ -128,6 +142,30 @@ export default function PromptSection() {
                 </Stack>
               </Stack>
             ) : null}
+          </Collapse>
+        </Stack>
+      </Paper>
+      <Paper variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>
+        <Stack spacing={1}>
+          <FormControlLabel
+            control={<Checkbox checked={params.think_steering_enabled} onChange={e => setParam('think_steering_enabled', e.target.checked)} />}
+            label="Expression steering (<think> block)"
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ px: 1, mt: -0.5 }}>
+            Restores emotion/intensity that Turbo's distillation flattens, in-distribution — a gentler alternative to the Emotion rebalance preset. Leave the text blank to use the default expression nudge.
+          </Typography>
+          <Collapse in={params.think_steering_enabled}>
+            <TextField
+              label="Think text (optional)"
+              value={params.think_text}
+              onChange={e => setParam('think_text', e.target.value)}
+              multiline
+              minRows={2}
+              maxRows={4}
+              fullWidth
+              size="small"
+              placeholder="e.g. show genuine fear and tension, dramatic lighting…"
+            />
           </Collapse>
         </Stack>
       </Paper>

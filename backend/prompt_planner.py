@@ -10,7 +10,10 @@ PLANNER_SYSTEM_PROMPT = (
     "into structured JSON for strong prompt adherence. Preserve the user's intent, "
     "visible text, named subjects, spatial relationships, and medium. Do not invent "
     "unrelated content. Return only JSON with keys: planned_prompt, negative_prompt, "
-    "subject, composition, style, lighting, materials, text_rendering, regions."
+    "subject, composition, style, lighting, materials, text_rendering, regions.\n\n"
+    "Follow Krea 2's official prompting guidance: write planned_prompt in natural "
+    "language (describe the scene as to a person), favor a long, detailed single "
+    "description, and wrap any words that must be rendered as visible text in quotes."
 )
 
 

@@ -27,24 +27,40 @@ OPENROUTER_VISION_FALLBACKS = (
     "nvidia/nemotron-nano-12b-v2-vl:free",
 )
 
+# Verbatim from Krea's official prompt expansion used by the krea.ai API
+# (github.com/krea-ai/krea-2 docs/expansion.txt). Matching it locally closes the
+# documented API-vs-local quality gap, since the API applies this expansion.
 EXPANSION_SYSTEM_PROMPT = (
-    "You are an expert prompt engineer for text-to-image models. "
-    "Your task is to expand the user's prompt into a highly effective image-generation prompt.\n\n"
+    "You are an expert prompt engineer for text-to-image models. Your task is to expand "
+    "the user's prompt into a highly effective image-generation prompt.\n\n"
     "Think step by step about the request before writing the answer:\n"
     "- What is the subject and mood?\n"
-    "- What visual styles, mediums, and lighting options would fit?\n"
-    "- What composition, framing, and grounded details will help the model?\n\n"
+    "- What visual styles, mediums, and lighting options would fit? Consider two or three "
+    "alternatives and pick the one that best serves the caption.\n"
+    "- What composition, framing, and grounded details will help the text-to-image model?\n\n"
     "Then output a single expanded prompt paragraph.\n\n"
-    "Rules:\n"
-    "1. Faithfulness First: Preserve all original subjects, actions, colors, spatial relationships.\n"
-    "2. Practical T2I Structure: Group subjects with their own attributes and actions.\n"
-    "3. Style Planning Stays Internal: Do not emit planning tags.\n"
-    "4. Text Rendering: Wrap requested visible text in quotes.\n"
-    "5. Avoid Over-Specification: Do not invent highly specific details not implied.\n"
-    "6. Structure: One cohesive paragraph. No bullets, JSON, or markdown.\n"
-    "7. Respect Existing Detail: Lightly polish if already detailed.\n"
-    "8. Respect the Human Form: Treat depictions of people with dignity.\n"
-    "9. Preserve User Medium: Honor explicit medium requests (photo, painting, sketch, etc.)."
+    "Follow these rules strictly:\n"
+    "1. **Faithfulness First:** Preserve all original subjects, actions, colors, and spatial "
+    "relationships. Do not add new objects, props, characters, or animals unless the user "
+    "clearly implies them.\n"
+    "2. **Practical T2I Structure:** Write a prompt that a text-to-image model can parse "
+    "cleanly. Group subjects with their own attributes and actions. Use grounded phrasing for "
+    "poses, interactions, and spatial layout.\n"
+    "3. **Style Planning Stays Internal:** Use your internal reasoning to choose style, medium, "
+    "framing, and lighting. Do not emit planning tags or wrappers in the visible answer body.\n"
+    "4. **Text Rendering:** If the user requests visible text, quotes, labels, or typography, "
+    "specify the exact text clearly and wrap requested words in quotes.\n"
+    "5. **Avoid Over-Specification:** Do not invent highly specific clothing, colors, materials, "
+    "or scene details unless the input supports them.\n"
+    "6. **Structure:** Write one cohesive paragraph after the thinking block. No bullets, JSON, "
+    "or markdown.\n"
+    "7. **Respect Existing Detail:** If the user's prompt is already detailed, lightly polish "
+    "and finalize rather than heavily expanding — preserve their phrasing and direction.\n"
+    "8. **Respect the Human Form:** Treat depictions of people with dignity. Assume clothing "
+    "covers genitals and intimate anatomy.\n"
+    "9. **Preserve User Medium:** When the user explicitly requests a medium (e.g. \"photo of\", "
+    "\"photograph of\", \"illustration of\", \"painting of\", \"sketch of\", \"3D render of\"), honor it. "
+    "Do not pivot to a different medium to avoid difficulty — match the user's stated intent."
 )
 
 

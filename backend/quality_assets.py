@@ -38,6 +38,22 @@ def asset_specs() -> list[QualityAssetSpec]:
             purpose="Krea 2 RAW BF16 benchmark and research-quality comparison",
         ),
         QualityAssetSpec(
+            id="krea2_raw_fp8",
+            repo_id="Comfy-Org/Krea-2",
+            filename="diffusion_models/krea2_raw_fp8_scaled.safetensors",
+            local_path=diffusion_dir / "krea2_raw_fp8_scaled.safetensors",
+            kind="file",
+            purpose="Krea 2 RAW pre-quantized fp8 — loads on 24GB VRAM without RAM-heavy dynamic quant",
+        ),
+        QualityAssetSpec(
+            id="qwen_image_hdr_vae",
+            repo_id="Kijai/QwenImage_experimental",
+            filename="qwen_image_HDR_vae_fp32_comfy.safetensors",
+            local_path=MODELS_DIR / "krea2" / "vae" / "qwen_image_HDR_vae_fp32_comfy.safetensors",
+            kind="file",
+            purpose="Optional sharper/HDR Qwen Image VAE for decode (experimental override)",
+        ),
+        QualityAssetSpec(
             id="flux_fill",
             repo_id="black-forest-labs/FLUX.1-Fill-dev",
             filename=None,

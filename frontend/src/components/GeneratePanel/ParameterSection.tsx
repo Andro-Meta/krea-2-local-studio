@@ -352,6 +352,7 @@ export default function ParameterSection() {
                     <MenuItem value="balanced">Balanced, artifact-safe</MenuItem>
                     <MenuItem value="subtle">Subtle</MenuItem>
                     <MenuItem value="detail">Detail</MenuItem>
+                    <MenuItem value="emotion">Emotion (restore expression)</MenuItem>
                     <MenuItem value="uniform">Uniform</MenuItem>
                     <MenuItem value="legacy">Legacy multiply</MenuItem>
                     <MenuItem value="custom">Custom</MenuItem>

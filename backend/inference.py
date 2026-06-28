@@ -31,11 +31,13 @@ from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
 from krea2.block_swap import BlockSwapController, resolve_swap_plan
 from krea2.fp8_quant import load_bf16_as_fp8_scaled
+from krea2.text_prompt import DEFAULT_EXPRESSION_THINK
+from krea2.vae_source import resolve_vae_source
 from krea2.reference_image import cap_vision_megapixels, crop_image_to_mask
 from krea2.sampler_registry import validate_sampler_configuration
 from krea2.lanpaint_sampler import LanPaintSettings
 from lora_manager import apply_loras, build_trigger_prompt
-from model_profiles import apply_profile_defaults
+from model_profiles import MODEL_PROFILES, apply_profile_defaults
 from moodboards_catalog import moodboard_generation_context
 from memory_manager import clear_cuda_cache
 from regional_scene import build_regional_prompt_text
@@ -73,8 +75,30 @@ def _apply_creativity_defaults(req) -> None:
         req.rebalance_multiplier = preset["rebalance_multiplier"]
 
 
+def _normalize_request_dimensions(req) -> None:
+    """Clamp width/height to the patch grid and the model's max resolution.
+
+    Guarantees correctness for any caller (1k/2k presets or custom values):
+    dims become multiples of 16 within [256, model max]. Turbo/RAW both allow up
+    to 2048 (the documented 2k ceiling). mu policy is unchanged here — Turbo stays
+    pinned (no resolution scaling) and RAW stays resolution-adaptive.
+    """
+    from resolution import normalize_dimensions
+
+    profile_id = str(getattr(req, "model_profile", "") or "")
+    max_edge = 2048
+    profile = MODEL_PROFILES.get(profile_id)
+    if profile is not None:
+        max_edge = int(getattr(profile, "max_resolution", 2048))
+    elif str(getattr(req, "checkpoint", "") or "").lower() == "raw":
+        max_edge = int(MODEL_PROFILES["krea_raw"].max_resolution)
+    w, h = normalize_dimensions(int(getattr(req, "width", 1024)), int(getattr(req, "height", 1024)), max_edge=max_edge)
+    req.width, req.height = w, h
+
+
 def normalize_generation_defaults(req) -> None:
     """Apply model-family defaults for callers that bypass the frontend presets."""
+    _normalize_request_dimensions(req)
     if _request_field_was_set(req, "model_profile") and str(getattr(req, "model_profile", "") or ""):
         apply_profile_defaults(req)
         _apply_creativity_defaults(req)
@@ -631,6 +655,16 @@ class Krea2Pipeline:
         with self._lock:
             self.unload()
 
+            # Compute dtype: fp16 (with fp16 reduced-precision accumulation) is a
+            # fast, high-quality full-precision option when VRAM allows; otherwise
+            # bf16 is the compute dtype (fp8 weights dequantize to bf16).
+            self._dtype = torch.float16 if quantization == "fp16" else torch.bfloat16
+            if quantization == "fp16" and torch.cuda.is_available():
+                try:
+                    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
+                except Exception:
+                    pass
+
             watchdog = LoadWatchdog()
             watchdog.start()
             mmdit = ae = encoder = None
@@ -707,10 +741,11 @@ class Krea2Pipeline:
                                 f"Block swap active: {self._blocks_to_swap}/{len(mmdit.blocks)} DiT blocks streamed from RAM. {mem_snapshot()}"
                             )
 
-                # 3. VAE
+                # 3. VAE (optional experimental override; falls back to stock)
                 watchdog.check()
-                ae = QwenAutoencoder().to(device=self._device, dtype=self._dtype).eval()
-                logger.info(f"VAE loaded. {mem_snapshot()}")
+                vae_override = resolve_vae_source(getattr(settings, "krea2_vae_path", "")).get("path") or None
+                ae = QwenAutoencoder(vae_override_path=vae_override).to(device=self._device, dtype=self._dtype).eval()
+                logger.info(f"VAE loaded ({getattr(ae, 'vae_source', 'stock')}). {mem_snapshot()}")
 
                 # 4. Encoder — kept on CPU, moved to GPU only during encoding.
                 # Free anything reclaimable before the ~8GB encoder load.
@@ -864,6 +899,10 @@ class Krea2Pipeline:
             if b64
         ]
         ref_hashes = self._hash_ref_images(ref_b64s)
+        # <think> expression steering (positive prompt only, in-distribution).
+        think_text = None
+        if bool(getattr(req, "think_steering_enabled", False)):
+            think_text = str(getattr(req, "think_text", "") or "").strip() or DEFAULT_EXPRESSION_THINK
         rebalance_preset = str(getattr(req, "rebalance_preset", "balanced") or "balanced")
         rebalance_mode = str(getattr(req, "rebalance_mode", "rms_renorm") or "rms_renorm")
         rebalance_renormalize = bool(getattr(req, "rebalance_renormalize", True))
@@ -903,6 +942,7 @@ class Krea2Pipeline:
             edit_rebalance_profile,
             "qwen_image_edit_plus" if edit_plus_active else "qwen_reference",
             style_fusion_mode,
+            think_text or "",
         )
         negative_key = (
             "negative",
@@ -939,7 +979,7 @@ class Krea2Pipeline:
                             else "before_prompt"
                         )
                         if edit_rebalance_enabled:
-                            text_txt, text_mask = self.encoder([prompt] * req.num_images)
+                            text_txt, text_mask = self.encoder([prompt] * req.num_images, think=think_text)
                             if edit_plus_active:
                                 image_txt, image_mask = self.encoder.forward_image_edit_plus(
                                     [prompt] * req.num_images,
@@ -979,7 +1019,7 @@ class Krea2Pipeline:
                                     vision_position=vision_position,
                                 )
                     else:
-                        txt, txtmask = self.encoder([prompt] * req.num_images)
+                        txt, txtmask = self.encoder([prompt] * req.num_images, think=think_text)
 
                     if req.use_rebalance and weights is not None and not edit_rebalance_enabled:
                         txt = rebalance(

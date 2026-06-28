@@ -20,7 +20,7 @@ export interface GenerationRequest {
   model_profile?: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
   checkpoint?: 'turbo' | 'raw'
   checkpoint_path?: string
-  quantization?: 'bf16' | 'fp8'
+  quantization?: 'bf16' | 'fp8' | 'fp16'
   steps?: number
   cfg?: number
   mu?: number | null
@@ -81,7 +81,7 @@ export interface GenerationRequest {
   rebalance_multiplier?: number
   rebalance_weights?: string
   rebalance_mode?: 'legacy_multiply' | 'rms_renorm'
-  rebalance_preset?: 'legacy' | 'subtle' | 'balanced' | 'detail' | 'uniform' | 'custom'
+  rebalance_preset?: 'legacy' | 'subtle' | 'balanced' | 'detail' | 'emotion' | 'uniform' | 'custom'
   rebalance_renormalize?: boolean
   edit_rebalance_enabled?: boolean
   edit_rebalance_profile?: 'default' | 'edit' | 'conservative'
@@ -102,6 +102,8 @@ export interface GenerationRequest {
   prompt_planner_lock_original?: boolean
   prompt_planner_use_regions?: boolean
   use_prompt_expander?: boolean
+  think_steering_enabled?: boolean
+  think_text?: string
   refine?: boolean
   refine_denoise?: number
   refine_steps?: number
@@ -487,6 +489,10 @@ export const apiFetch = {
     api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' }>('/api/expand-prompt', { prompt }).then(r => r.data),
   planPrompt: (prompt: string, max_tokens = 700) =>
     api.post<PromptPlan>('/api/plan-prompt', { prompt, max_tokens }).then(r => r.data),
+  promptingGuide: () =>
+    api.get<{ guidelines: string; examples: string[]; source: string }>('/api/prompting-guide').then(r => r.data),
+  resolutionOptions: () =>
+    api.get<{ tiers: string[]; aspects: string[]; dimensions: Record<string, Record<string, [number, number]>> }>('/api/resolution-options').then(r => r.data),
   promptRecipes: () => api.get<{ items: PromptRecipe[] }>('/api/prompt-recipes').then(r => r.data),
   savePromptRecipe: (recipe: Partial<PromptRecipe> & { name: string }) =>
     api.post<PromptRecipe>('/api/prompt-recipes', recipe).then(r => r.data),

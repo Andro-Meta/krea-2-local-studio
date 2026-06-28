@@ -73,7 +73,7 @@ class GenerationRequest(BaseModel):
     rebalance_multiplier: float = 1.0
     rebalance_weights: str = "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
     rebalance_mode: Literal["legacy_multiply", "rms_renorm"] = "rms_renorm"
-    rebalance_preset: Literal["legacy", "subtle", "balanced", "detail", "uniform", "custom"] = "balanced"
+    rebalance_preset: Literal["legacy", "subtle", "balanced", "detail", "emotion", "uniform", "custom"] = "balanced"
     rebalance_renormalize: bool = True
     edit_rebalance_enabled: bool = True
     edit_rebalance_profile: Literal["default", "edit", "conservative"] = "conservative"
@@ -95,6 +95,10 @@ class GenerationRequest(BaseModel):
     prompt_planner_use_regions: bool = False
     prompt_planner_output: dict = {}
     use_prompt_expander: bool = False
+    # <think>-block expression steering: appends a reasoning span to the assistant
+    # turn to restore expression/intensity in-distribution (positive prompt only).
+    think_steering_enabled: bool = False
+    think_text: str = ""
     # Detail refiner: optional second low-denoise self-pass (txt2img/img2img only)
     refine: bool = False
     refine_denoise: float = 0.3

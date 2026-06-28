@@ -40,7 +40,7 @@ export interface GenerateParams {
   mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   model_profile: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
   checkpoint: 'turbo' | 'raw'
-  quantization: 'bf16' | 'fp8'
+  quantization: 'bf16' | 'fp8' | 'fp16'
   steps: number
   cfg: number
   mu: number | null
@@ -48,6 +48,8 @@ export interface GenerateParams {
   y2: number
   width: number
   height: number
+  resolution_tier: '1k' | '2k'
+  aspect_ratio: string
   num_images: number
   seed: number
   denoise: number
@@ -74,7 +76,7 @@ export interface GenerateParams {
   rebalance_multiplier: number
   rebalance_weights: string
   rebalance_mode: 'legacy_multiply' | 'rms_renorm'
-  rebalance_preset: 'legacy' | 'subtle' | 'balanced' | 'detail' | 'uniform' | 'custom'
+  rebalance_preset: 'legacy' | 'subtle' | 'balanced' | 'detail' | 'emotion' | 'uniform' | 'custom'
   rebalance_renormalize: boolean
   edit_rebalance_enabled: boolean
   edit_rebalance_profile: 'default' | 'edit' | 'conservative'
@@ -96,6 +98,8 @@ export interface GenerateParams {
   prompt_planner_lock_original: boolean
   prompt_planner_use_regions: boolean
   use_prompt_expander: boolean
+  think_steering_enabled: boolean
+  think_text: string
   refine: boolean
   refine_denoise: number
   refine_steps: number
@@ -184,6 +188,8 @@ const defaultParams: GenerateParams = {
   y2: 1.15,
   width: 1024,
   height: 1024,
+  resolution_tier: '1k',
+  aspect_ratio: '1:1',
   num_images: 1,
   seed: -1,
   denoise: 0.75,
@@ -232,6 +238,8 @@ const defaultParams: GenerateParams = {
   prompt_planner_lock_original: false,
   prompt_planner_use_regions: false,
   use_prompt_expander: false,
+  think_steering_enabled: false,
+  think_text: '',
   refine: false,
   refine_denoise: 0.3,
   refine_steps: 6,

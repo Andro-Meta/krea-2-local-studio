@@ -1363,6 +1363,20 @@ async def expand_prompt_endpoint(req: ExpandPromptRequest):
     )
 
 
+@app.get("/api/resolution-options")
+async def resolution_options_endpoint():
+    from resolution import resolution_options
+
+    return resolution_options()
+
+
+@app.get("/api/prompting-guide")
+async def prompting_guide_endpoint():
+    from prompting_guide import prompting_guide_payload
+
+    return prompting_guide_payload()
+
+
 @app.post("/api/plan-prompt", response_model=PlanPromptResponse)
 async def plan_prompt_endpoint(req: PlanPromptRequest):
     loop = asyncio.get_event_loop()
