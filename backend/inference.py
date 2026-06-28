@@ -547,7 +547,8 @@ class Krea2Pipeline:
     def unload(self):
         if self._block_swap is not None:
             try:
-                self._block_swap.remove()
+                # Don't pull offloaded blocks back into VRAM just to discard them.
+                self._block_swap.remove(restore_device=False)
             except Exception:
                 pass
             self._block_swap = None

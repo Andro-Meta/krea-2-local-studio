@@ -106,6 +106,20 @@ class BlockSwapControllerTests(unittest.TestCase):
             self.assertEqual(len(block._forward_pre_hooks), 0)
             self.assertEqual(len(block._forward_hooks), 0)
 
+    def test_remove_without_restore_still_clears_hooks(self) -> None:
+        from krea2.block_swap import BlockSwapController
+
+        model = _TinyDiT(n_blocks=5).eval()
+        controller = BlockSwapController(
+            model, blocks_to_swap=2, device="cpu", offload_device="cpu", prefetch=0, pin_memory=False
+        )
+        controller.install()
+        controller.remove(restore_device=False)
+
+        for block in model.blocks:
+            self.assertEqual(len(block._forward_pre_hooks), 0)
+            self.assertEqual(len(block._forward_hooks), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

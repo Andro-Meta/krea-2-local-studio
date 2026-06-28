@@ -117,12 +117,16 @@ class BlockSwapController:
             self._hooks.append(block.register_forward_hook(self._post_hook))
         return self
 
-    def remove(self) -> None:
+    def remove(self, *, restore_device: bool = True) -> None:
+        """Detach hooks. With restore_device, move swapped blocks back to the
+        compute device (use when keeping the model); skip it during unload so we
+        don't pull offloaded blocks back into VRAM just before discarding them."""
         for handle in self._hooks:
             handle.remove()
         self._hooks.clear()
-        for block in self.blocks:
-            block.to(self.device)
+        if restore_device:
+            for block in self.blocks:
+                block.to(self.device)
         self._events.clear()
         self._stream = None
 
