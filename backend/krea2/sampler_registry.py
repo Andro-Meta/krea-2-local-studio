@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from .schedulers import ALL_SCHEDULERS, FLOW_SCHEDULERS
+from .schedulers import ALL_SCHEDULERS
 
 # Native flow samplers accept any flow-time scheduler. simple/normal/beta/
 # sgm_uniform are recommended; karras/exponential are EDM-shaped and offered for
