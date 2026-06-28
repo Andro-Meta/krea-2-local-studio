@@ -1,4 +1,4 @@
-"""Krea 2 Studio FastAPI server — port 8200."""
+"""Krea 2 Studio FastAPI server."""
 from __future__ import annotations
 
 import asyncio
@@ -510,7 +510,11 @@ async def startup():
     if generation_queue is None:
         generation_queue = GenerationQueue(_queued_generation_handler)
         asyncio.create_task(generation_queue.run())
-    logger.info("Krea 2 Studio ready on port 8200")
+    logger.info(
+        "Krea 2 Studio ready (port=%s, public_base_path=%s)",
+        os.environ.get("KREA_SERVER_PORT", "8200"),
+        PUBLIC_BASE_PATH,
+    )
     if await should_sync_moodboards(mark=True):
         asyncio.create_task(_sync_krea_moodboards())
     asyncio.create_task(_moodboard_sync_loop())

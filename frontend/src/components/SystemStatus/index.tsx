@@ -81,7 +81,7 @@ export default function SystemStatus() {
         if (r.model_status.auto_quant) setQuant(r.model_status.auto_quant)
       }
     } catch (e: any) {
-      setFetchError('Cannot reach the server on port 8200. Is it running (run.bat)?')
+      setFetchError('Cannot reach the Krea server. Is run.bat still running? In share mode the local port may be dynamic; use the URL printed by run.bat.')
     } finally { setLoading(false) }
   }
 
