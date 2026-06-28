@@ -126,6 +126,8 @@ SAFE_SERVED_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,160}$")
 
 app = FastAPI(title="Krea 2 Studio", version="1.0.0")
 QUARANTINE_DIR = BASE_DIR / "moderation_quarantine"
+_outputs_static = StaticFiles(directory=str(OUTPUTS_DIR), check_dir=False)
+_quarantine_static = StaticFiles(directory=str(QUARANTINE_DIR), check_dir=False)
 
 app.add_middleware(
     CORSMiddleware,
@@ -667,28 +669,27 @@ def _quarantine_output_files(filenames: list[str], job_id: str) -> str | None:
     QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
     quarantined: str | None = None
     for filename in filenames:
-        src = _safe_child_file(OUTPUTS_DIR, filename)
-        if src is None or not src.exists():
+        safe_source = _safe_served_filename(filename)
+        if safe_source is None:
+            continue
+        src = OUTPUTS_DIR / safe_source
+        if not src.exists():
             continue
         dst_name = f"{job_id}_{filename}"
-        dst = _safe_child_file(QUARANTINE_DIR, dst_name)
-        if dst is None:
+        safe_dest = _safe_served_filename(dst_name)
+        if safe_dest is None:
             continue
+        dst = QUARANTINE_DIR / safe_dest
         src.replace(dst)
-        quarantined = quarantined or dst_name
+        quarantined = quarantined or safe_dest
     return quarantined
 
 
-def _safe_child_file(base_dir: Path, filename: str) -> Path | None:
+def _safe_served_filename(filename: str) -> str | None:
     safe_name = Path(str(filename or "")).name
     if safe_name != filename or not SAFE_SERVED_FILENAME_RE.fullmatch(safe_name):
         return None
-    base = base_dir.resolve()
-    # codeql[py/path-injection]
-    path = (base / safe_name).resolve()
-    if base != path.parent:
-        return None
-    return path
+    return safe_name
 
 
 @app.post("/api/realtime/preview")
@@ -1002,10 +1003,9 @@ async def delete_gallery_item(gallery_id: int, request: Request):
 
 @app.get("/api/outputs/{filename}")
 async def output_file(filename: str, request: Request):
-    path = _safe_child_file(OUTPUTS_DIR, filename)
-    if path is None:
+    safe_name = _safe_served_filename(filename)
+    if safe_name is None:
         raise HTTPException(404, "Not found")
-    safe_name = path.name
     row = await get_image_record_by_filename(safe_name)
     if row is None:
         raise HTTPException(404, "Not found")
@@ -1013,11 +1013,7 @@ async def output_file(filename: str, request: Request):
     owner = row.get("owner_username")
     if not is_role_admin and owner != username:
         raise HTTPException(404, "Not found")
-    # codeql[py/path-injection]
-    if not path.exists() or not path.is_file():
-        raise HTTPException(404, "Not found")
-    # codeql[py/path-injection]
-    return FileResponse(path)
+    return await _outputs_static.get_response(safe_name, request.scope)
 
 
 @app.get("/api/moderation/events")
@@ -1027,14 +1023,10 @@ async def moderation_events(username: str = "", limit: int = 100):
 
 @app.get("/api/moderation/quarantine/{filename}")
 async def moderation_quarantine_file(filename: str):
-    path = _safe_child_file(QUARANTINE_DIR, filename)
-    if path is None:
+    safe_name = _safe_served_filename(filename)
+    if safe_name is None:
         raise HTTPException(404, "Not found")
-    # codeql[py/path-injection]
-    if not path.exists() or not path.is_file():
-        raise HTTPException(404, "Not found")
-    # codeql[py/path-injection]
-    return FileResponse(path)
+    return await _quarantine_static.get_response(safe_name, {"type": "http", "method": "GET", "path": f"/{safe_name}", "headers": []})
 
 
 # ---------------------------------------------------------------------------
