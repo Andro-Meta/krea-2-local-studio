@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
 import GpuIcon from '@mui/icons-material/Memory'
-import { apiFetch, publicUrl, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
+import { apiFetch, publicUrl, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type ModerationStatus, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
 import { useStore } from '../../store'
 
 function GBBar({ label, used, total }: { label: string; used?: number; total?: number }) {
@@ -59,7 +59,9 @@ export default function SystemStatus() {
   const [qualityBusy, setQualityBusy] = useState<string | null>(null)
   const [qualityMessage, setQualityMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
   const [moderationEvents, setModerationEvents] = useState<ModerationEvent[]>([])
+  const [moderationStatus, setModerationStatus] = useState<ModerationStatus | null>(null)
   const [moderationBusy, setModerationBusy] = useState(false)
+  const [moderationInstallBusy, setModerationInstallBusy] = useState(false)
   const [memoryBusy, setMemoryBusy] = useState<string | null>(null)
   const [memoryMessage, setMemoryMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
   const [kreaProcesses, setKreaProcesses] = useState<KreaServerProcess[]>([])
@@ -141,12 +143,25 @@ export default function SystemStatus() {
   const loadModerationEvents = async () => {
     setModerationBusy(true)
     try {
+      setModerationStatus(await apiFetch.moderationStatus())
       const data = await apiFetch.moderationEvents('', 100)
       setModerationEvents(data.items)
     } catch {
       setModerationEvents([])
     } finally {
       setModerationBusy(false)
+    }
+  }
+
+  const installNudeNet = async () => {
+    setModerationInstallBusy(true)
+    try {
+      await apiFetch.installNudeNet()
+      setModerationStatus(await apiFetch.moderationStatus())
+    } catch (e: any) {
+      setModerationStatus({ nudenet_available: false, child_image_moderation: 'install_failed', message: e?.response?.data?.detail ?? e.message ?? 'NudeNet install failed.' })
+    } finally {
+      setModerationInstallBusy(false)
     }
   }
 
@@ -934,6 +949,22 @@ export default function SystemStatus() {
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               Child prompt/image blocks are recorded here for admin review. Quarantined images are admin-only and never shown in a child gallery.
             </Typography>
+            {moderationStatus && (
+              <Alert severity={moderationStatus.nudenet_available ? 'success' : 'warning'} sx={{ py: 0 }}>
+                {moderationStatus.message}
+              </Alert>
+            )}
+            {!moderationStatus?.nudenet_available && (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={installNudeNet}
+                disabled={moderationInstallBusy}
+                sx={{ alignSelf: 'flex-start' }}
+              >
+                {moderationInstallBusy ? 'Installing NudeNet…' : 'Install NudeNet for child image checks'}
+              </Button>
+            )}
             {moderationEvents.length === 0 ? (
               <Typography variant="caption" sx={{ color: 'text.disabled' }}>
                 No moderation events yet.

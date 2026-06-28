@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import sys
 import time
 import uuid
@@ -117,6 +118,7 @@ from moderation import (
     list_moderation_events,
     moderate_images,
     moderate_prompt,
+    nudenet_available,
     save_moderation_event,
 )
 
@@ -1019,6 +1021,39 @@ async def output_file(filename: str, request: Request):
 @app.get("/api/moderation/events")
 async def moderation_events(username: str = "", limit: int = 100):
     return await list_moderation_events(username=username or None, limit=limit)
+
+
+@app.get("/api/moderation/status")
+async def moderation_status():
+    available = nudenet_available()
+    return {
+        "nudenet_available": available,
+        "child_image_moderation": "ready" if available else "blocked_until_nudenet_installed",
+        "message": (
+            "NudeNet is installed. Child image outputs are checked after generation."
+            if available
+            else "NudeNet is not installed. Child prompt blocking still works, but child generated images fail closed until NudeNet is installed."
+        ),
+    }
+
+
+@app.post("/api/moderation/install-nudenet")
+async def moderation_install_nudenet():
+    if nudenet_available():
+        return {"ok": True, "installed": True, "message": "NudeNet is already installed."}
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "nudenet"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"NudeNet install failed: {exc}") from exc
+    output = (proc.stdout + "\n" + proc.stderr).strip()
+    if proc.returncode != 0:
+        raise HTTPException(500, output[-2000:] or "NudeNet install failed.")
+    return {"ok": True, "installed": nudenet_available(), "message": output[-2000:]}
 
 
 @app.get("/api/moderation/quarantine/{filename}")

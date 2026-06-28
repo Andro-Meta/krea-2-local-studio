@@ -350,6 +350,12 @@ export interface ModerationEvent {
   quarantined_filename?: string | null
 }
 
+export interface ModerationStatus {
+  nudenet_available: boolean
+  child_image_moderation: string
+  message: string
+}
+
 export const apiFetch = {
   generate: (req: GenerationRequest) =>
     api.post<{ job_id: string; status: string; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number }>('/api/generate', req).then(r => r.data),
@@ -551,6 +557,8 @@ export const apiFetch = {
 
   moderationEvents: (username = '', limit = 100) =>
     api.get<{ items: ModerationEvent[]; total: number }>('/api/moderation/events', { params: { username, limit } }).then(r => r.data),
+  moderationStatus: () => api.get<ModerationStatus>('/api/moderation/status').then(r => r.data),
+  installNudeNet: () => api.post<{ ok: boolean; installed: boolean; message: string }>('/api/moderation/install-nudenet').then(r => r.data),
 
   sharingStatus: () => api.get<SharingStatus>('/api/sharing/status').then(r => r.data),
   tailscaleUp: () => api.post('/api/sharing/tailscale-up').then(r => r.data),

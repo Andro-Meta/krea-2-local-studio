@@ -133,6 +133,14 @@ class NudeNetProvider:
         return list(self.detector.detect(image.convert("RGB")))
 
 
+def nudenet_available() -> bool:
+    try:
+        from nudenet import NudeDetector  # type: ignore  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def moderate_image(
     image: Image.Image,
     *,
