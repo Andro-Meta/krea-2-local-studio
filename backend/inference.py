@@ -574,6 +574,7 @@ class Krea2Pipeline:
                 # Don't pull offloaded blocks back into VRAM just to discard them.
                 self._block_swap.remove(restore_device=False)
             except Exception:
+                # Teardown must never block unload; the model is being dropped anyway.
                 pass
             self._block_swap = None
         self._blocks_to_swap = 0
@@ -663,6 +664,7 @@ class Krea2Pipeline:
                 try:
                     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
                 except Exception:
+                    # Optional perf flag; older torch builds may lack it — ignore.
                     pass
 
             watchdog = LoadWatchdog()

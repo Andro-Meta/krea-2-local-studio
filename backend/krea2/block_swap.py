@@ -48,12 +48,15 @@ def _pin_module(module: torch.nn.Module) -> None:
             try:
                 param.data = param.data.pin_memory()
             except Exception:
+                # Pinning is a best-effort DMA speedup; if the allocator can't
+                # pin (e.g. low pinned-pool), fall back to pageable memory.
                 pass
     for name, buf in list(module.named_buffers(recurse=True)):
         if buf is not None and buf.device.type == "cpu" and not buf.is_pinned():
             try:
                 _assign_buffer(module, name, buf.pin_memory())
             except Exception:
+                # Best-effort buffer pinning; safe to leave pageable on failure.
                 pass
 
 
