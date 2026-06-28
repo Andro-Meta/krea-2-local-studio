@@ -55,6 +55,16 @@ class ModerationTests(unittest.TestCase):
         self.assertIn("FEMALE_BREAST_EXPOSED", decision.labels)
         self.assertGreater(decision.scores["explicit_score"], 0.9)
 
+    def test_image_policy_fails_closed_when_provider_missing_for_child(self) -> None:
+        from PIL import Image
+
+        from moderation import moderate_image
+
+        decision = moderate_image(Image.new("RGB", (8, 8)), role="child", provider=None)
+
+        self.assertEqual(decision.action, "block")
+        self.assertIn("provider unavailable", decision.reason)
+
     def test_moderation_events_are_persisted(self) -> None:
         from moderation import init_moderation_db, list_moderation_events, save_moderation_event
 

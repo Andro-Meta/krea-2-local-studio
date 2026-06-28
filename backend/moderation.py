@@ -148,9 +148,9 @@ def moderate_image(
             provider = NudeNetProvider()
         except RuntimeError:
             return ModerationDecision(
-                action="allow",
+                action="block",
                 event_type="image",
-                reason="image moderation provider unavailable",
+                reason="image moderation provider unavailable; child output requires local NudeNet review",
                 scores={"provider_available": 0.0},
             )
 
