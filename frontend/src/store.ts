@@ -289,14 +289,14 @@ const defaultRealtime: RealtimeState = {
     paused: false,
   },
   settings: {
-    debounceMs: 900,
-    previewSize: 512,
-    previewSteps: 5,
+    debounceMs: 1500,
+    previewSize: 384,
+    previewSteps: 4,
     finalSteps: 8,
     canvasInfluence: 0.45,
     seed: -1,
     lockSeed: false,
-    autoPreview: true,
+    autoPreview: false,
   },
 }
 

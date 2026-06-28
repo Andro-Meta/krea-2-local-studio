@@ -55,6 +55,9 @@ class RealtimePreviewRegistry:
     def cancel(self, job_id: str) -> bool:
         return self.update(job_id, status="cancelled", progress=100)
 
+    def busy(self) -> bool:
+        return any(job.get("status") in {"queued", "running"} for job in self._jobs.values())
+
     def is_current(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
         if job is None:

@@ -47,6 +47,19 @@ class RealtimePreviewRegistryTests(unittest.TestCase):
         self.assertFalse(registry.complete(job["job_id"], image_b64="late", seed=10))
         self.assertEqual(registry.get(job["job_id"])["status"], "cancelled")
 
+    def test_busy_when_any_preview_is_queued_or_running(self) -> None:
+        registry = RealtimePreviewRegistry(max_jobs=10)
+        first = registry.create("session-a")
+
+        self.assertTrue(registry.busy())
+
+        registry.cancel(first["job_id"])
+        self.assertFalse(registry.busy())
+
+        second = registry.create("session-a")
+        registry.update(second["job_id"], status="running")
+        self.assertTrue(registry.busy())
+
     def test_evicts_oldest_jobs(self) -> None:
         registry = RealtimePreviewRegistry(max_jobs=2)
         first = registry.create("a")

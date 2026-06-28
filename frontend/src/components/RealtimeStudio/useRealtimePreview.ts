@@ -97,10 +97,10 @@ export function useRealtimePreview() {
         error: null,
       })
       pollJob(job.job_id)
-    } catch (e) {
+    } catch (e: any) {
       setRealtimePreview({
         status: 'error',
-        error: e instanceof Error ? e.message : 'Could not start preview',
+        error: e?.response?.data?.detail ?? (e instanceof Error ? e.message : 'Could not start preview'),
         lastUpdated: Date.now(),
       })
     }

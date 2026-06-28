@@ -705,6 +705,10 @@ def _safe_served_filename(filename: str) -> str | None:
 
 @app.post("/api/realtime/preview")
 async def realtime_preview(req: RealtimePreviewRequest):
+    if not pipeline.is_loaded():
+        raise HTTPException(503, "No Krea model is loaded. Load a model before realtime preview.")
+    if (generation_queue is not None and generation_queue.has_active_or_pending()) or realtime_previews.busy():
+        raise HTTPException(409, "Krea is busy with another generation or preview. Try again when it finishes.")
     session_id = req.session_id.strip() or uuid.uuid4().hex
     job = realtime_previews.create(session_id)
     asyncio.create_task(_run_realtime_preview(job["job_id"], req, session_id))
