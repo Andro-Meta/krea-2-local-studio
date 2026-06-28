@@ -63,6 +63,8 @@ export default function GeneratePanel() {
         denoise: params.denoise,
         sampler: params.sampler,
         scheduler: params.scheduler,
+        cfg_zero_star: params.cfg_zero_star,
+        cfg_zero_init_steps: params.cfg_zero_init_steps,
         inpaint_method: params.inpaint_method,
         differential_inpaint: params.differential_inpaint,
         differential_strength: params.differential_strength,

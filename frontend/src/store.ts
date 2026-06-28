@@ -58,6 +58,8 @@ export interface GenerateParams {
   inpaint_method: 'native' | 'lanpaint_experimental' | 'flux_fill'
   differential_inpaint: boolean
   differential_strength: number
+  cfg_zero_star: boolean
+  cfg_zero_init_steps: number
   lanpaint_inner_steps: number
   lanpaint_strength: number
   lanpaint_lambda: number
@@ -200,6 +202,8 @@ const defaultParams: GenerateParams = {
   inpaint_method: 'native',
   differential_inpaint: false,
   differential_strength: 1.0,
+  cfg_zero_star: false,
+  cfg_zero_init_steps: 1,
   lanpaint_inner_steps: 5,
   lanpaint_strength: 1.0,
   lanpaint_lambda: 16.0,

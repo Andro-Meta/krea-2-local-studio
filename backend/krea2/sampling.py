@@ -238,6 +238,22 @@ def res_2s_flow_step(
     return (sig_t / sig_s) * img - al_t * (math.exp(-h) - 1.0) * blended
 
 
+def cfg_zero_star_scale(v_cond: torch.Tensor, v_uncond: torch.Tensor) -> torch.Tensor:
+    """CFG-Zero* optimized scale s* = <v_cond, v_uncond> / ||v_uncond||^2.
+
+    Per-sample projection of the conditional velocity onto the unconditional one,
+    which compensates for velocity-estimation error (arXiv:2503.18886). Returned
+    shaped to broadcast against the velocity tensor.
+    """
+    b = v_cond.shape[0]
+    c = v_cond.reshape(b, -1).float()
+    u = v_uncond.reshape(b, -1).float()
+    dot = (c * u).sum(dim=1)
+    norm = (u * u).sum(dim=1).clamp_min(1e-8)
+    s = (dot / norm).to(v_cond.dtype)
+    return s.reshape(b, *([1] * (v_cond.ndim - 1)))
+
+
 def _er_noise_scaler_scalar(x: float) -> float:
     return x * (math.exp(x ** 0.3) + 10.0)
 
@@ -300,6 +316,8 @@ def sample(
     differential_strength: float = 1.0,
     sampler: str = "euler_flow",
     scheduler: str = "simple",
+    cfg_zero_star: bool = False,
+    cfg_zero_init_steps: int = 1,
     lanpaint_inner_steps: int = 3,
     lanpaint_strength: float = 1.0,
     lanpaint_settings: LanPaintSettings | None = None,
@@ -417,6 +435,10 @@ def sample(
     for step_idx, (tcurr, tprev) in enumerate(zip(ts[:-1], ts[1:])):
         if progress_cb is not None:
             progress_cb(step_idx, n_steps)
+        # CFG-Zero* zero-init: skip (do nothing on) the first K ODE steps, whose
+        # CFG velocity estimate is least reliable. Only meaningful with guidance.
+        if cfg_zero_star and cfg and step_idx < int(cfg_zero_init_steps):
+            continue
         # Inpaint: re-noise the KEEP region (mask=0) back onto the original trajectory
         # BEFORE the model call, so the DiT always sees coherent surrounding context
         # (ComfyUI SetLatentNoiseMask / scale_latent_inpaint equivalent for flow).
@@ -448,6 +470,10 @@ def sample(
             cond_local, uncond_local = _velocity_parts(latent, local_t)
             if uncond_local is None:
                 return cond_local
+            if cfg_zero_star:
+                # CFG-Zero* optimized scale: reweight the uncond term by s*.
+                s = cfg_zero_star_scale(cond_local, uncond_local)
+                return s * uncond_local + guidance * (cond_local - s * uncond_local)
             return uncond_local + guidance * (cond_local - uncond_local)
 
         if sampler == "lanpaint_experimental":

@@ -94,6 +94,8 @@ def build_generation_metadata(
         "denoise": float(getattr(req, "denoise", 1.0)),
         "sampler": str(getattr(req, "sampler", "euler_flow")),
         "scheduler": str(getattr(req, "scheduler", "simple")),
+        "cfg_zero_star": bool(getattr(req, "cfg_zero_star", False)),
+        "cfg_zero_init_steps": int(getattr(req, "cfg_zero_init_steps", 1)),
         "inpaint": {
             "method": str(getattr(req, "inpaint_method", "native")),
             "differential_inpaint": bool(getattr(req, "differential_inpaint", False)),

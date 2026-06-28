@@ -142,6 +142,29 @@ export default function ParameterSection() {
           helperText={isTurbo ? 'Turbo: keep at 0 (guidance built-in)' : 'RAW default: 3.5'}
         />
 
+        {params.cfg > 0 && (
+          <Box>
+            <FormControlLabel
+              control={<Switch size="small" checked={params.cfg_zero_star} onChange={e => setParam('cfg_zero_star', e.target.checked)} />}
+              label={
+                <Typography variant="body2" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
+                  CFG-Zero*
+                  <InfoTip text="Flow-matching guidance upgrade (arXiv:2503.18886). Optimized-scale corrects velocity error and zero-init skips the unreliable first step(s). Improves color/detail and prompt alignment at real CFG. Only applies when CFG > 0; not combined with the CFG++ samplers." />
+                </Typography>
+              }
+            />
+            {params.cfg_zero_star && (
+              <LabeledSlider
+                label="Zero-init steps"
+                value={params.cfg_zero_init_steps}
+                min={0} max={4} step={1}
+                onChange={v => setParam('cfg_zero_init_steps', v)}
+                helperText="Skip the first N ODE steps (paper default 1). 0 = optimized-scale only."
+              />
+            )}
+          </Box>
+        )}
+
         {params.mode !== 'txt2img' && (
           <LabeledSlider
             label="Denoise strength"

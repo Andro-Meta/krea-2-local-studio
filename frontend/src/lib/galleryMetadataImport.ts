@@ -103,6 +103,8 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
     denoise: numberValue(metadata.denoise),
     sampler: oneOf(metadata.sampler, ['euler', 'euler_flow', 'euler_ancestral', 'euler_ancestral_cfg_pp', 'euler_cfg_pp', 'er_sde', 'res_2s', 'exp_heun_2_x0_sde', 'lcm', 'dpmpp_2m', 'ddim', 'uni_pc'] as const),
     scheduler: oneOf(metadata.scheduler, ['simple', 'normal', 'beta', 'sgm_uniform', 'bong_tangent', 'karras', 'exponential'] as const),
+    cfg_zero_star: typeof metadata.cfg_zero_star === 'boolean' ? metadata.cfg_zero_star : undefined,
+    cfg_zero_init_steps: numberValue(metadata.cfg_zero_init_steps),
     inpaint_method: oneOf(metadata.inpaint?.method, ['native', 'lanpaint_experimental', 'flux_fill'] as const),
     differential_inpaint: typeof metadata.inpaint?.differential_inpaint === 'boolean' ? metadata.inpaint.differential_inpaint : undefined,
     differential_strength: numberValue(metadata.inpaint?.differential_strength),

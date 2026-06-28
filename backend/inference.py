@@ -1321,6 +1321,8 @@ class Krea2Pipeline:
                 differential_strength=float(getattr(req, "differential_strength", 1.0)),
                 sampler=native_sampler,
                 scheduler=getattr(req, "scheduler", "simple"),
+                cfg_zero_star=bool(getattr(req, "cfg_zero_star", False)),
+                cfg_zero_init_steps=int(getattr(req, "cfg_zero_init_steps", 1)),
                 lanpaint_inner_steps=getattr(req, "lanpaint_inner_steps", 3),
                 lanpaint_strength=getattr(req, "lanpaint_strength", 1.0),
                 lanpaint_settings=_lanpaint_settings_from_request(req),

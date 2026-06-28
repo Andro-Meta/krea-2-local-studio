@@ -51,6 +51,11 @@ class GenerationRequest(BaseModel):
     denoise: float = 1.0
     sampler: str = "euler_flow"       # euler | euler_flow | exp_heun_2_x0_sde | guarded Comfy names
     scheduler: str = "simple"
+    # CFG-Zero* (arXiv:2503.18886): flow-matching guidance upgrade. Optimized
+    # scale corrects velocity error; zero-init skips the first K ODE steps. Only
+    # active when guidance (cfg) > 0 and a non-CFG++ sampler is used.
+    cfg_zero_star: bool = False
+    cfg_zero_init_steps: int = Field(default=1, ge=0, le=4)
     inpaint_method: str = "native"    # native | lanpaint_experimental | flux_fill
     # Differential diffusion (soft masks): grayscale mask values join the denoise
     # at different timesteps, so feathered edits blend seamlessly into the keep

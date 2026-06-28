@@ -36,6 +36,8 @@ export interface GenerationRequest {
   inpaint_method?: 'native' | 'lanpaint_experimental' | 'flux_fill'
   differential_inpaint?: boolean
   differential_strength?: number
+  cfg_zero_star?: boolean
+  cfg_zero_init_steps?: number
   lanpaint_inner_steps?: number
   lanpaint_strength?: number
   lanpaint_lambda?: number

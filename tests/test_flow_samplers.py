@@ -107,6 +107,27 @@ class TestRes2s(unittest.TestCase):
         self.assertTrue(torch.isfinite(out).all())
 
 
+class TestCfgZeroStar(unittest.TestCase):
+    def test_scale_is_projection(self):
+        # s* = <c,u>/||u||^2; for u parallel to c (c = k*u), s* = k.
+        u = torch.randn(2, 64, 16)
+        c = 3.0 * u
+        s = sampling.cfg_zero_star_scale(c, u)
+        self.assertEqual(s.shape, (2, 1, 1))
+        self.assertTrue(torch.allclose(s.flatten(), torch.full((2,), 3.0), atol=1e-3))
+
+    def test_scale_orthogonal_is_zero(self):
+        # Orthogonal cond/uncond -> projection ~ 0.
+        u = torch.zeros(1, 4, 2); u[0, 0, 0] = 1.0
+        c = torch.zeros(1, 4, 2); c[0, 0, 1] = 1.0
+        s = sampling.cfg_zero_star_scale(c, u)
+        self.assertAlmostEqual(float(s.flatten()[0]), 0.0, places=5)
+
+    def test_scale_finite(self):
+        s = sampling.cfg_zero_star_scale(torch.randn(3, 8, 4), torch.randn(3, 8, 4))
+        self.assertTrue(torch.isfinite(s).all())
+
+
 class TestTimestepScheduler(unittest.TestCase):
     def test_scheduler_changes_schedule(self):
         simple = sampling.timesteps(256, 12, 1, 100, mu=1.15, scheduler="simple")
