@@ -6,6 +6,7 @@ import base64
 import io
 import logging
 import os
+import re
 import secrets
 import sys
 import time
@@ -121,6 +122,7 @@ from moderation import (
 
 logger = logging.getLogger(__name__)
 setup_logging(LOGS_DIR)
+SAFE_SERVED_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,160}$")
 
 app = FastAPI(title="Krea 2 Studio", version="1.0.0")
 QUARANTINE_DIR = BASE_DIR / "moderation_quarantine"
@@ -675,6 +677,17 @@ def _quarantine_output_files(filenames: list[str], job_id: str) -> str | None:
     return quarantined
 
 
+def _safe_child_file(base_dir: Path, filename: str) -> Path | None:
+    safe_name = Path(str(filename or "")).name
+    if safe_name != filename or not SAFE_SERVED_FILENAME_RE.fullmatch(safe_name):
+        return None
+    base = base_dir.resolve()
+    path = (base / safe_name).resolve()
+    if base != path.parent:
+        return None
+    return path
+
+
 @app.post("/api/realtime/preview")
 async def realtime_preview(req: RealtimePreviewRequest):
     session_id = req.session_id.strip() or uuid.uuid4().hex
@@ -986,7 +999,10 @@ async def delete_gallery_item(gallery_id: int, request: Request):
 
 @app.get("/api/outputs/{filename}")
 async def output_file(filename: str, request: Request):
-    safe_name = Path(filename).name
+    path = _safe_child_file(OUTPUTS_DIR, filename)
+    if path is None:
+        raise HTTPException(404, "Not found")
+    safe_name = path.name
     row = await get_image_record_by_filename(safe_name)
     if row is None:
         raise HTTPException(404, "Not found")
@@ -994,7 +1010,6 @@ async def output_file(filename: str, request: Request):
     owner = row.get("owner_username")
     if not is_role_admin and owner != username:
         raise HTTPException(404, "Not found")
-    path = OUTPUTS_DIR / safe_name
     if not path.exists() or not path.is_file():
         raise HTTPException(404, "Not found")
     return FileResponse(path)
@@ -1007,8 +1022,9 @@ async def moderation_events(username: str = "", limit: int = 100):
 
 @app.get("/api/moderation/quarantine/{filename}")
 async def moderation_quarantine_file(filename: str):
-    safe_name = Path(filename).name
-    path = QUARANTINE_DIR / safe_name
+    path = _safe_child_file(QUARANTINE_DIR, filename)
+    if path is None:
+        raise HTTPException(404, "Not found")
     if not path.exists() or not path.is_file():
         raise HTTPException(404, "Not found")
     return FileResponse(path)
