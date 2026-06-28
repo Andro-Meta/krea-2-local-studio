@@ -667,11 +667,13 @@ def _quarantine_output_files(filenames: list[str], job_id: str) -> str | None:
     QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
     quarantined: str | None = None
     for filename in filenames:
-        src = OUTPUTS_DIR / filename
-        if not src.exists():
+        src = _safe_child_file(OUTPUTS_DIR, filename)
+        if src is None or not src.exists():
             continue
         dst_name = f"{job_id}_{filename}"
-        dst = QUARANTINE_DIR / dst_name
+        dst = _safe_child_file(QUARANTINE_DIR, dst_name)
+        if dst is None:
+            continue
         src.replace(dst)
         quarantined = quarantined or dst_name
     return quarantined
@@ -682,7 +684,7 @@ def _safe_child_file(base_dir: Path, filename: str) -> Path | None:
     if safe_name != filename or not SAFE_SERVED_FILENAME_RE.fullmatch(safe_name):
         return None
     base = base_dir.resolve()
-    path = (base / safe_name).resolve()
+    path = (base / safe_name).resolve()  # lgtm[py/path-injection] regex + resolved-parent containment below
     if base != path.parent:
         return None
     return path
@@ -1010,9 +1012,9 @@ async def output_file(filename: str, request: Request):
     owner = row.get("owner_username")
     if not is_role_admin and owner != username:
         raise HTTPException(404, "Not found")
-    if not path.exists() or not path.is_file():
+    if not path.exists() or not path.is_file():  # lgtm[py/path-injection] path returned by _safe_child_file
         raise HTTPException(404, "Not found")
-    return FileResponse(path)
+    return FileResponse(path)  # lgtm[py/path-injection] path returned by _safe_child_file
 
 
 @app.get("/api/moderation/events")
@@ -1025,9 +1027,9 @@ async def moderation_quarantine_file(filename: str):
     path = _safe_child_file(QUARANTINE_DIR, filename)
     if path is None:
         raise HTTPException(404, "Not found")
-    if not path.exists() or not path.is_file():
+    if not path.exists() or not path.is_file():  # lgtm[py/path-injection] path returned by _safe_child_file
         raise HTTPException(404, "Not found")
-    return FileResponse(path)
+    return FileResponse(path)  # lgtm[py/path-injection] path returned by _safe_child_file
 
 
 # ---------------------------------------------------------------------------
