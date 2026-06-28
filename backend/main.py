@@ -684,7 +684,8 @@ def _safe_child_file(base_dir: Path, filename: str) -> Path | None:
     if safe_name != filename or not SAFE_SERVED_FILENAME_RE.fullmatch(safe_name):
         return None
     base = base_dir.resolve()
-    path = (base / safe_name).resolve()  # lgtm[py/path-injection] regex + resolved-parent containment below
+    # codeql[py/path-injection]
+    path = (base / safe_name).resolve()
     if base != path.parent:
         return None
     return path
@@ -1012,9 +1013,11 @@ async def output_file(filename: str, request: Request):
     owner = row.get("owner_username")
     if not is_role_admin and owner != username:
         raise HTTPException(404, "Not found")
-    if not path.exists() or not path.is_file():  # lgtm[py/path-injection] path returned by _safe_child_file
+    # codeql[py/path-injection]
+    if not path.exists() or not path.is_file():
         raise HTTPException(404, "Not found")
-    return FileResponse(path)  # lgtm[py/path-injection] path returned by _safe_child_file
+    # codeql[py/path-injection]
+    return FileResponse(path)
 
 
 @app.get("/api/moderation/events")
@@ -1027,9 +1030,11 @@ async def moderation_quarantine_file(filename: str):
     path = _safe_child_file(QUARANTINE_DIR, filename)
     if path is None:
         raise HTTPException(404, "Not found")
-    if not path.exists() or not path.is_file():  # lgtm[py/path-injection] path returned by _safe_child_file
+    # codeql[py/path-injection]
+    if not path.exists() or not path.is_file():
         raise HTTPException(404, "Not found")
-    return FileResponse(path)  # lgtm[py/path-injection] path returned by _safe_child_file
+    # codeql[py/path-injection]
+    return FileResponse(path)
 
 
 # ---------------------------------------------------------------------------
