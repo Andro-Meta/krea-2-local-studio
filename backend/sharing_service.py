@@ -158,8 +158,8 @@ def local_krea_target_status(port: int = PORT) -> dict:
             body = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return {"ok": False, "url": url, "auth_required": False, "message": f"Local Krea returned HTTP {exc.code}."}
-    except Exception as exc:
-        return {"ok": False, "url": url, "auth_required": False, "message": f"Local Krea is not reachable: {exc}"}
+    except Exception:
+        return {"ok": False, "url": url, "auth_required": False, "message": "Local Krea is not reachable on the expected sharing port."}
     try:
         data = json.loads(body or "{}")
     except json.JSONDecodeError:
@@ -184,8 +184,8 @@ def repair_funnel(port: int = PORT) -> dict:
     if tailscale.get("installed"):
         try:
             up_result = tailscale_up()
-        except Exception as exc:
-            up_result = {"ok": False, "message": str(exc)}
+        except Exception:
+            up_result = {"ok": False, "message": "Could not run tailscale up from the GUI. Try opening Tailscale or running tailscale up manually."}
     funnel_result = start_funnel(port) if local.get("ok") and tailscale.get("installed") else {"ok": False, "url": "", "message": "Local Krea or Tailscale is not ready."}
     funnel = funnel_status()
     ok = bool(local.get("ok") and local.get("auth_required") and tailscale.get("installed") and funnel.get("running"))
