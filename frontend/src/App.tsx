@@ -14,7 +14,7 @@ import { apiFetch, type MoodboardDiscovery } from './api'
 const SEEN_MOODBOARD_DISCOVERY_KEY = 'krea2_seen_moodboard_discovery_id'
 
 export default function App() {
-  const { tab, lightbox, params, setParam, setTab, setMoodboardView } = useStore()
+  const { tab, lightbox, params, setParam, setParams, setTab, setMoodboardView } = useStore()
   const [createMode, setCreateMode] = useState<'txt2img' | 'redraw' | 'realtime'>(
     params.mode === 'txt2img' ? 'txt2img' : 'redraw',
   )
@@ -52,7 +52,17 @@ export default function App() {
           value={createMode}
           onChange={(_, v) => {
             setCreateMode(v)
-            if (v === 'txt2img') setParam('mode', 'txt2img')
+            if (v === 'txt2img') setParams({
+              mode: 'txt2img',
+              init_image_b64: '',
+              mask_b64: '',
+              bboxes: [],
+              style_fusion_mode: 'semantic_fusion',
+              edit_provider: 'auto',
+              inpaint_method: 'native',
+              differential_inpaint: false,
+              moodboard_images: [],
+            })
             if (v === 'redraw') setParam('mode', 'redraw')
           }}
           variant="scrollable"

@@ -101,6 +101,10 @@ export default function PromptSection() {
               label="Enhance for adherence"
             />
             <FormControlLabel
+              control={<Checkbox checked={params.use_prompt_expander} onChange={e => setParam('use_prompt_expander', e.target.checked)} />}
+              label="Expand on generate"
+            />
+            <FormControlLabel
               control={<Checkbox checked={params.prompt_planner_lock_original} onChange={e => setParam('prompt_planner_lock_original', e.target.checked)} />}
               label="Lock original prompt"
             />
@@ -169,7 +173,7 @@ export default function PromptSection() {
           </Collapse>
         </Stack>
       </Paper>
-      {params.mode !== 'txt2img' && (
+      {(params.mode !== 'txt2img' || params.checkpoint === 'raw' || params.cfg > 0) && (
         <TextField
           label="Negative prompt"
           multiline
@@ -178,7 +182,7 @@ export default function PromptSection() {
           fullWidth
           value={params.negative_prompt}
           onChange={e => setParam('negative_prompt', e.target.value)}
-          placeholder="What to avoid…"
+          placeholder={params.mode === 'txt2img' ? 'Optional for RAW / CFG; Turbo usually leaves this empty…' : 'What to avoid…'}
           size="small"
         />
       )}

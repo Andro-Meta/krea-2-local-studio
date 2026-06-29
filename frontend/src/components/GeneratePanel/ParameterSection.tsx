@@ -100,6 +100,15 @@ export default function ParameterSection() {
         : {}),
     })
   }
+  const setCreativity = (creativity: typeof params.creativity) => {
+    const values = {
+      raw: { moodboard_strength: 0.2, rebalance_multiplier: 0.8 },
+      low: { moodboard_strength: 0.3, rebalance_multiplier: 0.9 },
+      medium: { moodboard_strength: 0.35, rebalance_multiplier: 1.0 },
+      high: { moodboard_strength: 0.55, rebalance_multiplier: 1.15 },
+    }[creativity]
+    setParams({ creativity, ...values })
+  }
 
   return (
     <Box>
@@ -111,7 +120,7 @@ export default function ParameterSection() {
           select
           label="Creativity"
           value={params.creativity}
-          onChange={e => setParam('creativity', e.target.value as typeof params.creativity)}
+          onChange={e => setCreativity(e.target.value as typeof params.creativity)}
           size="small"
           fullWidth
           helperText="Comfy-style Krea control: higher adds aesthetic interpretation; lower keeps tighter prompt adherence."

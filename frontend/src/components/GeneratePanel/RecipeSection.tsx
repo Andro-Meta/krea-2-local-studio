@@ -6,7 +6,7 @@ import { apiFetch, type PromptRecipe } from '../../api'
 import { useStore } from '../../store'
 
 export default function RecipeSection() {
-  const { params, setParam } = useStore()
+  const { params, setParam, setParams } = useStore()
   const [recipes, setRecipes] = useState<PromptRecipe[]>([])
   const [selected, setSelected] = useState('')
   const [name, setName] = useState('')
@@ -52,7 +52,12 @@ export default function RecipeSection() {
     setParam('seed_variance_preset', recipe.seed_variance_preset as any)
     setParam('krea_enhancer_variant', recipe.krea_enhancer_variant as any)
     setParam('krea_enhancer_enabled', recipe.krea_enhancer_variant !== 'off')
-    setParam('rebalance_preset', recipe.rebalance_preset as any)
+    setParams({
+      rebalance_preset: recipe.rebalance_preset as any,
+      rebalance_mode: recipe.rebalance_preset === 'legacy' ? 'legacy_multiply' : 'rms_renorm',
+      rebalance_renormalize: recipe.rebalance_preset !== 'legacy',
+      rebalance_multiplier: recipe.rebalance_preset === 'legacy' ? 4.0 : 1.0,
+    })
     setNotice(`Applied recipe "${recipe.name}".`)
   }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Box, CircularProgress, Fab, Grid, IconButton, Stack, Tab, Tabs, Tooltip, Typography } from '@mui/material'
+import { Alert, Box, CircularProgress, Fab, Grid, IconButton, Stack, Tab, Tabs, Tooltip, Typography } from '@mui/material'
 import FavoriteIcon from '@mui/icons-material/Favorite'
 import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder'
 import DeleteIcon from '@mui/icons-material/Delete'
@@ -14,6 +14,7 @@ export default function GalleryPanel() {
   const [page, setPage] = useState(1)
   const [favoritesOnly, setFavoritesOnly] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [auth, setAuth] = useState<AuthSession | null>(null)
   const { openLightbox } = useStore()
   const canDelete = (item: GalleryItem) => auth?.role === 'admin' || (!!auth?.username && item.owner_username === auth.username)
@@ -24,11 +25,14 @@ export default function GalleryPanel() {
 
   const load = useCallback(async (pg = 1, favs = favoritesOnly) => {
     setLoading(true)
+    setError('')
     try {
       const data = await apiFetch.gallery(pg, 50, favs)
       setItems(prev => pg === 1 ? data.items : [...prev, ...data.items])
       setTotal(data.total)
       setPage(pg)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? e.message ?? 'Could not load gallery.')
     } finally { setLoading(false) }
   }, [favoritesOnly])
 
@@ -53,14 +57,23 @@ export default function GalleryPanel() {
   }, [])
 
   const toggleFav = async (item: GalleryItem) => {
-    await apiFetch.setFavorite(item.id, !item.favorite)
-    setItems(prev => prev.map(i => i.id === item.id ? { ...i, favorite: !i.favorite } : i))
+    try {
+      await apiFetch.setFavorite(item.id, !item.favorite)
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, favorite: !i.favorite } : i))
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not update favorite.')
+    }
   }
 
   const deleteItem = async (id: number) => {
-    await apiFetch.deleteGalleryItem(id)
-    setItems(prev => prev.filter(i => i.id !== id))
-    setTotal(t => t - 1)
+    if (!window.confirm('Delete this image from your gallery?')) return
+    try {
+      await apiFetch.deleteGalleryItem(id)
+      setItems(prev => prev.filter(i => i.id !== id))
+      setTotal(t => t - 1)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Could not delete image.')
+    }
   }
 
   const openAt = (idx: number) => {
@@ -86,6 +99,7 @@ export default function GalleryPanel() {
           <IconButton onClick={() => load(1, favoritesOnly)}><RefreshIcon /></IconButton>
         </Tooltip>
       </Stack>
+      {error && <Alert severity="error" onClose={() => setError('')} sx={{ mb: 2 }}>{error}</Alert>}
 
       {loading && page === 1 ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
@@ -124,7 +138,7 @@ export default function GalleryPanel() {
                   direction="row"
                   sx={{
                     position: 'absolute', bottom: 4, right: 4,
-                    opacity: 0, transition: 'opacity 0.2s',
+                    opacity: { xs: 1, md: 0 }, transition: 'opacity 0.2s',
                     bgcolor: 'rgba(0,0,0,0.65)', borderRadius: 1.5,
                   }}
                 >

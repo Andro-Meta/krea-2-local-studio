@@ -15,6 +15,7 @@ const FALLBACK_DIMS: Record<string, Record<string, [number, number]>> = {
   },
 }
 const ASPECTS = ['1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16', '21:9']
+const align16 = (value: number) => Math.max(256, Math.min(2048, Math.round((Number(value) || 256) / 16) * 16))
 
 export default function DimensionSection() {
   const { params, setParam, setParams } = useStore()
@@ -44,6 +45,10 @@ export default function DimensionSection() {
   const isActiveAspect = (aspect: string) => {
     const pair = dims[params.resolution_tier]?.[aspect]
     return params.aspect_ratio === aspect && !!pair && params.width === pair[0] && params.height === pair[1]
+  }
+
+  const setCustomDimension = (key: 'width' | 'height', value: number) => {
+    setParams({ [key]: align16(value), aspect_ratio: 'custom' } as Partial<typeof params>)
   }
 
   return (
@@ -89,7 +94,7 @@ export default function DimensionSection() {
               label="Width"
               type="number"
               value={params.width}
-              onChange={e => setParam('width', Math.max(256, Math.min(2048, Number(e.target.value))))}
+              onChange={e => setCustomDimension('width', Number(e.target.value))}
               size="small"
               fullWidth
               inputProps={{ step: 16 }}
@@ -101,7 +106,7 @@ export default function DimensionSection() {
               label="Height"
               type="number"
               value={params.height}
-              onChange={e => setParam('height', Math.max(256, Math.min(2048, Number(e.target.value))))}
+              onChange={e => setCustomDimension('height', Number(e.target.value))}
               size="small"
               fullWidth
               inputProps={{ step: 16 }}

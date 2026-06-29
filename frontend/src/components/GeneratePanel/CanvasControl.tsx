@@ -55,6 +55,14 @@ export default function CanvasControl() {
     }
   }, [boxes, currentBox, drawing, cw, ch])
 
+  useEffect(() => {
+    setBoxes((params.bboxes || []).map((box, index) => ({
+      label: box.label,
+      bbox: box.bbox as [number, number, number, number],
+      id: `${index}-${box.label}`,
+    })))
+  }, [params.bboxes])
+
   useEffect(() => { draw() }, [draw])
 
   const onMouseDown = (e: MouseEvent<HTMLCanvasElement>) => {
