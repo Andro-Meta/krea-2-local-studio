@@ -16,7 +16,6 @@ except Exception:  # pragma: no cover - mmdit can be imported standalone in test
 
 logger = logging.getLogger(__name__)
 KREA_ATTENTION_BACKEND = str(getattr(settings, "krea_attention_backend", "sdpa") or "sdpa").lower()
-_SAGE_FALLBACK_LOGGED = False
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
@@ -61,6 +60,13 @@ def _sage_attention(q: Tensor, k: Tensor, v: Tensor, scale: float | None) -> Ten
     return sageattn(q, k, v, **kwargs)
 
 
+def _log_sage_fallback_once(exc: Exception) -> None:
+    if getattr(_log_sage_fallback_once, "_logged", False):
+        return
+    logger.warning("SageAttention failed; falling back to SDPA: %s", exc)
+    _log_sage_fallback_once._logged = True
+
+
 def attention(
     q: Tensor,
     k: Tensor,
@@ -69,14 +75,11 @@ def attention(
     scale: float | None = None,
     gqa: bool = False,
 ) -> Tensor:
-    global _SAGE_FALLBACK_LOGGED
     if attention_backend() == "sage" and q.is_cuda and mask is None and not gqa:
         try:
             x = _sage_attention(q, k, v, scale)
         except Exception as exc:
-            if not _SAGE_FALLBACK_LOGGED:
-                logger.warning("SageAttention failed; falling back to SDPA: %s", exc)
-                _SAGE_FALLBACK_LOGGED = True
+            _log_sage_fallback_once(exc)
             x = _sdpa_attention(q, k, v, mask, scale, gqa)
     else:
         x = _sdpa_attention(q, k, v, mask, scale, gqa)
