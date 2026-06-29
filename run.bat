@@ -4,6 +4,7 @@ title Krea 2 Studio
 
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
+set "KREA_PYTHON=venv\Scripts\python.exe"
 
 if /I "%~1"=="local" goto :local
 
@@ -17,7 +18,7 @@ call venv\Scripts\activate.bat
 
 if not exist "backend\krea2\mmdit.py" (
     echo Downloading krea2 source files...
-    python scripts\download_krea2.py
+    %KREA_PYTHON% scripts\download_krea2.py
     if errorlevel 1 (
         echo ERROR: Could not download krea2/mmdit.py. Check internet connection.
         pause
@@ -26,14 +27,14 @@ if not exist "backend\krea2\mmdit.py" (
 )
 
 echo Stopping any old Krea sharing/server process...
-python scripts\startup_cleanup.py --wait-seconds 20
+%KREA_PYTHON% scripts\startup_cleanup.py --wait-seconds 20
 if errorlevel 1 (
     echo WARNING: Some old Krea processes could not be stopped. Startup may still fail or memory may remain in use.
 )
 
-for /f "usebackq tokens=*" %%a in (`python -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"`) do set "KREA_SERVER_PORT=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"`) do set "KREA_SERVER_PORT=%%a"
 
-python scripts\download_support_models.py --check >nul 2>&1
+%KREA_PYTHON% scripts\download_support_models.py --check >nul 2>&1
 if errorlevel 1 (
     echo.
     echo WARNING: Local AI/moodboard assets are missing.
@@ -51,9 +52,9 @@ if exist ".env" (
         if /I "%%a"=="KREA_SHARE_AUTH" set "KREA_SHARE_AUTH_CONFIG=%%b"
     )
 )
-for /f "usebackq tokens=*" %%a in (`python -c "import sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); cfg=r'%KREA_SHARE_AUTH_CONFIG%' or None; print('1' if share_auth.resolve_auth_enabled(cfg, has_users=bool(share_auth.load_users(p))) else '0')"`) do set "KREA_SHARE_AUTH=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); cfg=r'%KREA_SHARE_AUTH_CONFIG%' or None; print('1' if share_auth.resolve_auth_enabled(cfg, has_users=bool(share_auth.load_users(p))) else '0')"`) do set "KREA_SHARE_AUTH=%%a"
 if "%KREA_SHARE_AUTH%"=="1" (
-    for /f "usebackq tokens=*" %%a in (`python -c "import secrets,sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); users=share_auth.load_users(p); print('') if users else (lambda pw: (share_auth.add_user(p,'admin',pw,role='admin'), print('FIRST_ADMIN_PASSWORD='+pw)))(secrets.token_urlsafe(10))"`) do set "BOOTSTRAP_LOGIN=%%a"
+    for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import secrets,sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); users=share_auth.load_users(p); print('') if users else (lambda pw: (share_auth.add_user(p,'admin',pw,role='admin'), print('FIRST_ADMIN_PASSWORD='+pw)))(secrets.token_urlsafe(10))"`) do set "BOOTSTRAP_LOGIN=%%a"
 )
 
 echo Starting Krea 2 Studio web sharing mode...
@@ -73,20 +74,20 @@ if exist ".env" (
     )
 )
 set "KREA_SHARE_STARTUP_ARGS=--ready-url http://127.0.0.1:%KREA_SERVER_PORT%/krea/api/auth/me --open-url http://localhost:%KREA_SERVER_PORT%/krea --timeout 180"
-for /f "usebackq tokens=*" %%a in (`python -c "import sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%KREA_SHARE_AUTH_FILE%'); print('1' if share_auth.resolve_auto_funnel_enabled(r'%KREA_SHARE_AUTO_FUNNEL%', auth_enabled=('%KREA_SHARE_AUTH%'=='1'), has_admin=share_auth.has_admin(p)) else '0')"`) do set "KREA_SHARE_AUTO_FUNNEL_ENABLED=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%KREA_SHARE_AUTH_FILE%'); print('1' if share_auth.resolve_auto_funnel_enabled(r'%KREA_SHARE_AUTO_FUNNEL%', auth_enabled=('%KREA_SHARE_AUTH%'=='1'), has_admin=share_auth.has_admin(p)) else '0')"`) do set "KREA_SHARE_AUTO_FUNNEL_ENABLED=%%a"
 if "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" set "KREA_SHARE_STARTUP_ARGS=%KREA_SHARE_STARTUP_ARGS% --auto-funnel"
 if not "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" if /I not "%KREA_SHARE_AUTO_FUNNEL%"=="false" echo Public Funnel auto-start is off because login gate is off or no admin exists.
-start "" /b python scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
+start "" /b %KREA_PYTHON% scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
 echo Local sharing server: http://localhost:%KREA_SERVER_PORT%/krea
 if not exist "logs" mkdir logs
 for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
-python -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
+%KREA_PYTHON% -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
 echo Waiting for app startup... this can take 20-60 seconds.
 set "PYTHONUNBUFFERED=1"
-python scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- python -u -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info
+%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info
 exit /b %ERRORLEVEL%
 
 :local
@@ -100,7 +101,7 @@ call venv\Scripts\activate.bat
 :: -- Preflight: mmdit.py -------------------------------------------------------
 if not exist "backend\krea2\mmdit.py" (
     echo Downloading krea2 source files...
-    python scripts\download_krea2.py
+    %KREA_PYTHON% scripts\download_krea2.py
     if errorlevel 1 (
         echo ERROR: Could not download krea2/mmdit.py. Check internet connection.
         exit /b 1
@@ -108,13 +109,13 @@ if not exist "backend\krea2\mmdit.py" (
 )
 
 echo Stopping any old Krea sharing/server process...
-python scripts\startup_cleanup.py --wait-seconds 20
+%KREA_PYTHON% scripts\startup_cleanup.py --wait-seconds 20
 if errorlevel 1 (
     echo WARNING: Some old Krea processes could not be stopped. Startup may still fail or memory may remain in use.
 )
 
 :: -- Preflight: Krea support models --------------------------------------------
-python scripts\download_support_models.py --check >nul 2>&1
+%KREA_PYTHON% scripts\download_support_models.py --check >nul 2>&1
 if errorlevel 1 (
     echo.
     echo WARNING: Krea moodboard conditioning assets are missing.
@@ -176,7 +177,7 @@ echo ====================================
 echo.
 
 :: -- Open browser when the server is ready ------------------------------------
-start "" /b python scripts\share_startup.py --ready-url http://127.0.0.1:8200/api/system --open-url http://localhost:8200 --timeout 120
+start "" /b %KREA_PYTHON% scripts\share_startup.py --ready-url http://127.0.0.1:8200/api/system --open-url http://localhost:8200 --timeout 120
 
 :: -- Start server -------------------------------------------------------------
 if not exist "logs" mkdir logs
@@ -184,10 +185,10 @@ for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "Get-Date -Fo
 set "KREA_SERVER_LOG=logs\server-local-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea local server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
-python -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
+%KREA_PYTHON% -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
 echo Waiting for app startup... this can take 20-60 seconds.
 set "PYTHONUNBUFFERED=1"
-python scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- python -u -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info
+%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info
 
 echo.
 echo Server stopped.
