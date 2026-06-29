@@ -193,6 +193,7 @@ Ported or adapted techniques:
 
 - **ComfyUI** for KSampler semantics, scheduler references, memory-management patterns, tiled decode ideas, model loading patterns, and the broader Krea 2 workflow ecosystem.
 - **ComfyUI Krea 2 community nodes** and workflow authors whose experiments helped validate Krea 2 settings.
+- **KiJai** for major ComfyUI ecosystem contributions and practical Krea/Qwen workflow findings that informed this Studio, including low-VRAM/block-swap patterns seen in WanVideoWrapper-style workflows, Qwen image/VAE asset references, outpaint mask conventions, and Krea 2 sampling details discussed by the community.
 - **LanPaint** by scraed for the inpainting method research direction.
 - **ComfyUI-Krea2T-Enhancer** by `capitan01R` for the Krea2T prompt-adherence text-fusion enhancement approach.
 - **RES4LYF** by ClownsharkBatwing and contributors for `res_2s` and `bong_tangent` sampler/scheduler ideas.
