@@ -22,8 +22,10 @@ export default function GeneratePanel() {
   const { params, generating, progress, results, resultsMetadata, lastSeed, generationError,
           queuePosition, queueLength,
           setGenerating, setJobId, setProgress, setResults, setError,
-          setQueue, modelLoaded, setModelLoaded, setTab } = useStore()
+          setQueue, modelLoaded, setModelLoaded, setTab, engineCatalog, setEngineCatalog } = useStore()
   const inRedrawStudio = params.mode !== 'txt2img'
+  const activeEngine = engineCatalog?.engines.find(engine => engine.engine_id === params.diffusion_engine)
+  const supports = activeEngine ?? engineCatalog?.engines.find(engine => engine.engine_id === 'native_pytorch')
 
   const wsRef = useRef<WebSocket | null>(null)
   const pollRef = useRef<number | null>(null)
@@ -48,6 +50,10 @@ export default function GeneratePanel() {
     const t = setInterval(check, 5000)
     return () => clearInterval(t)
   }, [])
+
+  useEffect(() => {
+    apiFetch.engineCatalog().then(setEngineCatalog).catch(() => undefined)
+  }, [setEngineCatalog])
 
   const stopWatchingJob = useCallback(() => {
     if (wsRef.current) {
@@ -183,6 +189,7 @@ export default function GeneratePanel() {
         negative_prompt: params.negative_prompt,
         mode: params.mode,
         model_profile: params.model_profile,
+        diffusion_engine: params.diffusion_engine,
         checkpoint: params.checkpoint,
         quantization: params.quantization,
         steps: params.steps,
@@ -302,16 +309,21 @@ export default function GeneratePanel() {
             No model loaded — go to System tab to load a checkpoint before generating.
           </Alert>
         )}
+        {activeEngine && activeEngine.engine_id !== 'native_pytorch' && (
+          <Alert severity="warning" sx={{ py: 0.75 }}>
+            {activeEngine.label} is experimental. Unsupported Krea-native controls are hidden or ignored: {activeEngine.unsupported_controls.join(', ') || 'none'}.
+          </Alert>
+        )}
 
         <PromptSection />
         <ModelSection />
         <DimensionSection />
-        {!inRedrawStudio && <StyleReferenceSection />}
-        {!inRedrawStudio && <AdvancedSceneSection />}
-        {!inRedrawStudio && <MoodboardSection />}
+        {!inRedrawStudio && (supports?.supports_style_references ?? true) && <StyleReferenceSection />}
+        {!inRedrawStudio && (supports?.supports_regional_prompts ?? true) && <AdvancedSceneSection />}
+        {!inRedrawStudio && (supports?.supports_moodboards ?? true) && <MoodboardSection />}
         {!inRedrawStudio && <RecipeSection />}
-        <LoraSection />
-        {!inRedrawStudio && <CanvasControl />}
+        {(supports?.supports_lora ?? true) && <LoraSection />}
+        {!inRedrawStudio && (supports?.supports_regional_prompts ?? true) && <CanvasControl />}
         <ParameterSection />
 
         {generationError && <Alert severity="error" onClose={() => setError(null)}>{generationError}</Alert>}

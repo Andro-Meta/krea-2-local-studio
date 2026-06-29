@@ -45,6 +45,18 @@ export default function SystemStatus() {
     openrouter_model: 'google/gemma-4-31b-it:free',
     openrouter_free_only: true,
     krea_attention_backend: 'sdpa' as 'sdpa' | 'sage',
+    local_llm_backend: 'transformers' as 'transformers' | 'gguf_server',
+    gguf_helper_base_url: 'http://127.0.0.1:1234/v1',
+    gguf_helper_model: 'BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M',
+    gguf_helper_timeout_sec: 120,
+    diffusion_engine: 'native_pytorch' as 'native_pytorch' | 'gguf_external' | 'int8_convrot_external',
+    gguf_sd_cli_path: '',
+    gguf_turbo_path: '',
+    gguf_raw_path: '',
+    gguf_llm_path: '',
+    gguf_vae_path: '',
+    gguf_lora_dir: '',
+    gguf_timeout_sec: 600,
   })
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
@@ -69,6 +81,8 @@ export default function SystemStatus() {
   const [accelerators, setAccelerators] = useState<AcceleratorStatus | null>(null)
   const [acceleratorBusy, setAcceleratorBusy] = useState<string | null>(null)
   const [acceleratorMessage, setAcceleratorMessage] = useState<{ severity: 'success' | 'error' | 'warning'; text: string } | null>(null)
+  const [ggufHelperBusy, setGgufHelperBusy] = useState(false)
+  const [ggufRuntimeBusy, setGgufRuntimeBusy] = useState(false)
   const { setSystemReport } = useStore()
   const isAdmin = auth?.role === 'admin'
 
@@ -115,6 +129,18 @@ export default function SystemStatus() {
         openrouter_model: s.openrouter_model,
         openrouter_free_only: s.openrouter_free_only,
         krea_attention_backend: s.krea_attention_backend ?? 'sdpa',
+        local_llm_backend: s.local_llm_backend ?? 'transformers',
+        gguf_helper_base_url: s.gguf_helper_base_url ?? 'http://127.0.0.1:1234/v1',
+        gguf_helper_model: s.gguf_helper_model ?? 'BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M',
+        gguf_helper_timeout_sec: s.gguf_helper_timeout_sec ?? 120,
+        diffusion_engine: s.diffusion_engine ?? 'native_pytorch',
+        gguf_sd_cli_path: s.gguf_sd_cli_path ?? '',
+        gguf_turbo_path: s.gguf_turbo_path ?? '',
+        gguf_raw_path: s.gguf_raw_path ?? '',
+        gguf_llm_path: s.gguf_llm_path ?? '',
+        gguf_vae_path: s.gguf_vae_path ?? '',
+        gguf_lora_dir: s.gguf_lora_dir ?? '',
+        gguf_timeout_sec: s.gguf_timeout_sec ?? 600,
       })
     } catch {
       setSettingsMessage({ severity: 'error', text: 'Could not load settings.' })
@@ -230,6 +256,18 @@ export default function SystemStatus() {
     try {
       await apiFetch.updateSettings({
         prompt_expander_backend: settingsDraft.prompt_expander_backend,
+        local_llm_backend: settingsDraft.local_llm_backend,
+        gguf_helper_base_url: settingsDraft.gguf_helper_base_url,
+        gguf_helper_model: settingsDraft.gguf_helper_model,
+        gguf_helper_timeout_sec: settingsDraft.gguf_helper_timeout_sec,
+        diffusion_engine: settingsDraft.diffusion_engine,
+        gguf_sd_cli_path: settingsDraft.gguf_sd_cli_path,
+        gguf_turbo_path: settingsDraft.gguf_turbo_path,
+        gguf_raw_path: settingsDraft.gguf_raw_path,
+        gguf_llm_path: settingsDraft.gguf_llm_path,
+        gguf_vae_path: settingsDraft.gguf_vae_path,
+        gguf_lora_dir: settingsDraft.gguf_lora_dir,
+        gguf_timeout_sec: settingsDraft.gguf_timeout_sec,
         ...(settingsDraft.ideogram_api_key.trim() ? { ideogram_api_key: settingsDraft.ideogram_api_key.trim() } : {}),
         openrouter_model: settingsDraft.openrouter_model,
         openrouter_free_only: settingsDraft.openrouter_free_only,
@@ -241,6 +279,50 @@ export default function SystemStatus() {
       setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Settings update failed.' })
     } finally {
       setSavingSettings(false)
+    }
+  }
+
+  const testGgufHelper = async () => {
+    setGgufHelperBusy(true)
+    setSettingsMessage(null)
+    try {
+      await apiFetch.updateSettings({
+        local_llm_backend: settingsDraft.local_llm_backend,
+        gguf_helper_base_url: settingsDraft.gguf_helper_base_url,
+        gguf_helper_model: settingsDraft.gguf_helper_model,
+        gguf_helper_timeout_sec: settingsDraft.gguf_helper_timeout_sec,
+      })
+      const result = await apiFetch.testGgufHelper()
+      setSettingsMessage({ severity: 'success', text: `GGUF helper connected: ${result.expanded.slice(0, 140)}` })
+      await loadSettings()
+    } catch (e: any) {
+      setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'GGUF helper test failed.' })
+    } finally {
+      setGgufHelperBusy(false)
+    }
+  }
+
+  const testGgufRuntime = async () => {
+    setGgufRuntimeBusy(true)
+    setSettingsMessage(null)
+    try {
+      await apiFetch.updateSettings({
+        diffusion_engine: settingsDraft.diffusion_engine,
+        gguf_sd_cli_path: settingsDraft.gguf_sd_cli_path,
+        gguf_turbo_path: settingsDraft.gguf_turbo_path,
+        gguf_raw_path: settingsDraft.gguf_raw_path,
+        gguf_llm_path: settingsDraft.gguf_llm_path,
+        gguf_vae_path: settingsDraft.gguf_vae_path,
+        gguf_lora_dir: settingsDraft.gguf_lora_dir,
+        gguf_timeout_sec: settingsDraft.gguf_timeout_sec,
+      })
+      const result = await apiFetch.testGgufRuntime()
+      setSettingsMessage({ severity: 'success', text: `GGUF runtime dry-run OK: ${result.command.slice(0, 5).join(' ')}` })
+      await loadSettings()
+    } catch (e: any) {
+      setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'GGUF runtime test failed.' })
+    } finally {
+      setGgufRuntimeBusy(false)
     }
   }
 
@@ -942,8 +1024,62 @@ export default function SystemStatus() {
               </Stack>
             </Stack>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Local Qwen3-VL is the self-contained helper for prompt expansion and image-to-prompt. OpenRouter and Ideogram remain optional hosted helpers.
+              Local Qwen3-VL is the self-contained helper for prompt expansion and image-to-prompt. GGUF helper is text-only and can use LM Studio or llama.cpp. OpenRouter and Ideogram remain optional hosted helpers.
             </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              {(['transformers', 'gguf_server'] as const).map(b => (
+                <Chip
+                  key={b}
+                  label={b === 'transformers' ? 'Transformers Qwen3-VL' : 'GGUF server'}
+                  clickable
+                  variant={settingsDraft.local_llm_backend === b ? 'filled' : 'outlined'}
+                  color={settingsDraft.local_llm_backend === b ? 'secondary' : 'default'}
+                  onClick={() => setSettingsDraft(d => ({ ...d, local_llm_backend: b }))}
+                />
+              ))}
+            </Stack>
+            {settingsDraft.local_llm_backend === 'gguf_server' && (
+              <Stack spacing={1}>
+                <Alert severity="info" sx={{ py: 0 }}>
+                  GGUF helper is text-only. Prompt expansion and planner can use it; image description and image-based moodboard authoring still use Qwen3-VL/OpenRouter.
+                </Alert>
+                <TextField
+                  label="GGUF helper base URL"
+                  value={settingsDraft.gguf_helper_base_url}
+                  onChange={e => setSettingsDraft(d => ({ ...d, gguf_helper_base_url: e.target.value }))}
+                  size="small"
+                  fullWidth
+                  placeholder="http://127.0.0.1:1234/v1"
+                  helperText="OpenAI-compatible local endpoint from LM Studio, llama-server, or similar."
+                />
+                <TextField
+                  label="GGUF helper model"
+                  value={settingsDraft.gguf_helper_model}
+                  onChange={e => setSettingsDraft(d => ({ ...d, gguf_helper_model: e.target.value }))}
+                  size="small"
+                  fullWidth
+                  placeholder="BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M"
+                />
+                <TextField
+                  label="GGUF helper timeout (seconds)"
+                  type="number"
+                  value={settingsDraft.gguf_helper_timeout_sec}
+                  onChange={e => setSettingsDraft(d => ({ ...d, gguf_helper_timeout_sec: Math.max(10, Number(e.target.value) || 120) }))}
+                  size="small"
+                  inputProps={{ min: 10, step: 10 }}
+                />
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={testGgufHelper}
+                  disabled={ggufHelperBusy}
+                  startIcon={ggufHelperBusy ? <CircularProgress size={14} color="inherit" /> : undefined}
+                  sx={{ alignSelf: 'flex-start' }}
+                >
+                  Test GGUF Helper
+                </Button>
+              </Stack>
+            )}
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {(['local', 'openrouter', 'ideogram-json'] as const).map(b => (
                 <Chip
@@ -1003,6 +1139,51 @@ export default function SystemStatus() {
               sx={{ alignSelf: 'flex-start' }}
             >
               Save Magic Wand Settings
+            </Button>
+          </Stack>
+        </Paper>}
+
+        {isAdmin && <Paper sx={{ p: 2 }}>
+          <Stack spacing={1.25}>
+            <Typography variant="h6">GGUF / External Diffusion Runtime</Typography>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              Experimental low-VRAM sidecar path. Native PyTorch remains the default. Configure stable-diffusion.cpp paths here, then use the engine selector in Create.
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              {(['native_pytorch', 'gguf_external', 'int8_convrot_external'] as const).map(engine => (
+                <Chip
+                  key={engine}
+                  label={engine === 'native_pytorch' ? 'Native PyTorch' : engine === 'gguf_external' ? 'GGUF external' : 'INT8 ConvRot external'}
+                  clickable
+                  variant={settingsDraft.diffusion_engine === engine ? 'filled' : 'outlined'}
+                  color={settingsDraft.diffusion_engine === engine ? (engine === 'native_pytorch' ? 'primary' : 'warning') : 'default'}
+                  onClick={() => setSettingsDraft(d => ({ ...d, diffusion_engine: engine }))}
+                />
+              ))}
+            </Stack>
+            <TextField label="stable-diffusion.cpp sd-cli path" size="small" fullWidth value={settingsDraft.gguf_sd_cli_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_sd_cli_path: e.target.value }))} placeholder="C:\\tools\\stable-diffusion.cpp\\sd-cli.exe" />
+            <TextField label="Krea2 Turbo GGUF path" size="small" fullWidth value={settingsDraft.gguf_turbo_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_turbo_path: e.target.value }))} placeholder="models\\gguf\\Krea-2-Turbo-Q4_K_M.gguf" />
+            <TextField label="Krea2 RAW GGUF path (optional)" size="small" fullWidth value={settingsDraft.gguf_raw_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_raw_path: e.target.value }))} />
+            <TextField label="Qwen3-VL GGUF LLM path" size="small" fullWidth value={settingsDraft.gguf_llm_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_llm_path: e.target.value }))} />
+            <TextField label="VAE path" size="small" fullWidth value={settingsDraft.gguf_vae_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_vae_path: e.target.value }))} />
+            <TextField label="LoRA directory (optional; disabled until A/B verified)" size="small" fullWidth value={settingsDraft.gguf_lora_dir} onChange={e => setSettingsDraft(d => ({ ...d, gguf_lora_dir: e.target.value }))} />
+            <TextField
+              label="GGUF runtime timeout (seconds)"
+              type="number"
+              size="small"
+              value={settingsDraft.gguf_timeout_sec}
+              onChange={e => setSettingsDraft(d => ({ ...d, gguf_timeout_sec: Math.max(60, Number(e.target.value) || 600) }))}
+              inputProps={{ min: 60, step: 60 }}
+            />
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={testGgufRuntime}
+              disabled={ggufRuntimeBusy}
+              startIcon={ggufRuntimeBusy ? <CircularProgress size={14} color="inherit" /> : undefined}
+              sx={{ alignSelf: 'flex-start' }}
+            >
+              Test GGUF Runtime Dry Run
             </Button>
           </Stack>
         </Paper>}

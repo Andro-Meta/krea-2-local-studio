@@ -42,9 +42,10 @@ const QUANTS = [
 ]
 
 export default function ModelSection() {
-  const { params, setParam, setParams, systemReport } = useStore()
+  const { params, setParam, setParams, systemReport, engineCatalog } = useStore()
   const loaded = systemReport?.model_status?.loaded
   const loadedCp = systemReport?.model_status?.checkpoint ?? ''
+  const engines = engineCatalog?.engines ?? []
   const applyProfile = (profileId: typeof params.model_profile) => {
     if (profileId === 'krea_turbo') {
       setParams({
@@ -82,6 +83,26 @@ export default function ModelSection() {
         Model
       </Typography>
       <Stack spacing={1.5}>
+        {engines.length > 0 && (
+          <Box>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5 }}>
+              Inference engine
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap">
+              {engines.map(engine => (
+                <Tooltip key={engine.engine_id} title={engine.unsupported_controls?.length ? `Unsupported here: ${engine.unsupported_controls.join(', ')}` : 'Full native Krea feature set'} placement="top" arrow>
+                  <Chip
+                    label={engine.label}
+                    variant={params.diffusion_engine === engine.engine_id ? 'filled' : 'outlined'}
+                    color={params.diffusion_engine === engine.engine_id ? (engine.experimental ? 'warning' : 'primary') : 'default'}
+                    onClick={() => setParam('diffusion_engine', engine.engine_id as typeof params.diffusion_engine)}
+                    clickable
+                  />
+                </Tooltip>
+              ))}
+            </Stack>
+          </Box>
+        )}
         <Stack direction="row" spacing={1} flexWrap="wrap">
           {PROFILES.map(c => (
             <Tooltip key={c.id} title={c.desc} placement="top" arrow>

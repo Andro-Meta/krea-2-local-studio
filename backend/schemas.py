@@ -36,6 +36,7 @@ class GenerationRequest(BaseModel):
     negative_prompt: str = ""
     mode: str = "txt2img"           # txt2img | redraw | img2img | inpaint | outpaint
     model_profile: str = ""         # krea_turbo | krea_raw | future gated profiles
+    diffusion_engine: Literal["native_pytorch", "gguf_external", "int8_convrot_external"] = "native_pytorch"
     checkpoint: str = "turbo"       # turbo | raw | custom
     checkpoint_path: str = ""       # custom path override
     quantization: str = "fp8"       # bf16 | fp8
@@ -420,6 +421,18 @@ class SettingsUpdate(BaseModel):
     krea2_raw_path: Optional[str] = None
     output_dir: Optional[str] = None
     prompt_expander_backend: Optional[str] = None
+    local_llm_backend: Optional[Literal["transformers", "gguf_server"]] = None
+    gguf_helper_base_url: Optional[str] = None
+    gguf_helper_model: Optional[str] = None
+    gguf_helper_timeout_sec: Optional[int] = None
+    diffusion_engine: Optional[Literal["native_pytorch", "gguf_external", "int8_convrot_external"]] = None
+    gguf_sd_cli_path: Optional[str] = None
+    gguf_turbo_path: Optional[str] = None
+    gguf_raw_path: Optional[str] = None
+    gguf_llm_path: Optional[str] = None
+    gguf_vae_path: Optional[str] = None
+    gguf_lora_dir: Optional[str] = None
+    gguf_timeout_sec: Optional[int] = None
     ideogram_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     openrouter_model: Optional[str] = None

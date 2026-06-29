@@ -170,6 +170,33 @@ class PromptExpanderTests(unittest.TestCase):
         self.assertLessEqual(len(payload["models"]), 3)
         self.assertEqual(calls[0][1]["headers"]["Authorization"], "Bearer test-openrouter-key")
 
+    def test_gguf_server_expands_prompt_via_openai_compatible_api(self) -> None:
+        calls = []
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"choices": [{"message": {"content": "A GGUF cinematic prompt."}}]}
+
+        def fake_post(url: str, **kwargs):
+            calls.append((url, kwargs))
+            return FakeResponse()
+
+        with patch("prompt_expander.requests.post", side_effect=fake_post):
+            result = expand_prompt_result(
+                "a foggy road",
+                backend="gguf-server",
+                gguf_helper_base_url="http://127.0.0.1:1234/v1",
+                gguf_helper_model="krea-engineer-q4",
+            )
+
+        self.assertTrue(result.changed)
+        self.assertEqual(result.backend, "gguf-server")
+        self.assertEqual(calls[0][0], "http://127.0.0.1:1234/v1/chat/completions")
+        self.assertEqual(calls[0][1]["json"]["model"], "krea-engineer-q4")
+
     def test_openrouter_rate_limit_returns_hard_error(self) -> None:
         class OpenRouterResponse:
             def raise_for_status(self) -> None:

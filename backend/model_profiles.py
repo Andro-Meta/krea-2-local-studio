@@ -119,6 +119,77 @@ def model_profile_options() -> list[dict[str, Any]]:
     return [profile.to_dict() for profile in MODEL_PROFILES.values()]
 
 
+def engine_catalog() -> dict[str, Any]:
+    native = {
+        "engine_id": "native_pytorch",
+        "label": "Native PyTorch Krea",
+        "default": True,
+        "experimental": False,
+        "profiles": ["krea_turbo", "krea_raw"],
+        "supports_lora": True,
+        "supports_style_references": True,
+        "supports_moodboards": True,
+        "supports_regional_prompts": True,
+        "supports_rebalance": True,
+        "supports_krea_enhancer": True,
+        "supports_flow_samplers": True,
+        "supports_standard_samplers": False,
+        "supports_cfg": True,
+        "supports_img2img": True,
+        "supports_inpaint": True,
+        "supports_realtime": True,
+        "supports_parallel_batch": True,
+        "supports_lora_ab_test": False,
+        "max_batch": 4,
+        "max_resolution": 2048,
+        "recommended_steps": 8,
+        "unsupported_controls": [],
+    }
+    gguf = {
+        "engine_id": "gguf_external",
+        "label": "GGUF external runtime",
+        "default": False,
+        "experimental": True,
+        "profiles": ["gguf_turbo"],
+        "supports_lora": False,
+        "supports_style_references": False,
+        "supports_moodboards": False,
+        "supports_regional_prompts": False,
+        "supports_rebalance": False,
+        "supports_krea_enhancer": False,
+        "supports_flow_samplers": False,
+        "supports_standard_samplers": True,
+        "supports_cfg": True,
+        "supports_img2img": False,
+        "supports_inpaint": False,
+        "supports_realtime": False,
+        "supports_parallel_batch": False,
+        "supports_lora_ab_test": False,
+        "max_batch": 1,
+        "max_resolution": 1024,
+        "recommended_steps": 8,
+        "unsupported_controls": [
+            "loras",
+            "style_references",
+            "moodboards",
+            "regional_prompts",
+            "rebalance",
+            "krea_enhancer",
+            "cfg_zero_star",
+            "mu_shift",
+        ],
+    }
+    int8 = {
+        **gguf,
+        "engine_id": "int8_convrot_external",
+        "label": "INT8 ConvRot external runtime",
+        "profiles": ["int8_convrot_turbo"],
+        "supports_lora_ab_test": True,
+        "recommended_steps": 8,
+    }
+    return {"engines": [native, gguf, int8], "default_engine": "native_pytorch"}
+
+
 def resolve_model_profile(profile_id: str | None, checkpoint: str = "turbo") -> ModelProfile:
     if profile_id:
         profile = MODEL_PROFILES.get(profile_id)

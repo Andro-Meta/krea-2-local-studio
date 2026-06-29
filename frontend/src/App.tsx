@@ -76,11 +76,35 @@ export default function App() {
       {createMode === 'txt2img' && <GeneratePanel />}
       {createMode === 'redraw' && (
         <>
-          <RedrawStudio />
-          <GeneratePanel />
+          {params.diffusion_engine !== 'native_pytorch' ? (
+            <Box sx={{ p: 2 }}>
+              <Alert
+                severity="warning"
+                action={<Button color="inherit" size="small" onClick={() => setParam('diffusion_engine', 'native_pytorch')}>Use Native</Button>}
+              >
+                Redraw, img2img, inpaint, and outpaint require the native Krea engine for now. GGUF/INT8 external engines are txt2img-only until benchmarks pass.
+              </Alert>
+            </Box>
+          ) : (
+            <>
+              <RedrawStudio />
+              <GeneratePanel />
+            </>
+          )}
         </>
       )}
-      {createMode === 'realtime' && <RealtimeStudio />}
+      {createMode === 'realtime' && (
+        params.diffusion_engine !== 'native_pytorch' ? (
+          <Box sx={{ p: 2 }}>
+            <Alert
+              severity="warning"
+              action={<Button color="inherit" size="small" onClick={() => setParam('diffusion_engine', 'native_pytorch')}>Use Native</Button>}
+            >
+              Realtime Studio currently requires native Krea Turbo. GGUF realtime stays disabled until low-VRAM benchmarks pass.
+            </Alert>
+          </Box>
+        ) : <RealtimeStudio />
+      )}
     </Box>
   )
 

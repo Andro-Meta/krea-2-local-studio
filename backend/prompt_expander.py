@@ -26,6 +26,8 @@ OPENROUTER_VISION_FALLBACKS = (
     "google/gemma-4-26b-a4b-it:free",
     "nvidia/nemotron-nano-12b-v2-vl:free",
 )
+GGUF_HELPER_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
+GGUF_HELPER_DEFAULT_MODEL = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M"
 
 # Verbatim from Krea's official prompt expansion used by the krea.ai API
 # (github.com/krea-ai/krea-2 docs/expansion.txt). Matching it locally closes the
@@ -397,6 +399,64 @@ def expand_prompt_openrouter(
         return PromptExpansionResult(expanded=prompt, changed=False, error=msg, backend="openrouter")
 
 
+def gguf_chat_completion(
+    messages: list[dict],
+    *,
+    base_url: str = GGUF_HELPER_DEFAULT_BASE_URL,
+    model: str = GGUF_HELPER_DEFAULT_MODEL,
+    max_tokens: int = 700,
+    temperature: float = 0.7,
+    timeout: int = 120,
+) -> str:
+    url = str(base_url or GGUF_HELPER_DEFAULT_BASE_URL).rstrip("/") + "/chat/completions"
+    resp = requests.post(
+        url,
+        headers={"Content-Type": "application/json"},
+        json={
+            "model": model or GGUF_HELPER_DEFAULT_MODEL,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def expand_prompt_gguf_server(
+    prompt: str,
+    *,
+    base_url: str = GGUF_HELPER_DEFAULT_BASE_URL,
+    model: str = GGUF_HELPER_DEFAULT_MODEL,
+    timeout: int = 120,
+) -> PromptExpansionResult:
+    try:
+        text = gguf_chat_completion(
+            [
+                {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            max_tokens=700,
+            temperature=0.7,
+        )
+        expanded = text or prompt
+        return PromptExpansionResult(
+            expanded=expanded,
+            changed=expanded.strip() != prompt.strip(),
+            error=None if text else "GGUF helper returned an empty expansion.",
+            backend="gguf-server",
+        )
+    except Exception as exc:
+        msg = f"GGUF helper prompt expansion failed. Check the local OpenAI-compatible server. Details: {exc}"
+        logger.warning(msg)
+        return PromptExpansionResult(expanded=prompt, changed=False, error=msg, backend="gguf-server")
+
+
 def expand_prompt_result(
     prompt: str,
     _legacy_url: str = "",
@@ -406,11 +466,21 @@ def expand_prompt_result(
     openrouter_model: str = OPENROUTER_DEFAULT_MODEL,
     openrouter_free_only: bool = True,
     ideogram_api_key: str = "",
+    gguf_helper_base_url: str = GGUF_HELPER_DEFAULT_BASE_URL,
+    gguf_helper_model: str = GGUF_HELPER_DEFAULT_MODEL,
+    gguf_helper_timeout_sec: int = 120,
 ) -> PromptExpansionResult:
     if backend == "ideogram-json":
         return expand_prompt_ideogram_json(prompt, ideogram_api_key)
     if backend == "openrouter":
         return expand_prompt_openrouter(prompt, openrouter_api_key, openrouter_model, openrouter_free_only)
+    if backend in {"gguf", "gguf-server"}:
+        return expand_prompt_gguf_server(
+            prompt,
+            base_url=gguf_helper_base_url,
+            model=gguf_helper_model,
+            timeout=gguf_helper_timeout_sec,
+        )
     return expand_prompt_local(prompt)
 
 

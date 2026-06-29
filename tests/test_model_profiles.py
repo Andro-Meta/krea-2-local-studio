@@ -9,7 +9,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from model_profiles import apply_profile_defaults, model_profile_options, resolve_model_profile  # noqa: E402
+from model_profiles import apply_profile_defaults, engine_catalog, model_profile_options, resolve_model_profile  # noqa: E402
 from schemas import GenerationRequest  # noqa: E402
 from support_models import support_model_status  # noqa: E402
 
@@ -59,6 +59,18 @@ class ModelProfileTests(unittest.TestCase):
         self.assertTrue(z_image["optional"])
         self.assertFalse(z_image["download_enabled"])
         self.assertIn("Loader path", z_image["disabled_reason"])
+
+    def test_engine_catalog_exposes_native_and_gguf_capabilities(self) -> None:
+        catalog = engine_catalog()
+        engines = {item["engine_id"]: item for item in catalog["engines"]}
+
+        self.assertIn("native_pytorch", engines)
+        self.assertIn("gguf_external", engines)
+        self.assertTrue(engines["native_pytorch"]["supports_lora"])
+        self.assertTrue(engines["native_pytorch"]["supports_moodboards"])
+        self.assertFalse(engines["gguf_external"]["supports_moodboards"])
+        self.assertFalse(engines["gguf_external"]["supports_krea_enhancer"])
+        self.assertEqual(engines["gguf_external"]["recommended_steps"], 8)
 
 
 if __name__ == "__main__":

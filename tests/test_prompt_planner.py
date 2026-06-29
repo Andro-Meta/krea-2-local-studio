@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -123,6 +124,22 @@ class PromptPlannerTests(unittest.TestCase):
 
         self.assertTrue(metadata["prompt_planner"]["enabled"])
         self.assertEqual(metadata["prompt_planner"]["output"]["original_prompt"], "rough prompt")
+
+    def test_gguf_planner_uses_openai_compatible_helper(self) -> None:
+        from prompt_planner import plan_prompt
+
+        with patch("prompt_planner.gguf_chat_completion", return_value='{"planned_prompt":"a planned GGUF prompt","negative_prompt":"blur","regions":[]}') as helper:
+            result = plan_prompt(
+                "rough",
+                enabled=True,
+                backend="gguf-server",
+                gguf_helper_base_url="http://127.0.0.1:1234/v1",
+                gguf_helper_model="krea-engineer-q4",
+            )
+
+        self.assertEqual(result.backend, "gguf-server")
+        self.assertEqual(result.planned_prompt, "a planned GGUF prompt")
+        helper.assert_called_once()
 
 
 if __name__ == "__main__":

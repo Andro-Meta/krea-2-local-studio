@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { LoraInfo, SystemReport } from './api'
+import type { EngineCatalog, LoraInfo, SystemReport } from './api'
 import { createDefaultDocument, type RealtimeDocument, type RealtimeTool } from './components/RealtimeStudio/canvasDocument'
 
 export interface ActiveLora {
@@ -39,6 +39,7 @@ export interface GenerateParams {
   negative_prompt: string
   mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   model_profile: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
+  diffusion_engine: 'native_pytorch' | 'gguf_external' | 'int8_convrot_external'
   checkpoint: 'turbo' | 'raw'
   quantization: 'bf16' | 'fp8' | 'fp16'
   steps: number
@@ -186,6 +187,7 @@ const defaultParams: GenerateParams = {
   negative_prompt: '',
   mode: 'txt2img',
   model_profile: 'krea_turbo',
+  diffusion_engine: 'native_pytorch',
   checkpoint: 'turbo',
   quantization: 'fp8',
   steps: 8,
@@ -327,6 +329,8 @@ interface AppState {
 
   systemReport: SystemReport | null
   setSystemReport: (r: SystemReport) => void
+  engineCatalog: EngineCatalog | null
+  setEngineCatalog: (r: EngineCatalog) => void
   modelLoaded: boolean
   setModelLoaded: (v: boolean) => void
 
@@ -378,6 +382,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   systemReport: null,
   setSystemReport: (r) => set({ systemReport: r }),
+  engineCatalog: null,
+  setEngineCatalog: (r) => set({ engineCatalog: r }),
   modelLoaded: false,
   setModelLoaded: (v) => set({ modelLoaded: v }),
 

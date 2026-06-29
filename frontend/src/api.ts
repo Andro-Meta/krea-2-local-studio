@@ -18,6 +18,7 @@ export interface GenerationRequest {
   negative_prompt?: string
   mode?: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   model_profile?: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
+  diffusion_engine?: 'native_pytorch' | 'gguf_external' | 'int8_convrot_external'
   checkpoint?: 'turbo' | 'raw'
   checkpoint_path?: string
   quantization?: 'bf16' | 'fp8' | 'fp16'
@@ -154,6 +155,36 @@ export interface BatchPlan {
   warnings: string[]
   blocked_reasons: string[]
   free_vram_gb?: number | null
+}
+
+export interface EngineCapabilities {
+  engine_id: 'native_pytorch' | 'gguf_external' | 'int8_convrot_external' | string
+  label: string
+  default: boolean
+  experimental: boolean
+  profiles: string[]
+  supports_lora: boolean
+  supports_style_references: boolean
+  supports_moodboards: boolean
+  supports_regional_prompts: boolean
+  supports_rebalance: boolean
+  supports_krea_enhancer: boolean
+  supports_flow_samplers: boolean
+  supports_standard_samplers: boolean
+  supports_cfg: boolean
+  supports_img2img: boolean
+  supports_inpaint: boolean
+  supports_realtime: boolean
+  supports_parallel_batch: boolean
+  max_batch: number
+  max_resolution: number
+  recommended_steps: number
+  unsupported_controls: string[]
+}
+
+export interface EngineCatalog {
+  engines: EngineCapabilities[]
+  default_engine: string
 }
 
 export interface PromptPlan {
@@ -355,6 +386,18 @@ export interface AppSettings {
   krea2_raw_path: string
   output_dir: string
   prompt_expander_backend: 'local' | 'openrouter' | 'ideogram-json'
+  local_llm_backend: 'transformers' | 'gguf_server'
+  gguf_helper_base_url: string
+  gguf_helper_model: string
+  gguf_helper_timeout_sec: number
+  diffusion_engine: 'native_pytorch' | 'gguf_external' | 'int8_convrot_external'
+  gguf_sd_cli_path: string
+  gguf_turbo_path: string
+  gguf_raw_path: string
+  gguf_llm_path: string
+  gguf_vae_path: string
+  gguf_lora_dir: string
+  gguf_timeout_sec: number
   openrouter_model: string
   openrouter_free_only: boolean
   krea_share_auto_funnel: boolean
@@ -434,6 +477,9 @@ export const apiFetch = {
       schedulers: { id: string; label: string; recommended: boolean; note: string }[]
       recommended_combos: { sampler: string; scheduler: string; steps: number; cfg: number; label: string; note: string }[]
     }>('/api/sampler-catalog', { params: { profile } }).then(r => r.data),
+
+  engineCatalog: () =>
+    api.get<EngineCatalog>('/api/engine-catalog').then(r => r.data),
 
   batchPlan: (params: { width: number; height: number; quantization: string; batch: number; cfg: number; mode: string; checkpoint: string }) =>
     api.get<BatchPlan>('/api/batch/plan', { params }).then(r => r.data),
@@ -580,6 +626,12 @@ export const apiFetch = {
   settings: () => api.get<AppSettings>('/api/settings').then(r => r.data),
   updateSettings: (data: Partial<AppSettings> & { hf_token?: string; ideogram_api_key?: string; openrouter_api_key?: string }) =>
     api.put('/api/settings', data).then(r => r.data),
+
+  testGgufHelper: () =>
+    api.post<{ ok: boolean; backend: string; expanded: string }>('/api/gguf/helper-test', {}, { timeout: 180000 }).then(r => r.data),
+
+  ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; exists: boolean }> }>('/api/gguf/status').then(r => r.data),
+  testGgufRuntime: () => api.post<{ ok: boolean; command: string[]; output: string }>('/api/gguf/test-runtime').then(r => r.data),
 
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
   installTritonWindows: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-triton-windows', {}, { timeout: 600000 }).then(r => r.data),

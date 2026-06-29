@@ -137,7 +137,72 @@ def plan_prompt_local(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult
         return fallback
 
 
-def plan_prompt(prompt: str, *, enabled: bool = True, max_tokens: int = 700) -> PromptPlanResult:
+def plan_prompt_gguf_server(
+    prompt: str,
+    *,
+    max_tokens: int = 700,
+    gguf_helper_base_url: str = "http://127.0.0.1:1234/v1",
+    gguf_helper_model: str = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M",
+    gguf_helper_timeout_sec: int = 120,
+) -> PromptPlanResult:
+    try:
+        text = gguf_chat_completion(
+            [
+                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            base_url=gguf_helper_base_url,
+            model=gguf_helper_model,
+            max_tokens=max(128, min(int(max_tokens), 1600)),
+            temperature=0.1,
+            timeout=gguf_helper_timeout_sec,
+        )
+        parsed = parse_planner_response(text)
+        planned = parsed.get("planned_prompt") or prompt
+        return PromptPlanResult(
+            original_prompt=prompt,
+            planned_prompt=planned,
+            negative_prompt=parsed.get("negative_prompt", ""),
+            subject=parsed.get("subject", ""),
+            composition=parsed.get("composition", ""),
+            style=parsed.get("style", ""),
+            lighting=parsed.get("lighting", ""),
+            materials=parsed.get("materials", ""),
+            text_rendering=parsed.get("text_rendering", ""),
+            regions=parsed.get("regions", []),
+            backend="gguf-server",
+            changed=planned.strip() != prompt.strip(),
+        )
+    except Exception as exc:
+        fallback = plan_prompt_heuristic(prompt, max_tokens=max_tokens)
+        fallback.error = f"GGUF helper prompt planner failed; used heuristic fallback. Details: {exc}"
+        return fallback
+
+
+def gguf_chat_completion(*args, **kwargs) -> str:
+    from prompt_expander import gguf_chat_completion as _chat
+
+    return _chat(*args, **kwargs)
+
+
+def plan_prompt(
+    prompt: str,
+    *,
+    enabled: bool = True,
+    max_tokens: int = 700,
+    backend: str = "local",
+    gguf_helper_base_url: str = "http://127.0.0.1:1234/v1",
+    gguf_helper_model: str = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M",
+    gguf_helper_timeout_sec: int = 120,
+) -> PromptPlanResult:
     if not enabled:
         return PromptPlanResult(original_prompt=prompt, planned_prompt=prompt, changed=False, backend="off")
+    if backend in {"gguf", "gguf-server"}:
+        return plan_prompt_gguf_server(
+            prompt,
+            max_tokens=max_tokens,
+            gguf_helper_base_url=gguf_helper_base_url,
+            gguf_helper_model=gguf_helper_model,
+            gguf_helper_timeout_sec=gguf_helper_timeout_sec,
+        )
     return plan_prompt_local(prompt, max_tokens=max_tokens)

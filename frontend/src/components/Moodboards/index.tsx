@@ -28,7 +28,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import AddLinkIcon from '@mui/icons-material/AddLink'
 import DeleteIcon from '@mui/icons-material/Delete'
 import SaveAltIcon from '@mui/icons-material/SaveAlt'
-import { apiFetch, type AuthSession, type MoodboardItem } from '../../api'
+import { apiFetch, publicUrl, type AuthSession, type MoodboardItem } from '../../api'
 import { useStore } from '../../store'
 
 const PAGE_SIZE = 48
@@ -39,6 +39,11 @@ function previewImages(board: MoodboardItem): string[] {
     ? board.preview_image_urls
     : board.image_urls.length ? board.image_urls : [board.primary_image_url].filter(Boolean)
   return images.slice(0, 4)
+}
+
+function moodboardImageSrc(src: string): string {
+  if (/^(?:https?:|data:|blob:)/i.test(src)) return src
+  return publicUrl(src)
 }
 
 function moodboardErrorMessage(error: any, fallback: string) {
@@ -465,7 +470,7 @@ export default function MoodboardsPanel() {
                         <CardMedia
                           key={`${board.id}-${src}`}
                           component="img"
-                          image={src}
+                          image={moodboardImageSrc(src)}
                           alt={`${board.title} reference ${index + 1}`}
                           sx={{ height: '100%', minHeight: 0, objectFit: 'cover' }}
                         />

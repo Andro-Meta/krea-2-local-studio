@@ -637,11 +637,20 @@ async def _moodboard_enrich_loop() -> None:
 
 @app.post("/api/generate")
 async def generate(req: GenerationRequest, request: Request):
+    if getattr(req, "diffusion_engine", "native_pytorch") == "native_pytorch" and settings.diffusion_engine != "native_pytorch":
+        fields = getattr(req, "model_fields_set", getattr(req, "__fields_set__", set()))
+        if "diffusion_engine" not in fields:
+            req.diffusion_engine = settings.diffusion_engine
     if req.use_prompt_planner:
+        helper_backend = "gguf-server" if settings.local_llm_backend == "gguf_server" else "local"
         plan = plan_prompt(
             req.prompt,
             enabled=True,
             max_tokens=int(getattr(req, "prompt_planner_max_tokens", 700)),
+            backend=helper_backend,
+            gguf_helper_base_url=settings.gguf_helper_base_url,
+            gguf_helper_model=settings.gguf_helper_model,
+            gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
         )
         req.prompt_planner_output = plan.model_dump()
         if not req.prompt_planner_lock_original and plan.planned_prompt:
@@ -651,13 +660,21 @@ async def generate(req: GenerationRequest, request: Request):
 
     # Optional prompt expansion
     if req.use_prompt_expander:
+        helper_backend = (
+            "gguf-server"
+            if settings.local_llm_backend == "gguf_server" and settings.prompt_expander_backend == "local"
+            else settings.prompt_expander_backend
+        )
         result = expand_prompt_result(
             req.prompt,
-            backend=settings.prompt_expander_backend,
+            backend=helper_backend,
             openrouter_api_key=settings.openrouter_api_key,
             openrouter_model=settings.openrouter_model,
             openrouter_free_only=settings.openrouter_free_only,
             ideogram_api_key=settings.ideogram_api_key,
+            gguf_helper_base_url=settings.gguf_helper_base_url,
+            gguf_helper_model=settings.gguf_helper_model,
+            gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
         )
         if result.error:
             raise HTTPException(502, result.error)
@@ -902,34 +919,53 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
         )
 
     try:
-        from edit_providers import resolve_edit_provider
-        from flux_fill_provider import flux_fill_installed, generate_flux_fill
+        if getattr(req, "diffusion_engine", "native_pytorch") == "gguf_external":
+            from gguf_diffusion_provider import generate_gguf_external
 
-        flux_installed = flux_fill_installed()
-        requested_method = getattr(req, "inpaint_method", "native")
-        provider_name = "flux_fill" if requested_method == "flux_fill" else req.edit_provider
-        if requested_method in {"native", "lanpaint_experimental"}:
-            provider_name = "krea_native"
-        provider = resolve_edit_provider(provider_name, req.mode, flux_fill_installed=flux_installed)
-        job["edit_provider"] = provider.name
-        job["provider_warning"] = (
-            provider.reason
-            if req.edit_provider in {"auto", "flux_fill"} and provider.name != "flux_fill" and req.mode in {"inpaint", "outpaint"}
-            else None
-        )
-        if provider.name == "flux_fill":
             pipeline.unload()
-            if req.steps < 50:
-                req.steps = 50
-            if req.cfg < 30:
-                req.cfg = 30
+            req.loras = []
+            req.style_references = []
+            req.regional_prompts = []
+            req.moodboard_images = []
+            req.use_rebalance = False
+            req.krea_enhancer_enabled = False
+            req.krea_enhancer_variant = "off"
+            job["edit_provider"] = "gguf_external"
+            job["provider_warning"] = "GGUF external engine active: Krea-native LoRAs, style refs, moodboards, regional prompts, rebalance, and enhancer are disabled."
             results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                None, lambda: generate_flux_fill(req, progress_cb=progress_cb)
+                None, lambda: generate_gguf_external(req, _gguf_runtime_settings(), progress_cb=progress_cb)
             )
+        elif getattr(req, "diffusion_engine", "native_pytorch") == "int8_convrot_external":
+            raise RuntimeError("INT8 ConvRot sidecar is planned but not implemented yet. Use native PyTorch or GGUF external.")
         else:
-            results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                None, lambda: pipeline.generate(req, progress_cb=progress_cb)
+            from edit_providers import resolve_edit_provider
+            from flux_fill_provider import flux_fill_installed, generate_flux_fill
+
+            flux_installed = flux_fill_installed()
+            requested_method = getattr(req, "inpaint_method", "native")
+            provider_name = "flux_fill" if requested_method == "flux_fill" else req.edit_provider
+            if requested_method in {"native", "lanpaint_experimental"}:
+                provider_name = "krea_native"
+            provider = resolve_edit_provider(provider_name, req.mode, flux_fill_installed=flux_installed)
+            job["edit_provider"] = provider.name
+            job["provider_warning"] = (
+                provider.reason
+                if req.edit_provider in {"auto", "flux_fill"} and provider.name != "flux_fill" and req.mode in {"inpaint", "outpaint"}
+                else None
             )
+            if provider.name == "flux_fill":
+                pipeline.unload()
+                if req.steps < 50:
+                    req.steps = 50
+                if req.cfg < 30:
+                    req.cfg = 30
+                results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
+                    None, lambda: generate_flux_fill(req, progress_cb=progress_cb)
+                )
+            else:
+                results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
+                    None, lambda: pipeline.generate(req, progress_cb=progress_cb)
+                )
         if role == "child":
             image_decision = moderate_images(_job_images_from_b64(results), role=role)
             if not image_decision.allowed:
@@ -1751,6 +1787,18 @@ async def get_settings():
         "krea2_raw_path": env.get("KREA2_RAW_PATH", ""),
         "output_dir": env.get("OUTPUT_DIR", str(MODELS_DIR.parent / "outputs")),
         "prompt_expander_backend": env.get("PROMPT_EXPANDER_BACKEND", settings.prompt_expander_backend),
+        "local_llm_backend": env.get("LOCAL_LLM_BACKEND", settings.local_llm_backend),
+        "gguf_helper_base_url": env.get("GGUF_HELPER_BASE_URL", settings.gguf_helper_base_url),
+        "gguf_helper_model": env.get("GGUF_HELPER_MODEL", settings.gguf_helper_model),
+        "gguf_helper_timeout_sec": int(env.get("GGUF_HELPER_TIMEOUT_SEC", str(settings.gguf_helper_timeout_sec)) or 120),
+        "diffusion_engine": env.get("DIFFUSION_ENGINE", settings.diffusion_engine),
+        "gguf_sd_cli_path": env.get("GGUF_SD_CLI_PATH", settings.gguf_sd_cli_path),
+        "gguf_turbo_path": env.get("GGUF_TURBO_PATH", settings.gguf_turbo_path),
+        "gguf_raw_path": env.get("GGUF_RAW_PATH", settings.gguf_raw_path),
+        "gguf_llm_path": env.get("GGUF_LLM_PATH", settings.gguf_llm_path),
+        "gguf_vae_path": env.get("GGUF_VAE_PATH", settings.gguf_vae_path),
+        "gguf_lora_dir": env.get("GGUF_LORA_DIR", settings.gguf_lora_dir),
+        "gguf_timeout_sec": int(env.get("GGUF_TIMEOUT_SEC", str(settings.gguf_timeout_sec)) or 600),
         "openrouter_model": env.get("OPENROUTER_MODEL", settings.openrouter_model),
         "openrouter_free_only": env.get("OPENROUTER_FREE_ONLY", str(settings.openrouter_free_only)).lower() in {"1", "true", "yes"},
         "krea_share_auto_funnel": env.get("KREA_SHARE_AUTO_FUNNEL", str(settings.krea_share_auto_funnel)).lower() in {"1", "true", "yes", "on"},
@@ -1779,6 +1827,42 @@ async def update_settings(req: SettingsUpdate):
     if req.prompt_expander_backend is not None:
         env["PROMPT_EXPANDER_BACKEND"] = req.prompt_expander_backend
         settings.prompt_expander_backend = req.prompt_expander_backend
+    if req.local_llm_backend is not None:
+        env["LOCAL_LLM_BACKEND"] = req.local_llm_backend
+        settings.local_llm_backend = req.local_llm_backend
+    if req.gguf_helper_base_url is not None:
+        env["GGUF_HELPER_BASE_URL"] = req.gguf_helper_base_url
+        settings.gguf_helper_base_url = req.gguf_helper_base_url
+    if req.gguf_helper_model is not None:
+        env["GGUF_HELPER_MODEL"] = req.gguf_helper_model
+        settings.gguf_helper_model = req.gguf_helper_model
+    if req.gguf_helper_timeout_sec is not None:
+        env["GGUF_HELPER_TIMEOUT_SEC"] = str(req.gguf_helper_timeout_sec)
+        settings.gguf_helper_timeout_sec = int(req.gguf_helper_timeout_sec)
+    if req.diffusion_engine is not None:
+        env["DIFFUSION_ENGINE"] = req.diffusion_engine
+        settings.diffusion_engine = req.diffusion_engine
+    if req.gguf_sd_cli_path is not None:
+        env["GGUF_SD_CLI_PATH"] = req.gguf_sd_cli_path
+        settings.gguf_sd_cli_path = req.gguf_sd_cli_path
+    if req.gguf_turbo_path is not None:
+        env["GGUF_TURBO_PATH"] = req.gguf_turbo_path
+        settings.gguf_turbo_path = req.gguf_turbo_path
+    if req.gguf_raw_path is not None:
+        env["GGUF_RAW_PATH"] = req.gguf_raw_path
+        settings.gguf_raw_path = req.gguf_raw_path
+    if req.gguf_llm_path is not None:
+        env["GGUF_LLM_PATH"] = req.gguf_llm_path
+        settings.gguf_llm_path = req.gguf_llm_path
+    if req.gguf_vae_path is not None:
+        env["GGUF_VAE_PATH"] = req.gguf_vae_path
+        settings.gguf_vae_path = req.gguf_vae_path
+    if req.gguf_lora_dir is not None:
+        env["GGUF_LORA_DIR"] = req.gguf_lora_dir
+        settings.gguf_lora_dir = req.gguf_lora_dir
+    if req.gguf_timeout_sec is not None:
+        env["GGUF_TIMEOUT_SEC"] = str(req.gguf_timeout_sec)
+        settings.gguf_timeout_sec = int(req.gguf_timeout_sec)
     if req.ideogram_api_key is not None:
         settings.ideogram_api_key = req.ideogram_api_key.replace("\r", "").replace("\n", "")
     if req.openrouter_api_key is not None:
@@ -1815,7 +1899,7 @@ async def update_settings(req: SettingsUpdate):
 @app.post("/api/expand-prompt", response_model=ExpandPromptResponse)
 async def expand_prompt_endpoint(req: ExpandPromptRequest):
     loop = asyncio.get_event_loop()
-    backend = req.backend or settings.prompt_expander_backend
+    backend = req.backend or ("gguf-server" if settings.local_llm_backend == "gguf_server" and settings.prompt_expander_backend == "local" else settings.prompt_expander_backend)
     result = await loop.run_in_executor(
         None,
         lambda: expand_prompt_result(
@@ -1825,6 +1909,9 @@ async def expand_prompt_endpoint(req: ExpandPromptRequest):
             openrouter_model=settings.openrouter_model,
             openrouter_free_only=settings.openrouter_free_only,
             ideogram_api_key=settings.ideogram_api_key,
+            gguf_helper_base_url=settings.gguf_helper_base_url,
+            gguf_helper_model=settings.gguf_helper_model,
+            gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
         ),
     )
     return ExpandPromptResponse(
@@ -1847,6 +1934,76 @@ async def sampler_catalog_endpoint(profile: str = "krea_turbo"):
     from krea2.sampler_registry import sampler_catalog
 
     return sampler_catalog(profile)
+
+
+@app.get("/api/engine-catalog")
+async def engine_catalog_endpoint():
+    from model_profiles import engine_catalog
+
+    return engine_catalog()
+
+
+@app.post("/api/gguf/helper-test")
+async def gguf_helper_test_endpoint():
+    result = expand_prompt_result(
+        "a small red fox in morning fog",
+        backend="gguf-server",
+        gguf_helper_base_url=settings.gguf_helper_base_url,
+        gguf_helper_model=settings.gguf_helper_model,
+        gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
+    )
+    if result.error:
+        raise HTTPException(502, result.error)
+    return {"ok": True, "backend": result.backend, "expanded": result.expanded}
+
+
+def _gguf_runtime_settings():
+    from gguf_diffusion_provider import GgufRuntimeSettings
+
+    return GgufRuntimeSettings(
+        sd_cli_path=settings.gguf_sd_cli_path,
+        turbo_path=settings.gguf_turbo_path,
+        raw_path=settings.gguf_raw_path,
+        llm_path=settings.gguf_llm_path,
+        vae_path=settings.gguf_vae_path,
+        lora_dir=settings.gguf_lora_dir,
+        timeout_sec=settings.gguf_timeout_sec,
+    )
+
+
+@app.get("/api/gguf/status")
+async def gguf_status_endpoint():
+    from pathlib import Path
+
+    fields = {
+        "sd_cli_path": settings.gguf_sd_cli_path,
+        "turbo_path": settings.gguf_turbo_path,
+        "raw_path": settings.gguf_raw_path,
+        "llm_path": settings.gguf_llm_path,
+        "vae_path": settings.gguf_vae_path,
+        "lora_dir": settings.gguf_lora_dir,
+    }
+    return {
+        "diffusion_engine": settings.diffusion_engine,
+        "paths": {
+            key: {"path": value, "exists": bool(value and Path(value).exists())}
+            for key, value in fields.items()
+        },
+    }
+
+
+@app.post("/api/gguf/test-runtime")
+async def gguf_test_runtime_endpoint():
+    from gguf_diffusion_provider import build_gguf_command
+
+    req = GenerationRequest(prompt="a small red fox in morning fog", width=512, height=512, steps=4, cfg=0.0)
+    cmd, output = build_gguf_command(req, _gguf_runtime_settings())
+    return {"ok": True, "command": cmd, "output": str(output)}
+
+
+@app.post("/api/gguf/benchmark-quick")
+async def gguf_benchmark_quick_endpoint():
+    return {"ok": False, "message": "GGUF runtime benchmark is available after runtime paths are configured and test-runtime succeeds."}
 
 
 @app.get("/api/runtime-advice")
@@ -1934,9 +2091,18 @@ async def prompting_guide_endpoint():
 @app.post("/api/plan-prompt", response_model=PlanPromptResponse)
 async def plan_prompt_endpoint(req: PlanPromptRequest):
     loop = asyncio.get_event_loop()
+    helper_backend = "gguf-server" if settings.local_llm_backend == "gguf_server" else "local"
     result = await loop.run_in_executor(
         None,
-        lambda: plan_prompt(req.prompt, enabled=True, max_tokens=req.max_tokens),
+        lambda: plan_prompt(
+            req.prompt,
+            enabled=True,
+            max_tokens=req.max_tokens,
+            backend=helper_backend,
+            gguf_helper_base_url=settings.gguf_helper_base_url,
+            gguf_helper_model=settings.gguf_helper_model,
+            gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
+        ),
     )
     return PlanPromptResponse(**result.model_dump())
 
