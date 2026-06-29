@@ -64,6 +64,7 @@ export default function MoodboardsPanel() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
+  const [shuffleSeed, setShuffleSeed] = useState(() => `${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
@@ -100,6 +101,7 @@ export default function MoodboardsPanel() {
         pageSize: PAGE_SIZE,
         favorites: moodboardView === 'favorites',
         source: moodboardView === 'custom' ? 'custom' : moodboardView === 'official' ? 'official' : undefined,
+        shuffleSeed: !query.trim() && moodboardView === 'official' ? shuffleSeed : undefined,
       })
       setItems(prev => pg === 1 ? data.items : [...prev, ...data.items])
       setTotal(data.total)
@@ -111,7 +113,7 @@ export default function MoodboardsPanel() {
     } finally {
       setLoading(false)
     }
-  }, [moodboardView, query])
+  }, [moodboardView, query, shuffleSeed])
 
   useEffect(() => { load(1) }, [load])
   useEffect(() => {
@@ -408,6 +410,16 @@ export default function MoodboardsPanel() {
           <Tooltip title="Refresh list">
             <IconButton onClick={() => load(1)} disabled={loading}><RefreshIcon /></IconButton>
           </Tooltip>
+          {moodboardView === 'official' && !query.trim() && (
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => setShuffleSeed(`${Date.now()}-${Math.random().toString(36).slice(2)}`)}
+              disabled={loading}
+            >
+              Shuffle
+            </Button>
+          )}
         </Stack>
 
         {loading && page === 1 ? (

@@ -457,13 +457,14 @@ export const apiFetch = {
 
   moods: () => api.get<Mood[]>('/api/moods').then(r => r.data),
 
-  moodboards: (opts?: { q?: string; page?: number; pageSize?: number; favorites?: boolean; source?: 'official' | 'custom' }) => {
+  moodboards: (opts?: { q?: string; page?: number; pageSize?: number; favorites?: boolean; source?: 'official' | 'custom'; shuffleSeed?: string }) => {
     const params = new URLSearchParams()
     if (opts?.q) params.set('q', opts.q)
     params.set('page', String(opts?.page ?? 1))
     params.set('page_size', String(opts?.pageSize ?? 50))
     params.set('favorites', String(opts?.favorites ?? false))
     if (opts?.source) params.set('source', opts.source)
+    if (opts?.shuffleSeed) params.set('shuffle_seed', opts.shuffleSeed)
     return api.get<{ items: MoodboardItem[]; total: number }>(`/api/moodboards?${params.toString()}`).then(r => r.data)
   },
 

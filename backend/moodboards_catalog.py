@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import shutil
@@ -806,6 +807,7 @@ async def list_moodboards(
     source: str = "",
     page: int = 1,
     page_size: int = 50,
+    shuffle_seed: str = "",
     db_path: Path = DB_PATH,
 ) -> dict:
     where_parts: list[str] = []
@@ -824,6 +826,11 @@ async def list_moodboards(
         scored = [(_score_item(item, query), item) for item in items]
         items = [item for score, item in scored if score > 0]
         items.sort(key=lambda item: (-_score_item(item, query), item["title"]))
+    elif shuffle_seed.strip():
+        seed = shuffle_seed.strip()
+        items.sort(
+            key=lambda item: hashlib.sha256(f"{seed}:{item.get('id')}:{item.get('uuid', '')}".encode("utf-8")).hexdigest()
+        )
     else:
         items.sort(key=lambda item: item["title"])
     total = len(items)

@@ -124,6 +124,40 @@ class MoodboardCatalogTests(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_catalog_shuffle_is_deterministic_by_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def run() -> None:
+                await init_moodboard_db(db_path)
+                for index, title in enumerate(
+                    ["Alpha Style", "Beta Style", "Gamma Style", "Delta Style", "Epsilon Style", "Zeta Style", "Eta Style", "Theta Style"],
+                    start=1,
+                ):
+                    await upsert_moodboard(
+                        MoodboardRecord(
+                            url=f"https://www.krea.ai/moodboard-feed/{title.lower().replace(' ', '-')}-11111111-1111-5111-9111-11111111111{index}",
+                            slug=f"{title.lower().replace(' ', '-')}-11111111-1111-5111-9111-11111111111{index}",
+                            uuid=f"11111111-1111-5111-9111-11111111111{index}",
+                            title=title,
+                            taste_profile="Test style",
+                            keywords=["test"],
+                            primary_image_url="",
+                            image_urls=[],
+                            related_urls=[],
+                        ),
+                        db_path,
+                    )
+
+                first = await list_moodboards(page=1, page_size=4, source="official", shuffle_seed="phone", db_path=db_path)
+                second = await list_moodboards(page=1, page_size=4, source="official", shuffle_seed="phone", db_path=db_path)
+                third = await list_moodboards(page=1, page_size=4, source="official", shuffle_seed="other", db_path=db_path)
+
+                self.assertEqual([item["id"] for item in first["items"]], [item["id"] for item in second["items"]])
+                self.assertNotEqual([item["id"] for item in first["items"]], [item["id"] for item in third["items"]])
+
+            asyncio.run(run())
+
     def test_exports_and_imports_portable_seed_without_local_favorites(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             source_db = Path(td) / "source.db"

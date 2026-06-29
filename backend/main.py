@@ -1210,8 +1210,15 @@ async def moderation_quarantine_file(filename: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/moodboards", response_model=MoodboardListResponse)
-async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False, source: str = ""):
-    return await list_moodboards(query=q, page=page, page_size=page_size, favorites_only=favorites, source=source)
+async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False, source: str = "", shuffle_seed: str = ""):
+    return await list_moodboards(
+        query=q,
+        page=page,
+        page_size=page_size,
+        favorites_only=favorites,
+        source=source,
+        shuffle_seed=shuffle_seed,
+    )
 
 
 @app.get("/api/moodboards/discoveries/latest", response_model=MoodboardDiscoveryResponse)
