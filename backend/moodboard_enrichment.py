@@ -23,6 +23,15 @@ class MoodboardSource:
 
 
 QwenGenerator = Callable[[str, list[str]], str]
+SUBJECT_LOCK_TERMS = (
+    "crowd", "crowds", "people", "person", "persons", "human", "humans",
+    "figure", "figures", "man", "woman", "men", "women", "child", "children",
+    "animal", "animals", "text", "lettering", "building", "buildings",
+    "architecture", "architectural", "vehicle", "vehicles", "face", "faces",
+    "subject", "subjects",
+    "populated", "unpopulated", "empty scene", "empty scenes",
+)
+DESOLATION_TERMS = ("apocalyptic", "desolate", "desolation", "isolation", "solitude", "wasteland", "empty", "sparse")
 
 
 def _strip_fence(text: str) -> str:
@@ -76,7 +85,66 @@ def parse_qwen_guidance_json(text: str, *, allow_catalog_metadata: bool = False)
         guidance["taste_profile"] = str(data.get("taste_profile") or "").strip()
         guidance["keywords"] = _string_list(data.get("keywords"))
 
-    return guidance
+    return sanitize_transferable_guidance(guidance)
+
+
+def _strip_subject_locked_negative(text: str) -> str:
+    clauses = re.split(r"(?<=[.;])\s+|,\s+and\s+|,\s+or\s+", str(text or ""))
+    kept: list[str] = []
+    for clause in clauses:
+        low = clause.lower()
+        # Keep style-quality clauses, remove clauses that ban subject categories.
+        if any(term in low for term in SUBJECT_LOCK_TERMS):
+            continue
+        cleaned = clause.strip(" ,;.")
+        if cleaned:
+            kept.append(cleaned)
+    return ". ".join(kept)
+
+
+def _abstract_subject_locked_prompt(text: str) -> str:
+    replacements = [
+        (r"\ba lone figure\b", "silhouette-style contrast"),
+        (r"\bthe lone figure\b", "the silhouette-style contrast"),
+        (r"\bsolitary silhouette(s)?\b", "silhouette-style contrast"),
+        (r"\bcentered figure\b", "center-weighted contrast"),
+        (r"\bfacing away from the viewer\b", "backlit compositional tension"),
+        (r"\bmany people\b", "multi-subject compositions"),
+        (r"\bno people\b", "subject-agnostic compositions"),
+    ]
+    result = str(text or "")
+    for pattern, repl in replacements:
+        result = re.sub(pattern, repl, result, flags=re.I)
+    return result
+
+
+def sanitize_transferable_guidance(guidance: dict) -> dict:
+    """Remove subject locks from Qwen moodboard guidance.
+
+    Moodboards should transfer style to arbitrary user subjects. Qwen may describe
+    a source image too literally; this keeps palette/lighting/texture guidance
+    while avoiding bans on people/crowds/text/architecture/etc.
+    """
+    cleaned = dict(guidance)
+    cleaned["prompt_guidance"] = _abstract_subject_locked_prompt(str(cleaned.get("prompt_guidance") or ""))
+    cleaned["negative_guidance"] = _strip_subject_locked_negative(str(cleaned.get("negative_guidance") or ""))
+    notes = _string_list(cleaned.get("conditioning_notes"))
+    transfer_note = "Apply the moodboard as transferable style; do not override the user's requested subject count or content."
+    if transfer_note not in notes:
+        notes.append(transfer_note)
+    style_blob = " ".join(
+        [
+            str(cleaned.get("prompt_guidance") or ""),
+            str(cleaned.get("source_summary") or ""),
+            " ".join(str(v) for v in cleaned.get("style_axes", []) or []),
+        ]
+    ).lower()
+    if any(term in style_blob for term in DESOLATION_TERMS):
+        desolation_note = "Preserve desolation, isolation, or sparse end-of-world atmosphere as mood pressure, while still honoring requested people/count/content."
+        if desolation_note not in notes:
+            notes.append(desolation_note)
+    cleaned["conditioning_notes"] = notes[:12]
+    return cleaned
 
 
 def _source_block(source: MoodboardSource, index: int) -> str:
@@ -102,6 +170,13 @@ def build_moodboard_guidance_prompt(sources: list[MoodboardSource], mode: Guidan
     return (
         "You are the local Krea 2 moodboard implementation model. Convert moodboard ingredients into "
         "generation-ready guidance for the local Krea/Qwen conditioning pipeline.\n\n"
+        "Your job is to extract a transferable visual style, not recreate the example images. "
+        "Do not describe the source image subject, people-count, exact object count, exact pose, or fixed composition "
+        "unless the board is explicitly about that reusable composition style. The guidance must work if the user prompt "
+        "asks for many people, no people, a product shot, an animal, architecture, text, or an abstract scene. "
+        "Describe palette, lighting, lens/material texture, contrast, rendering medium, atmosphere, era, and composition tendencies as optional style pressure. "
+        "Use phrases like 'apply this palette/lighting/texture' instead of 'show a lone figure'. "
+        "Negative guidance must avoid off-style rendering qualities, not forbid valid user subjects such as crowds unless the style truly requires emptiness.\n\n"
         f"Mode: {mode}\n"
         f"{metadata_rule}\n\n"
         "Return strict JSON only. Required keys: prompt_guidance, negative_guidance, style_axes, "
@@ -147,7 +222,7 @@ def _fallback_guidance(sources: list[MoodboardSource], mode: GuidanceMode) -> di
         guidance["title"] = titles[0] if titles else "Custom Moodboard"
         guidance["taste_profile"] = taste_text or prompt_guidance
         guidance["keywords"] = keywords[:12]
-    return guidance
+    return sanitize_transferable_guidance(guidance)
 
 
 def _local_qwen_generate(prompt: str, image_b64s: list[str]) -> str:

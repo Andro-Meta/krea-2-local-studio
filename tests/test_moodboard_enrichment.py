@@ -13,6 +13,7 @@ from moodboard_enrichment import (  # noqa: E402
     MoodboardSource,
     generate_moodboard_guidance,
     parse_qwen_guidance_json,
+    sanitize_transferable_guidance,
 )
 
 
@@ -65,6 +66,22 @@ class MoodboardEnrichmentTests(unittest.TestCase):
         self.assertNotIn("keywords", guidance)
         self.assertIn("gritty realism", guidance["prompt_guidance"])
 
+    def test_guidance_prompt_requires_transferable_style_not_source_subject(self) -> None:
+        prompt = __import__("moodboard_enrichment").build_moodboard_guidance_prompt(
+            [
+                MoodboardSource(
+                    title="Analog Apocalyptic Radiance",
+                    taste_profile="High-contrast thermal light and analog film grain.",
+                    keywords=["analog film grain", "fiery orange glow", "high-contrast silhouette"],
+                )
+            ],
+            "official",
+        )
+
+        self.assertIn("transferable visual style", prompt)
+        self.assertIn("Do not describe the source image subject", prompt)
+        self.assertIn("people-count", prompt)
+
     def test_custom_guidance_can_author_missing_catalog_metadata(self) -> None:
         source = MoodboardSource(
             title="",
@@ -110,6 +127,24 @@ class MoodboardEnrichmentTests(unittest.TestCase):
         self.assertIn("Gritty Cinematic Realism", guidance["prompt_guidance"])
         self.assertIn("cinematic realism", guidance["style_axes"])
         self.assertEqual(guidance["guidance_backend"], "heuristic_fallback")
+
+    def test_sanitizes_subject_locking_guidance(self) -> None:
+        guidance = sanitize_transferable_guidance({
+            "prompt_guidance": "A lone figure centered in frame with fiery orange glow and analog film grain.",
+            "negative_guidance": "Avoid clean digital rendering. Avoid crowds, text, buildings, subjects, or populated scenes. Avoid flat lighting.",
+            "style_axes": ["analog film grain", "apocalyptic desolation"],
+            "conditioning_notes": [],
+            "source_summary": "",
+            "guidance_version": 1,
+        })
+
+        self.assertNotIn("lone figure", guidance["prompt_guidance"].lower())
+        self.assertNotIn("crowds", guidance["negative_guidance"].lower())
+        self.assertNotIn("buildings", guidance["negative_guidance"].lower())
+        self.assertNotIn("populated", guidance["negative_guidance"].lower())
+        self.assertIn("clean digital rendering", guidance["negative_guidance"])
+        self.assertIn("flat lighting", guidance["negative_guidance"])
+        self.assertTrue(any("desolation" in note.lower() for note in guidance["conditioning_notes"]))
 
 
 if __name__ == "__main__":
