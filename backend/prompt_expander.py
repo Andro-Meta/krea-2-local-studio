@@ -9,6 +9,7 @@ import re
 from collections.abc import Mapping
 from functools import lru_cache
 from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
 
 import requests
 from PIL import Image
@@ -28,6 +29,7 @@ OPENROUTER_VISION_FALLBACKS = (
 )
 GGUF_HELPER_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
 GGUF_HELPER_DEFAULT_MODEL = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M"
+LOCAL_GGUF_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 # Verbatim from Krea's official prompt expansion used by the krea.ai API
 # (github.com/krea-ai/krea-2 docs/expansion.txt). Matching it locally closes the
@@ -399,6 +401,26 @@ def expand_prompt_openrouter(
         return PromptExpansionResult(expanded=prompt, changed=False, error=msg, backend="openrouter")
 
 
+def _strip_think_blocks(text: str, *, limit: int = 20000) -> str:
+    value = str(text or "")[:limit]
+    while True:
+        start = value.lower().find("<think>")
+        if start < 0:
+            return value.strip()
+        end = value.lower().find("</think>", start + 7)
+        if end < 0:
+            return (value[:start] + value[start + 7:]).strip()
+        value = value[:start] + value[end + 8:]
+
+
+def _safe_local_openai_base_url(base_url: str) -> str:
+    parsed = urlparse(str(base_url or GGUF_HELPER_DEFAULT_BASE_URL).strip())
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in LOCAL_GGUF_HOSTS:
+        raise ValueError("GGUF helper base URL must be a local OpenAI-compatible endpoint.")
+    path = (parsed.path or "/v1").rstrip("/")
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
 def gguf_chat_completion(
     messages: list[dict],
     *,
@@ -408,7 +430,7 @@ def gguf_chat_completion(
     temperature: float = 0.7,
     timeout: int = 120,
 ) -> str:
-    url = str(base_url or GGUF_HELPER_DEFAULT_BASE_URL).rstrip("/") + "/chat/completions"
+    url = _safe_local_openai_base_url(base_url) + "/chat/completions"
     resp = requests.post(
         url,
         headers={"Content-Type": "application/json"},
@@ -422,7 +444,7 @@ def gguf_chat_completion(
     )
     resp.raise_for_status()
     text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return _strip_think_blocks(text)
 
 
 def expand_prompt_gguf_server(

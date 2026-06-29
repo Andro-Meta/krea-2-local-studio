@@ -1973,8 +1973,6 @@ def _gguf_runtime_settings():
 
 @app.get("/api/gguf/status")
 async def gguf_status_endpoint():
-    from pathlib import Path
-
     fields = {
         "sd_cli_path": settings.gguf_sd_cli_path,
         "turbo_path": settings.gguf_turbo_path,
@@ -1986,7 +1984,7 @@ async def gguf_status_endpoint():
     return {
         "diffusion_engine": settings.diffusion_engine,
         "paths": {
-            key: {"path": value, "exists": bool(value and Path(value).exists())}
+            key: {"path": value, "configured": bool(value)}
             for key, value in fields.items()
         },
     }

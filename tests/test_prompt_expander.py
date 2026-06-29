@@ -12,6 +12,7 @@ if str(BACKEND) not in sys.path:
 
 from prompt_expander import (
     _decode_generation,
+    _strip_think_blocks,
     describe_image_local,
     describe_image_openrouter,
     expand_prompt_local,
@@ -196,6 +197,24 @@ class PromptExpanderTests(unittest.TestCase):
         self.assertEqual(result.backend, "gguf-server")
         self.assertEqual(calls[0][0], "http://127.0.0.1:1234/v1/chat/completions")
         self.assertEqual(calls[0][1]["json"]["model"], "krea-engineer-q4")
+
+    def test_gguf_server_rejects_non_local_base_url(self) -> None:
+        result = expand_prompt_result(
+            "a foggy road",
+            backend="gguf-server",
+            gguf_helper_base_url="https://example.com/v1",
+            gguf_helper_model="krea-engineer-q4",
+        )
+
+        self.assertFalse(result.changed)
+        self.assertIn("local OpenAI-compatible endpoint", result.error)
+
+    def test_strip_think_blocks_is_bounded(self) -> None:
+        text = "<think>" * 1000 + "final prompt"
+
+        stripped = _strip_think_blocks(text, limit=200)
+
+        self.assertLessEqual(len(stripped), 200)
 
     def test_openrouter_rate_limit_returns_hard_error(self) -> None:
         class OpenRouterResponse:

@@ -630,7 +630,7 @@ export const apiFetch = {
   testGgufHelper: () =>
     api.post<{ ok: boolean; backend: string; expanded: string }>('/api/gguf/helper-test', {}, { timeout: 180000 }).then(r => r.data),
 
-  ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; exists: boolean }> }>('/api/gguf/status').then(r => r.data),
+  ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; configured: boolean }> }>('/api/gguf/status').then(r => r.data),
   testGgufRuntime: () => api.post<{ ok: boolean; command: string[]; output: string }>('/api/gguf/test-runtime').then(r => r.data),
 
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
