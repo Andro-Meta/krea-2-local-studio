@@ -38,7 +38,7 @@ from krea2.sampler_registry import validate_sampler_configuration
 from krea2.lanpaint_sampler import LanPaintSettings
 from lora_manager import apply_loras, build_trigger_prompt
 from model_profiles import MODEL_PROFILES, apply_profile_defaults
-from moodboards_catalog import fetch_moodboard_image_b64, moodboard_generation_context
+from moodboards_catalog import moodboard_generation_context
 from memory_manager import clear_cuda_cache
 from regional_scene import build_regional_prompt_text
 from gpu_caps import assess_runnability, detect_gpu_capabilities
@@ -1036,19 +1036,6 @@ class Krea2Pipeline:
             )
             for ref in style_refs
         )
-        # If a caller supplies catalog moodboard IDs but no pre-fetched images,
-        # pull a small server-side fallback set so catalog recipes/direct API use
-        # the same Qwen visual conditioning as the GUI moodboard picker.
-        if catalog_context.get("image_urls") and not list(getattr(req, "moodboard_images", []) or []):
-            fallback_images: list[str] = []
-            for url in list(catalog_context.get("image_urls", []) or [])[:4]:
-                try:
-                    fallback_images.append(fetch_moodboard_image_b64(url))
-                except Exception:
-                    logger.debug("Moodboard fallback image fetch failed for %s", url)
-            if fallback_images:
-                req.moodboard_images = fallback_images
-
         ref_b64s = [
             b64
             for b64 in list(getattr(req, "moodboard_images", []) or []) + style_ref_b64s

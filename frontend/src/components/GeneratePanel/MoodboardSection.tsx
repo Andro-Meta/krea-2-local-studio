@@ -8,12 +8,6 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { useStore } from '../../store'
 import { apiFetch, type Mood, type MoodboardItem } from '../../api'
 
-const MAX_CATALOG_REFS = 10
-
-function moodboardRefs(board: MoodboardItem): string[] {
-  return Array.from(new Set([board.primary_image_url, ...board.image_urls].filter(Boolean))).slice(0, MAX_CATALOG_REFS)
-}
-
 function moodboardErrorMessage(error: any, fallback: string) {
   const detail = error?.response?.data?.detail
   if (detail === 'Authentication required') {
@@ -31,7 +25,6 @@ export default function MoodboardSection() {
   const [catalogQuery, setCatalogQuery] = useState('')
   const [catalogResults, setCatalogResults] = useState<MoodboardItem[]>([])
   const [selectedBoards, setSelectedBoards] = useState<MoodboardItem[]>([])
-  const [catalogImageMap, setCatalogImageMap] = useState<Record<number, string[]>>({})
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [catalogMessage, setCatalogMessage] = useState('')
   const [open, setOpen] = useState(false)
@@ -84,20 +77,15 @@ export default function MoodboardSection() {
     setCatalogLoading(true)
     setCatalogMessage('')
     try {
-      const refs = moodboardRefs(moodboard)
-      const images = await Promise.all(refs.map(src => apiFetch.moodboardImage(src)))
       const current = useStore.getState().params
       const nextIds = Array.from(new Set([...current.selected_moodboard_ids, moodboard.id]))
       const nextUuids = Array.from(new Set([...current.moodboard_uuids, moodboard.uuid].filter(Boolean)))
-      const nextImages = Array.from(new Set([...current.moodboard_images, ...images])).slice(0, MAX_CATALOG_REFS)
       setSelectedBoards(prev => prev.some(board => board.id === moodboard.id) ? prev : [...prev, moodboard])
-      setCatalogImageMap(prev => ({ ...prev, [moodboard.id]: images }))
       setParam('selected_moodboard_ids', nextIds)
       setParam('moodboard_uuids', nextUuids)
-      setParam('moodboard_images', nextImages)
       if (!current.prompt.trim()) setParam('prompt', moodboard.title)
     } catch (e: any) {
-      setCatalogMessage(moodboardErrorMessage(e, 'Could not load Krea moodboard images.'))
+      setCatalogMessage(moodboardErrorMessage(e, 'Could not add Krea moodboard.'))
     } finally {
       setCatalogLoading(false)
     }
@@ -105,16 +93,9 @@ export default function MoodboardSection() {
 
   const removeCatalogMoodboard = (id: number) => {
     const board = selectedBoards.find(board => board.id === id)
-    const imagesToRemove = new Set(catalogImageMap[id] || [])
     setParam('selected_moodboard_ids', selectedCatalogIds.filter(existing => existing !== id))
     if (board?.uuid) setParam('moodboard_uuids', params.moodboard_uuids.filter(uuid => uuid !== board.uuid))
-    if (imagesToRemove.size) setParam('moodboard_images', params.moodboard_images.filter(image => !imagesToRemove.has(image)))
     setSelectedBoards(prev => prev.filter(board => board.id !== id))
-    setCatalogImageMap(prev => {
-      const next = { ...prev }
-      delete next[id]
-      return next
-    })
   }
 
   const addImages = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -193,7 +174,7 @@ export default function MoodboardSection() {
                 })}
               </Stack>
               <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
-                Removing a catalog chip also removes its catalog reference thumbnails. Manually uploaded references stay until removed below.
+                Catalog moodboards use their enriched Qwen style guidance by default. Add reference images below only when you want a stronger visual pull.
               </Typography>
             </Box>
           )}

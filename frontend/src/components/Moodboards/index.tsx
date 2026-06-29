@@ -32,15 +32,11 @@ import { apiFetch, type AuthSession, type MoodboardItem } from '../../api'
 import { useStore } from '../../store'
 
 const PAGE_SIZE = 48
-const MAX_LOCAL_MOODBOARD_REFS = 10
+const MAX_CUSTOM_MOODBOARD_REFS = 10
 
 function previewImages(board: MoodboardItem): string[] {
   const images = board.image_urls.length ? board.image_urls : [board.primary_image_url].filter(Boolean)
   return images.slice(0, 4)
-}
-
-function moodboardRefs(board: MoodboardItem): string[] {
-  return Array.from(new Set([board.primary_image_url, ...board.image_urls].filter(Boolean))).slice(0, MAX_LOCAL_MOODBOARD_REFS)
 }
 
 function moodboardErrorMessage(error: any, fallback: string) {
@@ -180,7 +176,7 @@ export default function MoodboardsPanel() {
   }
 
   const createCustomMoodboard = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []).slice(0, MAX_LOCAL_MOODBOARD_REFS)
+    const files = Array.from(event.target.files ?? []).slice(0, MAX_CUSTOM_MOODBOARD_REFS)
     event.target.value = ''
     if (!files.length) return
     const title = window.prompt('Name this custom moodboard. Leave blank to let local Qwen name it.', '') ?? ''
@@ -228,11 +224,9 @@ export default function MoodboardsPanel() {
   }
 
   const useMoodboard = async (board: MoodboardItem) => {
-    const refs = moodboardRefs(board)
     setBusy(`Loading ${board.title}`)
     setMessage(null)
     try {
-      const images = await Promise.all(refs.map(src => apiFetch.moodboardImage(src)))
       const basePrompt = params.prompt.trim()
       setParams({
         mode: 'txt2img',
@@ -240,13 +234,13 @@ export default function MoodboardsPanel() {
         selected_moodboard_ids: [board.id],
         moodboard_uuids: board.uuid ? [board.uuid] : [],
         moodboard_strength: 0.35,
-        moodboard_images: images,
+        moodboard_images: [],
         prompt: basePrompt || board.title,
       })
-      setMessage({ severity: 'success', text: `Loaded ${images.length} local reference images from ${board.title}.` })
+      setMessage({ severity: 'success', text: `Loaded ${board.title} style guidance.` })
       setTab(0)
     } catch (e: any) {
-      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not load moodboard images') })
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not load moodboard') })
     } finally {
       setBusy(null)
     }
@@ -327,7 +321,7 @@ export default function MoodboardsPanel() {
           <Box>
             <Typography variant="h5">Moodboards</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Search public Krea moodboards, save favorites, and load up to {MAX_LOCAL_MOODBOARD_REFS} reference images into local txt2img Qwen conditioning.
+              Search public Krea moodboards, save favorites, and load their enriched style guidance into local txt2img conditioning.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>

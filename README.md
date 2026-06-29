@@ -204,20 +204,3 @@ Community thanks:
 
 - The **Banodoco community** deserves special credit for persistent Krea 2 experimentation, Discord testing, sampler/scheduler comparisons, low-VRAM findings, visual A/B testing, and practical workflow reports. Many of the most useful defaults in this local studio were informed by that community's consistent hard work.
 
-## Secrets and Local Files
-
-Do not commit:
-
-- `.env`
-- `share_auth.json`
-- `models/`
-- `outputs/`
-- `logs/`
-- `app.db`
-- `venv/`
-- `frontend/node_modules/`
-- `frontend/dist/`
-
-These are ignored by `.gitignore`.
-
-Be especially careful with any separate legal/work projects: never expose project folders or `.env` files through a static server or public Funnel route.
