@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from html import unescape
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import aiosqlite
 import requests
@@ -23,6 +23,7 @@ KREA_BASE_URL = "https://www.krea.ai"
 KREA_MOODBOARD_GALLERY_URL = f"{KREA_BASE_URL}/app?gallery=moodboards"
 MOODBOARD_SEED_PATH = BASE_DIR / "data" / "krea_moodboards_seed.json"
 CUSTOM_MOODBOARD_DIR = BASE_DIR / "data" / "custom_moodboards"
+MOODBOARD_IMAGE_CACHE_DIR = BASE_DIR / "data" / "moodboard_image_cache"
 SYNC_META_KEY = "last_krea_moodboard_sync_at"
 DISCOVERY_META_KEY = "latest_krea_moodboard_discovery"
 DEFAULT_SYNC_INTERVAL_SECONDS = 24 * 60 * 60
@@ -121,6 +122,39 @@ def fetch_krea_image_b64(url: str, *, timeout: int = 30) -> str:
     if not content_type.startswith("image/"):
         raise ValueError("URL did not return an image.")
     return base64.b64encode(response.content).decode()
+
+
+def moodboard_preview_image_url(url: str) -> str:
+    value = str(url or "").strip()
+    if value.startswith("/api/moodboards/custom-images/"):
+        return value
+    if not is_allowed_krea_image_url(value):
+        return ""
+    return f"/api/moodboards/cached-image?url={quote(value, safe='')}"
+
+
+def fetch_cached_moodboard_image(url: str, *, cache_dir: Path = MOODBOARD_IMAGE_CACHE_DIR, timeout: int = 30) -> Path:
+    if not is_allowed_krea_image_url(url):
+        raise ValueError("Only Krea image URLs can be cached.")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(str(url).encode("utf-8")).hexdigest()
+    for existing in cache_dir.glob(f"{digest}.*"):
+        if existing.is_file():
+            return existing
+    response = requests.get(
+        url,
+        timeout=timeout,
+        headers={"User-Agent": "krea2-studio/1.0 moodboard preview cache"},
+    )
+    response.raise_for_status()
+    content_type = response.headers.get("content-type", "")
+    if not content_type.startswith("image/"):
+        raise ValueError("URL did not return an image.")
+    raw = response.content
+    ext = _image_extension(raw)
+    path = cache_dir / f"{digest}{ext}"
+    path.write_bytes(raw)
+    return path
 
 
 def _strip_data_url(image_b64: str) -> str:
@@ -741,7 +775,14 @@ def _row_to_item(row: aiosqlite.Row) -> dict:
     item["favorite"] = bool(item["favorite"])
     item["source"] = str(item.get("source") or "official")
     item["keywords"] = _json_list(item.get("keywords", "[]"))
-    item["image_urls"] = _json_list(item.get("image_urls", "[]"))
+    item["image_urls"] = _moodboard_image_urls(_json_list(item.get("image_urls", "[]")))
+    item["preview_image_urls"] = [
+        preview for preview in (
+            moodboard_preview_image_url(url)
+            for url in _moodboard_image_urls([str(item.get("primary_image_url") or ""), *item["image_urls"]])
+        )
+        if preview
+    ]
     item["related_urls"] = _json_list(item.get("related_urls", "[]"))
     item["qwen_guidance"] = _json_dict(item.get("qwen_guidance_json", ""))
     item["qwen_guidance_at"] = str(item.get("qwen_guidance_at") or "")
@@ -754,7 +795,14 @@ def _sync_row_to_item(row: sqlite3.Row) -> dict:
     item["favorite"] = bool(item["favorite"])
     item["source"] = str(item.get("source") or "official")
     item["keywords"] = _json_list(item.get("keywords", "[]"))
-    item["image_urls"] = _json_list(item.get("image_urls", "[]"))
+    item["image_urls"] = _moodboard_image_urls(_json_list(item.get("image_urls", "[]")))
+    item["preview_image_urls"] = [
+        preview for preview in (
+            moodboard_preview_image_url(url)
+            for url in _moodboard_image_urls([str(item.get("primary_image_url") or ""), *item["image_urls"]])
+        )
+        if preview
+    ]
     item["related_urls"] = _json_list(item.get("related_urls", "[]"))
     item["qwen_guidance"] = _json_dict(item.get("qwen_guidance_json", ""))
     item["qwen_guidance_at"] = str(item.get("qwen_guidance_at") or "")

@@ -46,6 +46,7 @@ from moodboards_catalog import (
     generate_and_store_moodboard_qwen_guidance,
     generate_missing_moodboard_qwen_guidance,
     get_moodboard,
+    fetch_cached_moodboard_image,
     import_moodboard_urls,
     init_moodboard_db,
     latest_moodboard_discovery,
@@ -1224,6 +1225,19 @@ async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites:
 @app.get("/api/moodboards/discoveries/latest", response_model=MoodboardDiscoveryResponse)
 async def moodboard_latest_discovery():
     return await latest_moodboard_discovery()
+
+
+@app.get("/api/moodboards/cached-image")
+async def moodboard_cached_image(url: str):
+    loop = asyncio.get_event_loop()
+    try:
+        path = await loop.run_in_executor(None, lambda: fetch_cached_moodboard_image(url))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception:
+        logger.exception("Krea moodboard cached image fetch failed")
+        raise HTTPException(502, "Could not cache Krea moodboard image")
+    return FileResponse(path)
 
 
 @app.get("/api/moodboards/{moodboard_id}", response_model=MoodboardItem)

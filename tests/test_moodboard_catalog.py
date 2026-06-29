@@ -124,6 +124,39 @@ class MoodboardCatalogTests(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_catalog_items_expose_cached_preview_urls_without_ui_icons(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def run() -> None:
+                await init_moodboard_db(db_path)
+                await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/preview-style-11111111-1111-5111-9111-111111111111",
+                        slug="preview-style-11111111-1111-5111-9111-111111111111",
+                        uuid="11111111-1111-5111-9111-111111111111",
+                        title="Preview Style",
+                        taste_profile="Preview mood.",
+                        keywords=["preview"],
+                        primary_image_url="https://optim-images.krea.ai/https---gen-krea-ai-images-real-png-1024.webp",
+                        image_urls=[
+                            "https://optim-images.krea.ai/https---s-krea-ai-icons-HomeIcon-png-128.webp",
+                            "https://optim-images.krea.ai/https---gen-krea-ai-images-secondary-png-1024.webp",
+                        ],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+
+                item = (await list_moodboards(db_path=db_path))["items"][0]
+
+                self.assertNotIn("HomeIcon", " ".join(item["image_urls"]))
+                self.assertEqual(len(item["preview_image_urls"]), 2)
+                self.assertTrue(item["preview_image_urls"][0].startswith("/api/moodboards/cached-image?url="))
+                self.assertIn("gen-krea-ai-images-real", item["primary_image_url"])
+
+            asyncio.run(run())
+
     def test_catalog_shuffle_is_deterministic_by_seed(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "catalog.db"

@@ -346,6 +346,7 @@ class MoodboardItem(BaseModel):
     keywords: List[str] = []
     primary_image_url: str = ""
     image_urls: List[str] = []
+    preview_image_urls: List[str] = []
     related_urls: List[str] = []
     favorite: bool = False
     source: str = "official"

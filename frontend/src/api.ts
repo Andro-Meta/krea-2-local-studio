@@ -235,6 +235,7 @@ export interface MoodboardItem {
   keywords: string[]
   primary_image_url: string
   image_urls: string[]
+  preview_image_urls: string[]
   related_urls: string[]
   favorite: boolean
   source: 'official' | 'custom'

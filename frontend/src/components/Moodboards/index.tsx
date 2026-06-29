@@ -35,7 +35,9 @@ const PAGE_SIZE = 48
 const MAX_CUSTOM_MOODBOARD_REFS = 10
 
 function previewImages(board: MoodboardItem): string[] {
-  const images = board.image_urls.length ? board.image_urls : [board.primary_image_url].filter(Boolean)
+  const images = board.preview_image_urls?.length
+    ? board.preview_image_urls
+    : board.image_urls.length ? board.image_urls : [board.primary_image_url].filter(Boolean)
   return images.slice(0, 4)
 }
 

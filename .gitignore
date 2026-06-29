@@ -23,6 +23,7 @@ npm-debug.log*
 outputs/
 logs/
 verification_outputs/
+data/moodboard_image_cache/
 new_sampler_tests/
 new_inpaint_tests/lanpaint_verification/*/
 !new_inpaint_tests/lanpaint_verification/20260627_093223/
