@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import {
-  Alert, Box, Button, Card, CardActionArea, CardContent, Chip, Collapse,
-  FormControl, FormControlLabel, InputLabel, MenuItem, Select, Slider, Stack,
-  Switch, TextField, ToggleButton, ToggleButtonGroup, Typography,
+  Alert, Box, Button, Card, CardActionArea, CardContent, Chip,
+  FormControl, InputLabel, MenuItem, Select, Slider, Stack,
+  TextField, ToggleButton, ToggleButtonGroup, Typography,
 } from '@mui/material'
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate'
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
@@ -353,7 +353,6 @@ export default function RedrawStudio() {
   const [qualityMode, setQualityMode] = useState<RedrawQualityMode>('balanced')
   const [selectedStyleLora, setSelectedStyleLora] = useState('')
   const [loras, setLoras] = useState<LoraInfo[]>([])
-  const [showAdvanced, setShowAdvanced] = useState(false)
   const [readyMessage, setReadyMessage] = useState<string | null>(null)
 
   const task = tasks.find(item => item.id === taskId) ?? initialTask
@@ -372,10 +371,41 @@ export default function RedrawStudio() {
     [slots, instruction, task, preset.promptHint],
   )
   const sourceImage = slots[0]?.image ?? ''
+  const activePipelineMode: PipelineKind = task.id === 'extend'
+    ? (extendMode === 'preserve' ? 'outpaint' : 'redraw')
+    : task.id === 'preserve'
+      ? (preserveMode === 'masked' ? 'inpaint' : 'img2img')
+      : task.pipeline
 
   useEffect(() => {
-    setParams({ mode: params.mode === 'txt2img' ? 'redraw' : params.mode })
-  }, [])
+    setParams({
+      mode: activePipelineMode,
+      denoise: task.id === 'preserve' ? denoise : preset.denoise,
+      checkpoint: preset.checkpoint,
+      quantization: preset.quantization,
+      steps: preset.steps,
+      cfg: preset.cfg,
+      mu: preset.mu,
+      edit_provider: preset.editProvider,
+      quality_preset: preset.qualityMode,
+      use_prompt_expander: preset.usePromptExpander,
+      style_fusion_mode: activePipelineMode === 'redraw' ? 'semantic_fusion' : 'preserve_structure',
+    })
+  }, [
+    activePipelineMode,
+    denoise,
+    preset.checkpoint,
+    preset.cfg,
+    preset.denoise,
+    preset.editProvider,
+    preset.mu,
+    preset.qualityMode,
+    preset.quantization,
+    preset.steps,
+    preset.usePromptExpander,
+    setParams,
+    task.id,
+  ])
 
   useEffect(() => {
     apiFetch.loras().then(setLoras).catch(() => setLoras([]))
@@ -384,7 +414,12 @@ export default function RedrawStudio() {
   const selectTask = (nextTaskId: StudioTaskId) => {
     const nextTask = tasks.find(item => item.id === nextTaskId) ?? initialTask
     const carryImage = slots[0]?.image || params.init_image_b64
+    const nextPreserveMode: PreserveMode = 'whole'
+    const nextExtendMode: ExtendMode = 'redraw'
     setTaskId(nextTaskId)
+    setExtendMode(nextExtendMode)
+    setPreserveMode(nextPreserveMode)
+    setDenoise(presetFor(presetTaskFor(nextTask, nextExtendMode, nextPreserveMode), qualityMode).denoise)
     setSlots(slotsForTask(nextTask, carryImage))
     setInstruction('')
     setReadyMessage(null)
@@ -565,8 +600,8 @@ export default function RedrawStudio() {
                   <Typography variant="body2" sx={{ color: 'text.secondary' }}>{task.description}</Typography>
                 </Box>
                 <Chip
-                  label={task.id === 'preserve' || (task.id === 'extend' && extendMode === 'preserve') ? 'Preserve pixels' : 'Redraw whole image'}
-                  color={task.id === 'preserve' || (task.id === 'extend' && extendMode === 'preserve') ? 'secondary' : 'primary'}
+                  label={`Workflow: ${activePipelineMode.replace('_', ' ')}`}
+                  color={activePipelineMode === 'inpaint' || activePipelineMode === 'outpaint' || activePipelineMode === 'img2img' ? 'secondary' : 'primary'}
                   variant="outlined"
                 />
               </Stack>
@@ -685,32 +720,24 @@ export default function RedrawStudio() {
                 helperText="This is the role-aware prompt that Prepare sends into the shared Generate panel."
               />
 
-              <FormControlLabel
-                control={<Switch checked={showAdvanced} onChange={e => setShowAdvanced(e.target.checked)} />}
-                label="Show task-specific advanced controls"
-              />
-              <Collapse in={showAdvanced}>
-                <Stack spacing={2}>
-                  {(task.id === 'preserve' || (task.id === 'extend' && extendMode === 'preserve')) && (
-                    <Box>
-                      <Stack direction="row" justifyContent="space-between">
-                        <Typography variant="body2">Denoise strength</Typography>
-                        <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', fontSize: 12 }}>{denoise.toFixed(2)}</Typography>
-                      </Stack>
-                      <Slider value={denoise} min={0.05} max={1} step={0.01} onChange={(_, value) => setDenoise(value as number)} />
-                    </Box>
-                  )}
-                  {task.id === 'extend' && extendMode === 'preserve' && (
-                    <Box>
-                      <Stack direction="row" justifyContent="space-between">
-                        <Typography variant="body2">Blend overlap</Typography>
-                        <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', fontSize: 12 }}>{outpaintOverlap}px</Typography>
-                      </Stack>
-                      <Slider value={outpaintOverlap} min={0} max={192} step={8} onChange={(_, value) => setOutpaintOverlap(value as number)} />
-                    </Box>
-                  )}
-                </Stack>
-              </Collapse>
+              {(task.id === 'preserve' || (task.id === 'extend' && extendMode === 'preserve')) && (
+                <Box>
+                  <Stack direction="row" justifyContent="space-between">
+                    <Typography variant="body2">Denoise strength</Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', fontSize: 12 }}>{denoise.toFixed(2)}</Typography>
+                  </Stack>
+                  <Slider value={denoise} min={0.05} max={1} step={0.01} onChange={(_, value) => setDenoise(value as number)} />
+                </Box>
+              )}
+              {task.id === 'extend' && extendMode === 'preserve' && (
+                <Box>
+                  <Stack direction="row" justifyContent="space-between">
+                    <Typography variant="body2">Blend overlap</Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', fontSize: 12 }}>{outpaintOverlap}px</Typography>
+                  </Stack>
+                  <Slider value={outpaintOverlap} min={0} max={192} step={8} onChange={(_, value) => setOutpaintOverlap(value as number)} />
+                </Box>
+              )}
 
               {readyMessage && <Alert severity="success">{readyMessage}</Alert>}
 
