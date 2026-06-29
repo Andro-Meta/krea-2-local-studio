@@ -66,6 +66,8 @@ export default function GeneratePanel() {
         width: params.width,
         height: params.height,
         num_images: params.num_images,
+        batch_mode: params.batch_mode,
+        parallel_batch_confirmed: params.parallel_batch_confirmed,
         seed: params.seed,
         denoise: params.denoise,
         sampler: params.sampler,
@@ -152,6 +154,21 @@ export default function GeneratePanel() {
           setQueue(null, data.queue_length ?? null)
         }
         if (data.type === 'progress') setProgress(data.pct ?? 0)
+        if (data.type === 'batch') {
+          setProgress(data.progress ?? 0)
+          setQueue(data.queue_position ?? null, data.queue_length ?? null)
+          if ((data.images ?? []).length) setResults(data.images ?? [], data.seed, data.metadata ?? [])
+          if (data.status === 'done') {
+            setGenerating(false)
+            setProgress(100)
+            setQueue(null, null)
+          }
+          if (data.status === 'error' || data.status === 'blocked') {
+            setError(data.error ?? 'Batch generation failed.')
+            setGenerating(false)
+            setQueue(null, null)
+          }
+        }
         if (data.type === 'done') {
           setResults(data.images ?? [], data.seed, data.metadata ?? [])
           setGenerating(false)

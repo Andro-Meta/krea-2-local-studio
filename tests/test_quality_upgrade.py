@@ -125,6 +125,26 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(req.creativity, "medium")
         self.assertEqual(req.moodboard_strength, 0.35)
         self.assertEqual(req.quantization, "fp8")
+        self.assertEqual(req.batch_mode, "safe_queue")
+        self.assertFalse(req.parallel_batch_confirmed)
+
+    def test_generation_metadata_records_batch_context(self) -> None:
+        from generation_metadata import build_generation_metadata
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(
+            prompt="a quiet forest",
+            num_images=4,
+            batch_mode="parallel",
+            parallel_batch_confirmed=True,
+        )
+
+        metadata = build_generation_metadata(req, base_seed=100, image_index=2)
+
+        self.assertEqual(metadata["batch"]["mode"], "parallel")
+        self.assertEqual(metadata["batch"]["index"], 2)
+        self.assertEqual(metadata["batch"]["count"], 4)
+        self.assertTrue(metadata["batch"]["parallel"])
 
     def test_raw_checkpoint_defaults_are_normalized_for_direct_api_requests(self) -> None:
         from inference import normalize_generation_defaults

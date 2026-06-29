@@ -29,6 +29,8 @@ export interface GenerationRequest {
   width?: number
   height?: number
   num_images?: number
+  batch_mode?: 'safe_queue' | 'parallel'
+  parallel_batch_confirmed?: boolean
   seed?: number
   denoise?: number
   sampler?: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
@@ -123,6 +125,35 @@ export interface GenerationRequest {
   seed_variance_fade_curve?: 'linear' | 'ease_in' | 'ease_out' | 'smoothstep'
   seed_variance_injection_start?: number
   seed_variance_injection_end?: number
+}
+
+export interface GenerationJob {
+  job_id: string
+  status: string
+  progress: number
+  images: string[]
+  error?: string
+  seed?: number
+  metadata?: Record<string, any>[]
+  queue_position?: number | null
+  queue_length?: number | null
+  moderation_event_id?: number
+  batch_id?: string
+  child_job_ids?: string[]
+}
+
+export interface BatchPlan {
+  allowed: boolean
+  fits: boolean
+  batch: number
+  mode: 'parallel' | 'safe_queue'
+  clear_cache_first: boolean
+  tiled_decode: boolean
+  estimated_scratch_gb: number
+  estimated_decode_gb: number
+  warnings: string[]
+  blocked_reasons: string[]
+  free_vram_gb?: number | null
 }
 
 export interface PromptPlan {
@@ -327,10 +358,18 @@ export interface AppSettings {
   openrouter_free_only: boolean
   krea_share_auto_funnel: boolean
   krea2_vae_path: string
+  krea_attention_backend: 'sdpa' | 'sage'
   has_hf_token: boolean
   has_civitai_token: boolean
   has_ideogram_api_key: boolean
   has_openrouter_api_key: boolean
+}
+
+export interface AcceleratorStatus {
+  sdpa: { available: boolean; default: boolean }
+  triton_windows: { installed: boolean; compatible: boolean; recommendation: string }
+  sageattention: { installed: boolean; compatible: boolean; recommendation: string }
+  xformers: { installed: boolean; compatible: boolean; recommendation: string }
 }
 
 export interface QualityAsset {
@@ -370,10 +409,10 @@ export interface ModerationStatus {
 
 export const apiFetch = {
   generate: (req: GenerationRequest) =>
-    api.post<{ job_id: string; status: string; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number }>('/api/generate', req).then(r => r.data),
+    api.post<{ job_id: string; status: string; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number; batch_id?: string; child_job_ids?: string[] }>('/api/generate', req).then(r => r.data),
 
   jobStatus: (jobId: string) =>
-    api.get<{ job_id: string; status: string; progress: number; images: string[]; error?: string; seed?: number; metadata?: Record<string, any>[]; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number }>(`/api/generate/${jobId}`).then(r => r.data),
+    api.get<GenerationJob>(`/api/generate/${jobId}`).then(r => r.data),
 
   realtimePreview: (req: RealtimePreviewRequest) =>
     api.post<RealtimePreviewJob>('/api/realtime/preview', req, { timeout: 120000 }).then(r => r.data),
@@ -394,6 +433,9 @@ export const apiFetch = {
       schedulers: { id: string; label: string; recommended: boolean; note: string }[]
       recommended_combos: { sampler: string; scheduler: string; steps: number; cfg: number; label: string; note: string }[]
     }>('/api/sampler-catalog', { params: { profile } }).then(r => r.data),
+
+  batchPlan: (params: { width: number; height: number; quantization: string; batch: number; cfg: number; mode: string; checkpoint: string }) =>
+    api.get<BatchPlan>('/api/batch/plan', { params }).then(r => r.data),
 
   unloadModel: () => api.post('/api/unload-model').then(r => r.data),
 
@@ -536,6 +578,10 @@ export const apiFetch = {
   settings: () => api.get<AppSettings>('/api/settings').then(r => r.data),
   updateSettings: (data: Partial<AppSettings> & { hf_token?: string; ideogram_api_key?: string; openrouter_api_key?: string }) =>
     api.put('/api/settings', data).then(r => r.data),
+
+  acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
+  installTritonWindows: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-triton-windows', {}, { timeout: 600000 }).then(r => r.data),
+  installSageAttention: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-sageattention', {}, { timeout: 600000 }).then(r => r.data),
 
   expandPrompt: (prompt: string) =>
     api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' }>('/api/expand-prompt', { prompt }).then(r => r.data),

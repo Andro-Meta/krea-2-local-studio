@@ -98,6 +98,77 @@ class RecommendDefaultsTests(unittest.TestCase):
 
 
 class PlanGenerationTests(unittest.TestCase):
+    def test_parallel_batch_allows_turbo_1k_when_estimate_fits(self) -> None:
+        from resource_manager import plan_parallel_batch
+
+        plan = plan_parallel_batch(
+            free_vram_gb=24.0,
+            width=1024,
+            height=1024,
+            quantization="fp8",
+            batch=2,
+            cfg_active=False,
+            mode="txt2img",
+            checkpoint="turbo",
+        )
+
+        self.assertTrue(plan["allowed"])
+        self.assertTrue(plan["fits"])
+
+    def test_parallel_batch_blocks_raw_and_2k(self) -> None:
+        from resource_manager import plan_parallel_batch
+
+        raw = plan_parallel_batch(
+            free_vram_gb=24.0,
+            width=1024,
+            height=1024,
+            quantization="fp8",
+            batch=2,
+            cfg_active=True,
+            mode="txt2img",
+            checkpoint="raw",
+        )
+        two_k = plan_parallel_batch(
+            free_vram_gb=24.0,
+            width=2048,
+            height=2048,
+            quantization="fp8",
+            batch=2,
+            cfg_active=False,
+            mode="txt2img",
+            checkpoint="turbo",
+        )
+
+        self.assertFalse(raw["allowed"])
+        self.assertFalse(two_k["allowed"])
+
+    def test_parallel_batch_blocks_edit_modes_and_tight_vram(self) -> None:
+        from resource_manager import plan_parallel_batch
+
+        edit = plan_parallel_batch(
+            free_vram_gb=24.0,
+            width=1024,
+            height=1024,
+            quantization="fp8",
+            batch=2,
+            cfg_active=False,
+            mode="inpaint",
+            checkpoint="turbo",
+        )
+        tight = plan_parallel_batch(
+            free_vram_gb=1.0,
+            width=1024,
+            height=1024,
+            quantization="fp8",
+            batch=4,
+            cfg_active=True,
+            mode="txt2img",
+            checkpoint="turbo",
+        )
+
+        self.assertFalse(edit["allowed"])
+        self.assertFalse(tight["allowed"])
+
     def test_tight_vram_triggers_tiled_decode_and_preclear(self) -> None:
         from resource_manager import plan_generation
 

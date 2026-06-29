@@ -51,6 +51,8 @@ export interface GenerateParams {
   resolution_tier: '1k' | '2k'
   aspect_ratio: string
   num_images: number
+  batch_mode: 'safe_queue' | 'parallel'
+  parallel_batch_confirmed: boolean
   seed: number
   denoise: number
   sampler: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
@@ -196,6 +198,8 @@ const defaultParams: GenerateParams = {
   resolution_tier: '1k',
   aspect_ratio: '1:1',
   num_images: 1,
+  batch_mode: 'safe_queue',
+  parallel_batch_confirmed: false,
   seed: -1,
   denoise: 0.75,
   sampler: 'euler',

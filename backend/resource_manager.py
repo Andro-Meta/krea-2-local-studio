@@ -195,6 +195,60 @@ def plan_generation(
     }
 
 
+def plan_parallel_batch(
+    *,
+    free_vram_gb: float | None,
+    width: int,
+    height: int,
+    quantization: str,
+    batch: int,
+    cfg_active: bool,
+    mode: str,
+    checkpoint: str,
+    headroom_gb: float = DEFAULT_HEADROOM_GB,
+) -> dict:
+    batch = max(1, int(batch or 1))
+    plan = plan_generation(
+        free_vram_gb=free_vram_gb,
+        width=width,
+        height=height,
+        quantization=quantization,
+        batch=batch,
+        cfg_active=cfg_active,
+        headroom_gb=headroom_gb,
+    )
+    megapixels = (int(width) * int(height)) / 1_000_000.0
+    warnings = list(plan["warnings"])
+    blocked_reasons: list[str] = []
+
+    if batch <= 1:
+        blocked_reasons.append("Parallel batch only applies when Batch is greater than 1.")
+    if str(mode) in {"inpaint", "outpaint"}:
+        blocked_reasons.append("Parallel batch is disabled for inpaint/outpaint; use safe queue.")
+    if str(checkpoint).lower() == "raw":
+        blocked_reasons.append("RAW parallel batch is disabled; RAW needs more steps and CFG memory.")
+    if megapixels >= 3.0 and batch > 1:
+        blocked_reasons.append("2K parallel batch is disabled; use safe queue.")
+
+    working = float(plan["estimated_scratch_gb"]) + float(plan["estimated_decode_gb"])
+    fits = free_vram_gb is None or (working + headroom_gb) <= float(free_vram_gb)
+    if not fits:
+        blocked_reasons.append("Estimated batch working set exceeds free VRAM headroom.")
+    allowed = not blocked_reasons
+    if not allowed:
+        warnings.extend(blocked_reasons)
+
+    return {
+        **plan,
+        "allowed": allowed,
+        "fits": fits,
+        "batch": batch,
+        "mode": "parallel" if allowed else "safe_queue",
+        "blocked_reasons": blocked_reasons,
+        "warnings": warnings,
+    }
+
+
 def should_clear_after_render(width: int, height: int, free_vram_gb: float | None) -> bool:
     """Clear the CUDA cache after large renders (so the 2K-sized reserved blocks
     don't stay pinned) or whenever free VRAM is already low."""

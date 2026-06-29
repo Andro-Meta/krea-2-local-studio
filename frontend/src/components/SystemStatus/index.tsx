@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
 import GpuIcon from '@mui/icons-material/Memory'
-import { apiFetch, publicUrl, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type ModerationStatus, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
+import { apiFetch, publicUrl, type AcceleratorStatus, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type ModerationStatus, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
 import { useStore } from '../../store'
 
 function GBBar({ label, used, total }: { label: string; used?: number; total?: number }) {
@@ -44,6 +44,7 @@ export default function SystemStatus() {
     openrouter_api_key: '',
     openrouter_model: 'google/gemma-4-31b-it:free',
     openrouter_free_only: true,
+    krea_attention_backend: 'sdpa' as 'sdpa' | 'sage',
   })
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
@@ -65,6 +66,9 @@ export default function SystemStatus() {
   const [memoryBusy, setMemoryBusy] = useState<string | null>(null)
   const [memoryMessage, setMemoryMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
   const [kreaProcesses, setKreaProcesses] = useState<KreaServerProcess[]>([])
+  const [accelerators, setAccelerators] = useState<AcceleratorStatus | null>(null)
+  const [acceleratorBusy, setAcceleratorBusy] = useState<string | null>(null)
+  const [acceleratorMessage, setAcceleratorMessage] = useState<{ severity: 'success' | 'error' | 'warning'; text: string } | null>(null)
   const { setSystemReport } = useStore()
   const isAdmin = auth?.role === 'admin'
 
@@ -110,6 +114,7 @@ export default function SystemStatus() {
         openrouter_api_key: '',
         openrouter_model: s.openrouter_model,
         openrouter_free_only: s.openrouter_free_only,
+        krea_attention_backend: s.krea_attention_backend ?? 'sdpa',
       })
     } catch {
       setSettingsMessage({ severity: 'error', text: 'Could not load settings.' })
@@ -137,6 +142,14 @@ export default function SystemStatus() {
       setQualityAssets(await apiFetch.qualityAssets())
     } catch {
       setQualityMessage({ severity: 'error', text: 'Could not load precision editing asset status.' })
+    }
+  }
+
+  const loadAccelerators = async () => {
+    try {
+      setAccelerators(await apiFetch.acceleratorStatus())
+    } catch {
+      setAcceleratorMessage({ severity: 'error', text: 'Could not load accelerator status.' })
     }
   }
 
@@ -173,6 +186,7 @@ export default function SystemStatus() {
         loadSharing()
         loadQualityAssets()
         loadModerationEvents()
+        loadAccelerators()
       }
     })
   }, [])
@@ -227,6 +241,40 @@ export default function SystemStatus() {
       setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Settings update failed.' })
     } finally {
       setSavingSettings(false)
+    }
+  }
+
+  const saveAttentionBackend = async (backend: 'sdpa' | 'sage') => {
+    setAcceleratorBusy('save')
+    setAcceleratorMessage(null)
+    try {
+      await apiFetch.updateSettings({ krea_attention_backend: backend })
+      setSettingsDraft(d => ({ ...d, krea_attention_backend: backend }))
+      await loadSettings()
+      setAcceleratorMessage({
+        severity: backend === 'sage' ? 'warning' : 'success',
+        text: backend === 'sage'
+          ? 'SageAttention enabled for A/B testing. Verify fixed-seed outputs before keeping it on.'
+          : 'SDPA restored as the stable attention backend.',
+      })
+    } catch (e: any) {
+      setAcceleratorMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not save attention backend.' })
+    } finally {
+      setAcceleratorBusy(null)
+    }
+  }
+
+  const installAccelerator = async (kind: 'triton' | 'sage') => {
+    setAcceleratorBusy(kind)
+    setAcceleratorMessage(null)
+    try {
+      const result = kind === 'triton' ? await apiFetch.installTritonWindows() : await apiFetch.installSageAttention()
+      setAccelerators(result.status)
+      setAcceleratorMessage({ severity: 'success', text: kind === 'triton' ? 'Triton for Windows install completed.' : 'SageAttention install completed.' })
+    } catch (e: any) {
+      setAcceleratorMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Accelerator install failed.' })
+    } finally {
+      setAcceleratorBusy(null)
     }
   }
 
@@ -468,6 +516,59 @@ export default function SystemStatus() {
             )}
           </Stack>
         </Paper>
+
+        {isAdmin && <Paper sx={{ p: 2 }}>
+          <Stack spacing={1.25}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="h6">Experimental Accelerators</Typography>
+              <Button size="small" variant="text" onClick={loadAccelerators}>Refresh</Button>
+            </Stack>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              PyTorch SDPA is the stable default. Triton/SageAttention are opt-in experiments; they may cause black/noisy outputs, so verify visually before keeping them enabled.
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Chip size="small" color="success" label="SDPA default" />
+              <Chip size="small" color={accelerators?.triton_windows.installed ? 'success' : 'default'} label={`Triton ${accelerators?.triton_windows.installed ? 'installed' : 'not installed'}`} />
+              <Chip size="small" color={accelerators?.sageattention.installed ? 'success' : 'default'} label={`Sage ${accelerators?.sageattention.installed ? 'installed' : 'not installed'}`} />
+            </Stack>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={!!acceleratorBusy}
+                startIcon={acceleratorBusy === 'triton' ? <CircularProgress size={14} /> : undefined}
+                onClick={() => installAccelerator('triton')}
+              >
+                Install Triton for Windows
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={!!acceleratorBusy}
+                startIcon={acceleratorBusy === 'sage' ? <CircularProgress size={14} /> : undefined}
+                onClick={() => installAccelerator('sage')}
+              >
+                Install SageAttention
+              </Button>
+            </Stack>
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked={settingsDraft.krea_attention_backend === 'sage'}
+                  disabled={!!acceleratorBusy || !accelerators?.sageattention.installed}
+                  onChange={e => saveAttentionBackend(e.target.checked ? 'sage' : 'sdpa')}
+                />
+              }
+              label={
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                  Enable SageAttention for A/B test{!accelerators?.sageattention.installed ? ' — install SageAttention first' : ''}
+                </Typography>
+              }
+            />
+            {acceleratorMessage && <Alert severity={acceleratorMessage.severity} sx={{ py: 0 }}>{acceleratorMessage.text}</Alert>}
+          </Stack>
+        </Paper>}
 
         {/* GPU profile + per-system recommendation */}
         {report?.gpu_capabilities && (

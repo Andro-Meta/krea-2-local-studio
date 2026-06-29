@@ -47,6 +47,8 @@ class GenerationRequest(BaseModel):
     width: int = 1024
     height: int = 1024
     num_images: int = 1
+    batch_mode: Literal["safe_queue", "parallel"] = "safe_queue"
+    parallel_batch_confirmed: bool = False
     seed: int = -1
     denoise: float = 1.0
     sampler: str = "euler_flow"       # euler | euler_flow | exp_heun_2_x0_sde | guarded Comfy names
@@ -423,3 +425,4 @@ class SettingsUpdate(BaseModel):
     openrouter_free_only: Optional[bool] = None
     krea_share_auto_funnel: Optional[bool] = None
     krea2_vae_path: Optional[str] = None
+    krea_attention_backend: Optional[Literal["sdpa", "sage"]] = None

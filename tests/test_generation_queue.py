@@ -12,6 +12,24 @@ if str(BACKEND) not in sys.path:
 
 
 class GenerationQueueTests(unittest.TestCase):
+    def test_safe_batch_children_use_single_images_and_seed_offsets(self) -> None:
+        from main import build_safe_batch_children
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(
+            prompt="a crystal forest",
+            num_images=3,
+            seed=100,
+            batch_mode="safe_queue",
+        )
+
+        children = build_safe_batch_children(req)
+
+        self.assertEqual([child.num_images for child in children], [1, 1, 1])
+        self.assertEqual([child.seed for child in children], [100, 101, 102])
+        self.assertEqual([child.batch_mode for child in children], ["safe_queue", "safe_queue", "safe_queue"])
+        self.assertEqual([child.parallel_batch_confirmed for child in children], [False, False, False])
+
     def test_runs_jobs_in_fifo_order_and_updates_positions(self) -> None:
         from generation_queue import GenerationQueue
 

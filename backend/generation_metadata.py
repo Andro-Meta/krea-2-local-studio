@@ -91,6 +91,12 @@ def build_generation_metadata(
         "cfg": float(getattr(req, "cfg", 0.0)),
         "width": int(getattr(req, "width", 0)),
         "height": int(getattr(req, "height", 0)),
+        "batch": {
+            "mode": str(getattr(req, "batch_mode", "safe_queue")),
+            "index": int(image_index),
+            "count": int(getattr(req, "num_images", 1)),
+            "parallel": str(getattr(req, "batch_mode", "safe_queue")) == "parallel",
+        },
         "denoise": float(getattr(req, "denoise", 1.0)),
         "sampler": str(getattr(req, "sampler", "euler_flow")),
         "scheduler": str(getattr(req, "scheduler", "simple")),

@@ -33,6 +33,7 @@ class AppSettings(BaseSettings):
     krea2_fp8_fast_matmul: bool = False  # opt-in: fp8 _scaled_mm on Ada/Blackwell (faster, slight quality trade)
     krea2_moodboard_auto_enrich: bool = True  # background-precompute Qwen guidance for official moodboards when idle
     krea2_torch_compile: bool = False  # opt-in: torch.compile the DiT (experimental; needs Triton/inductor)
+    krea_attention_backend: str = "sdpa"  # sdpa | sage
 
     class Config:
         env_file = str(BASE_DIR / ".env")

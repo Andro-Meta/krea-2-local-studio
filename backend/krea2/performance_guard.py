@@ -4,6 +4,36 @@ import importlib.util
 import platform
 
 
+def _installed(package: str) -> bool:
+    return importlib.util.find_spec(package) is not None
+
+
+def accelerator_status() -> dict:
+    system = platform.system().lower()
+    triton_installed = _installed("triton")
+    sage_installed = _installed("sageattention")
+    xformers_installed = _installed("xformers")
+    windows = system.startswith("win")
+    return {
+        "sdpa": {"available": True, "default": True},
+        "triton_windows": {
+            "installed": triton_installed,
+            "compatible": windows,
+            "recommendation": "optional" if windows else "use platform Triton only if already validated",
+        },
+        "sageattention": {
+            "installed": sage_installed,
+            "compatible": True,
+            "recommendation": "experimental",
+        },
+        "xformers": {
+            "installed": xformers_installed,
+            "compatible": False,
+            "recommendation": "not recommended for Krea path yet",
+        },
+    }
+
+
 def attention_acceleration_diagnostic(
     *,
     device: str = "cuda",

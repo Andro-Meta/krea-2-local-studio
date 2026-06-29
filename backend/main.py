@@ -208,6 +208,8 @@ def _request_user_role(request: Request) -> tuple[str | None, str, bool]:
 def _requires_admin(path: str, method: str) -> bool:
     if path.startswith("/api/admin/") or path.startswith("/api/sharing/") or path.startswith("/api/moderation/"):
         return True
+    if path.startswith("/api/accelerators/"):
+        return True
     if path.startswith("/api/memory/"):
         return True
     if path in {"/api/settings", "/api/load-model", "/api/unload-model", "/api/support-models/download"}:
@@ -431,6 +433,49 @@ def _new_job(username: str | None = None, role: str = "admin") -> str:
     return jid
 
 
+def build_safe_batch_children(req: GenerationRequest) -> list[GenerationRequest]:
+    count = max(1, int(getattr(req, "num_images", 1) or 1))
+    base_seed = int(getattr(req, "seed", -1))
+    if base_seed < 0:
+        base_seed = secrets.randbelow(2**31 - 1)
+    children: list[GenerationRequest] = []
+    for index in range(count):
+        child = req.model_copy(deep=True)
+        child.num_images = 1
+        child.seed = base_seed + index
+        child.batch_mode = "safe_queue"
+        child.parallel_batch_confirmed = False
+        children.append(child)
+    return children
+
+
+def _refresh_parent_batch_job(parent_job_id: str) -> dict | None:
+    parent = _jobs.get(parent_job_id)
+    if not parent or not parent.get("child_job_ids"):
+        return parent
+    child_ids = list(parent.get("child_job_ids") or [])
+    children = [_jobs.get(child_id) for child_id in child_ids]
+    done_children = [child for child in children if child and child.get("status") == "done"]
+    blocked = next((child for child in children if child and child.get("status") == "blocked"), None)
+    errored = next((child for child in children if child and child.get("status") == "error"), None)
+
+    parent["images"] = [child.get("images", [""])[0] for child in done_children if child.get("images")]
+    parent["metadata"] = [child.get("metadata", [{}])[0] for child in done_children if child.get("metadata")]
+    parent["progress"] = int(len(done_children) / max(len(child_ids), 1) * 100)
+    if blocked:
+        parent["status"] = "blocked"
+        parent["error"] = blocked.get("error")
+    elif errored:
+        parent["status"] = "error"
+        parent["error"] = errored.get("error")
+    elif len(done_children) == len(child_ids):
+        parent["status"] = "done"
+        parent["progress"] = 100
+    else:
+        parent["status"] = "queued" if any(child and child.get("status") == "queued" for child in children) else "running"
+    return parent
+
+
 def _sync_queue_state_to_jobs() -> None:
     if generation_queue is None:
         return
@@ -643,6 +688,57 @@ async def generate(req: GenerationRequest, request: Request):
 
     if generation_queue is None:
         raise HTTPException(503, "Generation queue is not ready yet.")
+    if req.batch_mode == "parallel" and int(req.num_images or 1) > 1:
+        from resource_manager import plan_parallel_batch
+        from system_check import get_gpu_info
+
+        _name, _total, free = get_gpu_info()
+        parallel_plan = plan_parallel_batch(
+            free_vram_gb=free,
+            width=req.width,
+            height=req.height,
+            quantization=req.quantization,
+            batch=req.num_images,
+            cfg_active=req.cfg > 0,
+            mode=req.mode,
+            checkpoint=req.checkpoint,
+        )
+        if not parallel_plan["allowed"] or not req.parallel_batch_confirmed:
+            req.batch_mode = "safe_queue"
+            req.parallel_batch_confirmed = False
+    if req.batch_mode == "safe_queue" and int(req.num_images or 1) > 1:
+        parent_job = _jobs[job_id]
+        parent_job["status"] = "queued"
+        parent_job["batch"] = {"mode": "safe_queue", "count": int(req.num_images), "parallel": False}
+        child_job_ids: list[str] = []
+        child_positions: list[int | None] = []
+        for index, child_req in enumerate(build_safe_batch_children(req)):
+            child_job_id = _new_job(username=username, role=role)
+            child_job = _jobs[child_job_id]
+            child_job["parent_job_id"] = job_id
+            child_job["batch_index"] = index
+            child_job["batch_count"] = int(req.num_images)
+            queue_state = generation_queue.enqueue(
+                child_job_id,
+                {"req": child_req, "username": username, "role": role, "parent_job_id": job_id, "batch_index": index},
+                username=username,
+                role=role,
+            )
+            child_job_ids.append(child_job_id)
+            child_positions.append(queue_state.get("queue_position"))
+        parent_job["child_job_ids"] = child_job_ids
+        parent_job["queue_position"] = min((pos for pos in child_positions if pos is not None), default=None)
+        parent_job["queue_length"] = max((pos for pos in child_positions if pos is not None), default=len(child_job_ids))
+        _sync_queue_state_to_jobs()
+        await ws_manager.broadcast(job_id, {"type": "queue", **parent_job})
+        return {
+            "job_id": job_id,
+            "batch_id": job_id,
+            "child_job_ids": child_job_ids,
+            "status": "queued",
+            "queue_position": parent_job.get("queue_position"),
+            "queue_length": parent_job.get("queue_length"),
+        }
     queue_state = generation_queue.enqueue(job_id, {"req": req, "username": username, "role": role}, username=username, role=role)
     _sync_queue_state_to_jobs()
     job = _jobs[job_id]
@@ -858,6 +954,11 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
                 job["error"] = "That image was blocked by the child safety filter and sent to an admin for review."
                 job["moderation_event_id"] = event_id
                 await ws_manager.broadcast(job_id, {"type": "blocked", "error": job["error"], "moderation_event_id": event_id})
+                parent_job_id = job.get("parent_job_id")
+                if parent_job_id:
+                    parent = _refresh_parent_batch_job(str(parent_job_id))
+                    if parent:
+                        await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
                 return
         job["images"] = results
         job["seed"] = seed
@@ -896,12 +997,22 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             "edit_provider": job.get("edit_provider"),
             "provider_warning": job.get("provider_warning"),
         })
+        parent_job_id = job.get("parent_job_id")
+        if parent_job_id:
+            parent = _refresh_parent_batch_job(str(parent_job_id))
+            if parent:
+                await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
 
     except Exception as e:
         logger.exception(f"Generation failed for job {job_id}")
         job["status"] = "error"
         job["error"] = str(e)
         await ws_manager.broadcast(job_id, {"type": "error", "error": str(e)})
+        parent_job_id = job.get("parent_job_id")
+        if parent_job_id:
+            parent = _refresh_parent_batch_job(str(parent_job_id))
+            if parent:
+                await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
 
 
 @app.get("/api/generate/{job_id}")
@@ -909,6 +1020,8 @@ async def job_status(job_id: str):
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
+    if job.get("child_job_ids"):
+        _refresh_parent_batch_job(job_id)
     return job
 
 
@@ -1621,6 +1734,7 @@ async def get_settings():
         "openrouter_free_only": env.get("OPENROUTER_FREE_ONLY", str(settings.openrouter_free_only)).lower() in {"1", "true", "yes"},
         "krea_share_auto_funnel": env.get("KREA_SHARE_AUTO_FUNNEL", str(settings.krea_share_auto_funnel)).lower() in {"1", "true", "yes", "on"},
         "krea2_vae_path": env.get("KREA2_VAE_PATH", settings.krea2_vae_path),
+        "krea_attention_backend": env.get("KREA_ATTENTION_BACKEND", settings.krea_attention_backend),
         "has_hf_token": bool(env.get("HF_TOKEN", settings.hf_token)),
         "has_civitai_token": bool(env.get("CIVITAI_TOKEN", settings.civitai_token)),
         "has_ideogram_api_key": bool(env.get("IDEOGRAM_API_KEY", settings.ideogram_api_key)),
@@ -1660,6 +1774,15 @@ async def update_settings(req: SettingsUpdate):
     if req.krea2_vae_path is not None:
         env["KREA2_VAE_PATH"] = req.krea2_vae_path
         settings.krea2_vae_path = req.krea2_vae_path
+    if req.krea_attention_backend is not None:
+        env["KREA_ATTENTION_BACKEND"] = req.krea_attention_backend
+        settings.krea_attention_backend = req.krea_attention_backend
+        try:
+            from krea2 import mmdit
+
+            mmdit.KREA_ATTENTION_BACKEND = req.krea_attention_backend
+        except Exception:
+            logger.debug("Could not update live attention backend")
     _write_env(env)
     return {"ok": True}
 
@@ -1714,6 +1837,70 @@ async def runtime_advice_endpoint(width: int = 1024, height: int = 1024, quantiz
     advice = recommend_runtime(free_vram_gb=free, width=width, height=height, quantization=quantization)
     advice["free_vram_gb"] = round(free, 1) if free is not None else None
     return advice
+
+
+@app.get("/api/accelerators/status")
+async def accelerators_status_endpoint():
+    from krea2.performance_guard import accelerator_status
+
+    return accelerator_status()
+
+
+async def _pip_install_accelerator(*packages: str) -> dict:
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        *packages,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    output_b, _ = await proc.communicate()
+    output = output_b.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise HTTPException(500, output[-2000:] or "Accelerator install failed.")
+    from krea2.performance_guard import accelerator_status
+
+    return {"ok": True, "status": accelerator_status(), "message": output[-2000:]}
+
+
+@app.post("/api/accelerators/install-triton-windows")
+async def install_triton_windows_endpoint():
+    return await _pip_install_accelerator("triton-windows<3.7")
+
+
+@app.post("/api/accelerators/install-sageattention")
+async def install_sageattention_endpoint():
+    return await _pip_install_accelerator("sageattention")
+
+
+@app.get("/api/batch/plan")
+async def batch_plan_endpoint(
+    width: int = 1024,
+    height: int = 1024,
+    quantization: str = "fp8",
+    batch: int = 1,
+    cfg: float = 0.0,
+    mode: str = "txt2img",
+    checkpoint: str = "turbo",
+):
+    from resource_manager import plan_parallel_batch
+    from system_check import get_gpu_info
+
+    _name, _total, free = get_gpu_info()
+    plan = plan_parallel_batch(
+        free_vram_gb=free,
+        width=width,
+        height=height,
+        quantization=quantization,
+        batch=batch,
+        cfg_active=float(cfg) > 0,
+        mode=mode,
+        checkpoint=checkpoint,
+    )
+    plan["free_vram_gb"] = round(free, 1) if free is not None else None
+    return plan
 
 
 @app.get("/api/prompting-guide")

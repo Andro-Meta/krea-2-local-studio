@@ -6,7 +6,7 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { useStore } from '../../store'
-import { apiFetch } from '../../api'
+import { apiFetch, type BatchPlan } from '../../api'
 
 type SamplerCatalog = Awaited<ReturnType<typeof apiFetch.samplerCatalog>>
 
@@ -52,6 +52,7 @@ export default function ParameterSection() {
   const [advOpen, setAdvOpen] = useState(false)
   const isTurbo = params.checkpoint === 'turbo'
   const [catalog, setCatalog] = useState<SamplerCatalog | null>(null)
+  const [batchPlan, setBatchPlan] = useState<BatchPlan | null>(null)
 
   useEffect(() => {
     const profile = isTurbo ? 'krea_turbo' : 'krea_raw'
@@ -59,6 +60,26 @@ export default function ParameterSection() {
     apiFetch.samplerCatalog(profile).then(c => { if (alive) setCatalog(c) }).catch(() => {})
     return () => { alive = false }
   }, [isTurbo])
+
+  useEffect(() => {
+    let alive = true
+    apiFetch.batchPlan({
+      width: params.width,
+      height: params.height,
+      quantization: params.quantization,
+      batch: params.num_images,
+      cfg: params.cfg,
+      mode: params.mode,
+      checkpoint: params.checkpoint,
+    }).then(plan => {
+      if (!alive) return
+      setBatchPlan(plan)
+      if (params.batch_mode === 'parallel') {
+        setParam('parallel_batch_confirmed', Boolean(plan.allowed))
+      }
+    }).catch(() => { if (alive) setBatchPlan(null) })
+    return () => { alive = false }
+  }, [params.width, params.height, params.quantization, params.num_images, params.cfg, params.mode, params.checkpoint, params.batch_mode])
 
   const currentSampler = catalog?.samplers.find(s => s.id === params.sampler || (params.sampler === 'euler' && s.id === 'euler'))
   const supportedSchedulers = currentSampler?.supported_schedulers ?? ['simple', 'normal', 'beta', 'sgm_uniform']
@@ -108,6 +129,12 @@ export default function ParameterSection() {
       high: { moodboard_strength: 0.55, rebalance_multiplier: 1.15 },
     }[creativity]
     setParams({ creativity, ...values })
+  }
+  const setBatchMode = (batch_mode: typeof params.batch_mode) => {
+    setParams({
+      batch_mode,
+      parallel_batch_confirmed: batch_mode === 'parallel' && Boolean(batchPlan?.allowed),
+    })
   }
 
   return (
@@ -214,6 +241,27 @@ export default function ParameterSection() {
             />
           </Grid>
         </Grid>
+
+        {params.num_images > 1 && (
+          <TextField
+            select
+            label="Batch mode"
+            value={params.batch_mode}
+            onChange={e => setBatchMode(e.target.value as typeof params.batch_mode)}
+            size="small"
+            fullWidth
+            helperText={
+              params.batch_mode === 'parallel'
+                ? (batchPlan?.allowed
+                    ? 'Parallel batch likely fits. Experimental: verify outputs before relying on it.'
+                    : `Parallel batch risky; safe queue will be used. ${(batchPlan?.blocked_reasons ?? []).join(' ')}`)
+                : 'Safe queue is recommended: creates one FIFO job per image to avoid VRAM spikes.'
+            }
+          >
+            <MenuItem value="safe_queue">Safe queue (recommended)</MenuItem>
+            <MenuItem value="parallel" disabled={Boolean(batchPlan && !batchPlan.allowed)}>Parallel (experimental)</MenuItem>
+          </TextField>
+        )}
 
         {/* Detail refine runs a second self-pass; the backend skips it for
             inpaint/outpaint (must not re-touch kept pixels), so hide it there. */}

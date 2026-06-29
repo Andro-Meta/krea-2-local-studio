@@ -1,4 +1,5 @@
 import math
+import logging
 from dataclasses import dataclass
 
 import torch
@@ -7,6 +8,15 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
+
+try:
+    from settings import settings
+except Exception:  # pragma: no cover - mmdit can be imported standalone in tests/tools
+    settings = None
+
+logger = logging.getLogger(__name__)
+KREA_ATTENTION_BACKEND = str(getattr(settings, "krea_attention_backend", "sdpa") or "sdpa").lower()
+_SAGE_FALLBACK_LOGGED = False
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
@@ -29,6 +39,28 @@ def ropeapply(xq: Tensor, xk: Tensor, freqs: Tensor) -> tuple[Tensor, Tensor]:
     return xq_.reshape(*xq.shape).to(xq.dtype), xk_.reshape(*xk.shape).to(xk.dtype)
 
 
+def attention_backend() -> str:
+    backend = str(KREA_ATTENTION_BACKEND or "sdpa").lower()
+    return "sage" if backend == "sage" else "sdpa"
+
+
+def _sdpa_attention(q: Tensor, k: Tensor, v: Tensor, mask: Tensor | None, scale: float | None, gqa: bool) -> Tensor:
+    backend = SDPBackend.CUDNN_ATTENTION if q.is_cuda else SDPBackend.MATH
+    with sdpa_kernel(backend):
+        return F.scaled_dot_product_attention(
+            q, k, v, attn_mask=mask, scale=scale, enable_gqa=gqa
+        )
+
+
+def _sage_attention(q: Tensor, k: Tensor, v: Tensor, scale: float | None) -> Tensor:
+    from sageattention import sageattn
+
+    kwargs = {}
+    if scale is not None:
+        kwargs["sm_scale"] = scale
+    return sageattn(q, k, v, **kwargs)
+
+
 def attention(
     q: Tensor,
     k: Tensor,
@@ -37,10 +69,17 @@ def attention(
     scale: float | None = None,
     gqa: bool = False,
 ) -> Tensor:
-    with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
-        x = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, scale=scale, enable_gqa=gqa
-        )
+    global _SAGE_FALLBACK_LOGGED
+    if attention_backend() == "sage" and q.is_cuda and mask is None and not gqa:
+        try:
+            x = _sage_attention(q, k, v, scale)
+        except Exception as exc:
+            if not _SAGE_FALLBACK_LOGGED:
+                logger.warning("SageAttention failed; falling back to SDPA: %s", exc)
+                _SAGE_FALLBACK_LOGGED = True
+            x = _sdpa_attention(q, k, v, mask, scale, gqa)
+    else:
+        x = _sdpa_attention(q, k, v, mask, scale, gqa)
     return rearrange(x, "B H L D -> B L (H D)")
 
 
