@@ -1721,6 +1721,8 @@ async def download_quality_asset_endpoint(asset_id: str):
         spec = asset_by_id(asset_id)
     except KeyError:
         raise HTTPException(404, f"Unknown quality asset: {asset_id}")
+    if not spec.download_enabled:
+        raise HTTPException(403, spec.disabled_reason or "This asset cannot be downloaded automatically.")
 
     token = settings.hf_token or os.environ.get("HF_TOKEN") or None
     if spec.id == "flux_fill" and not token:

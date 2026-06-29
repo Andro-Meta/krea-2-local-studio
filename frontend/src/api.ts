@@ -426,6 +426,8 @@ export interface QualityAsset {
   needs_token: boolean
   gated: boolean
   setup_url: string
+  download_enabled: boolean
+  disabled_reason: string
 }
 
 export interface ModerationEvent {

@@ -242,7 +242,7 @@ export default function SystemStatus() {
       await apiFetch.downloadQualityAsset(assetId)
       await loadQualityAssets()
       await refresh()
-      setQualityMessage({ severity: 'success', text: 'Precision editing asset is ready.' })
+      setQualityMessage({ severity: 'success', text: 'Asset is ready.' })
     } catch (e: any) {
       setQualityMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Quality asset download failed.' })
     } finally {
@@ -1140,6 +1140,47 @@ export default function SystemStatus() {
             >
               Save Magic Wand Settings
             </Button>
+          </Stack>
+        </Paper>}
+
+        {isAdmin && <Paper sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Typography variant="h6">Optional Krea / GGUF Assets</Typography>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              Download workflow companion files only when you choose to use them. These are not required for the default native Turbo workflow.
+            </Typography>
+            <Stack spacing={1}>
+              {(qualityAssets?.items.filter(asset => asset.id !== 'flux_fill') ?? []).map(asset => (
+                <Box key={asset.id} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, p: 1 }}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1}>
+                    <Box>
+                      <Typography variant="body2">{asset.purpose}</Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', wordBreak: 'break-all' }}>
+                        {asset.repo_id}{asset.filename ? ` · ${asset.filename}` : ''} · {asset.local_path}
+                      </Typography>
+                      {asset.disabled_reason && (
+                        <Typography variant="caption" sx={{ color: 'warning.main', display: 'block' }}>
+                          {asset.disabled_reason}
+                        </Typography>
+                      )}
+                    </Box>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <Chip size="small" label={asset.installed ? 'Installed' : asset.download_enabled ? 'Optional' : 'Blocked'} color={asset.installed ? 'success' : asset.download_enabled ? 'default' : 'warning'} />
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => downloadQualityAsset(asset.id)}
+                        disabled={qualityBusy === asset.id || !asset.download_enabled}
+                        startIcon={qualityBusy === asset.id ? <CircularProgress size={14} color="inherit" /> : undefined}
+                      >
+                        {qualityBusy === asset.id ? 'Downloading...' : 'Download'}
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </Box>
+              ))}
+            </Stack>
+            {qualityMessage && <Alert severity={qualityMessage.severity} sx={{ py: 0 }}>{qualityMessage.text}</Alert>}
           </Stack>
         </Paper>}
 

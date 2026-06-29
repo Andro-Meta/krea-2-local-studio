@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -16,10 +17,15 @@ class QualityAssetSpec:
     kind: Literal["file", "snapshot"]
     purpose: str
     allow_patterns: list[str] | None = None
+    download_enabled: bool = True
+    disabled_reason: str = ""
 
 
 def asset_specs() -> list[QualityAssetSpec]:
     diffusion_dir = MODELS_DIR / "krea2" / "diffusion_models"
+    vae_dir = MODELS_DIR / "krea2" / "vae"
+    text_encoder_dir = MODELS_DIR / "krea2" / "text_encoders"
+    gguf_dir = MODELS_DIR / "gguf"
     return [
         QualityAssetSpec(
             id="krea2_turbo_bf16",
@@ -52,6 +58,64 @@ def asset_specs() -> list[QualityAssetSpec]:
             local_path=MODELS_DIR / "krea2" / "vae" / "qwen_image_HDR_vae_fp32_comfy.safetensors",
             kind="file",
             purpose="Optional sharper/HDR Qwen Image VAE for decode (experimental override)",
+        ),
+        QualityAssetSpec(
+            id="wan_2_1_vae",
+            repo_id="Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+            filename="split_files/vae/wan_2.1_vae.safetensors",
+            local_path=vae_dir / "wan_2.1_vae.safetensors",
+            kind="file",
+            purpose="Wan 2.1 VAE used by stable-diffusion.cpp Krea2 and some Comfy workflows",
+        ),
+        QualityAssetSpec(
+            id="qwen3vl_abliterated_fp8",
+            repo_id="ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy",
+            filename="Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors",
+            local_path=text_encoder_dir / "Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors",
+            kind="file",
+            purpose="Abliterated Qwen3-VL FP8 text encoder from the referenced Krea2 Turbo workflow (experimental, higher safety risk)",
+        ),
+        QualityAssetSpec(
+            id="krea2_realism_v1_lora",
+            repo_id="RudySen/Krea2-realism-V1",
+            filename="Krea2-realism-V1.safetensors",
+            local_path=MODELS_DIR / "loras" / "Krea2-realism-V1.safetensors",
+            kind="file",
+            purpose="Krea2 realism LoRA used by the workflow at strength 0.6",
+        ),
+        QualityAssetSpec(
+            id="krea2_filter_bypass",
+            repo_id="Kutches/Kr3a",
+            filename="krea2filterbypass3.safetensors",
+            local_path=MODELS_DIR / "loras" / "krea2filterbypass3.safetensors",
+            kind="file",
+            purpose="Filter-bypass LoRA referenced by the workflow at strength 4.0",
+            download_enabled=False,
+            disabled_reason="Blocked: this asset is explicitly intended to bypass safety/filter behavior and should not be auto-downloaded by Krea Studio.",
+        ),
+        QualityAssetSpec(
+            id="gguf_krea2_turbo_q4km",
+            repo_id="Abiray/Krea-2-Turbo-GGUF",
+            filename="Krea-2-Turbo-Q4_K_M.gguf",
+            local_path=gguf_dir / "Krea-2-Turbo-Q4_K_M.gguf",
+            kind="file",
+            purpose="Recommended GGUF Krea2 Turbo baseline for external stable-diffusion.cpp runtime",
+        ),
+        QualityAssetSpec(
+            id="gguf_krea2_turbo_q3km",
+            repo_id="Abiray/Krea-2-Turbo-GGUF",
+            filename="Krea-2-Turbo-Q3_K_M.gguf",
+            local_path=gguf_dir / "Krea-2-Turbo-Q3_K_M.gguf",
+            kind="file",
+            purpose="Smallest practical Krea2 Turbo GGUF candidate for low-VRAM/realtime experiments",
+        ),
+        QualityAssetSpec(
+            id="gguf_qwen3vl_4b_q4km",
+            repo_id="Qwen/Qwen3-VL-4B-Instruct-GGUF",
+            filename="Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+            local_path=gguf_dir / "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+            kind="file",
+            purpose="Qwen3-VL 4B GGUF LLM text encoder for stable-diffusion.cpp Krea2 runtime",
         ),
         QualityAssetSpec(
             id="flux_fill",
@@ -103,6 +167,8 @@ def asset_status(spec: QualityAssetSpec, *, has_hf_token: bool = False) -> dict:
         "needs_token": needs_token,
         "gated": spec.id == "flux_fill",
         "setup_url": f"https://huggingface.co/{spec.repo_id}",
+        "download_enabled": bool(spec.download_enabled),
+        "disabled_reason": spec.disabled_reason,
     }
 
 
@@ -117,14 +183,12 @@ def download_asset(spec: QualityAssetSpec, *, token: str | None = None) -> Path:
 
         if spec.filename is None:
             raise ValueError(f"{spec.id} has no filename")
-        return Path(
-            hf_hub_download(
-                repo_id=spec.repo_id,
-                filename=spec.filename,
-                local_dir=str(spec.local_path.parent.parent),
-                token=token or None,
-            )
+        downloaded = Path(
+            hf_hub_download(repo_id=spec.repo_id, filename=spec.filename, token=token or None)
         )
+        if downloaded.resolve() != spec.local_path.resolve():
+            shutil.copy2(downloaded, spec.local_path)
+        return spec.local_path
 
     from huggingface_hub import snapshot_download
 

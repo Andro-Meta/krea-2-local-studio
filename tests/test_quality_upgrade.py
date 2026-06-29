@@ -262,6 +262,11 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(specs["krea2_turbo_bf16"].repo_id, "Comfy-Org/Krea-2")
         self.assertEqual(specs["krea2_turbo_bf16"].filename, "diffusion_models/krea2_turbo_bf16.safetensors")
         self.assertEqual(specs["krea2_raw_bf16"].filename, "diffusion_models/krea2_raw_bf16.safetensors")
+        self.assertEqual(specs["wan_2_1_vae"].filename, "split_files/vae/wan_2.1_vae.safetensors")
+        self.assertEqual(specs["qwen3vl_abliterated_fp8"].repo_id, "ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy")
+        self.assertEqual(specs["gguf_krea2_turbo_q4km"].filename, "Krea-2-Turbo-Q4_K_M.gguf")
+        self.assertEqual(specs["gguf_qwen3vl_4b_q4km"].filename, "Qwen3VL-4B-Instruct-Q4_K_M.gguf")
+        self.assertFalse(specs["krea2_filter_bypass"].download_enabled)
         self.assertEqual(specs["flux_fill"].repo_id, "black-forest-labs/FLUX.1-Fill-dev")
 
     def test_flux_asset_status_guides_token_setup(self) -> None:
@@ -276,6 +281,15 @@ class QualityUpgradeTests(unittest.TestCase):
 
             with_token = quality_assets.asset_status(spec, has_hf_token=True)
             self.assertFalse(with_token["needs_token"])
+
+    def test_quality_asset_status_reports_disabled_downloads(self) -> None:
+        import quality_assets
+
+        spec = quality_assets.asset_by_id("krea2_filter_bypass")
+        status = quality_assets.asset_status(spec, has_hf_token=True)
+
+        self.assertFalse(status["download_enabled"])
+        self.assertIn("safety", status["disabled_reason"].lower())
 
 
 if __name__ == "__main__":
