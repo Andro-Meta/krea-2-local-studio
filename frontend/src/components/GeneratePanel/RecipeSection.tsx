@@ -25,6 +25,8 @@ export default function RecipeSection() {
       prompt: params.prompt,
       negative_prompt: params.negative_prompt,
       loras: params.loras,
+      mood: params.mood,
+      moodboard_strength: params.moodboard_strength,
       moodboard_ids: params.selected_moodboard_ids,
       moodboard_uuids: params.moodboard_uuids,
       style_references: params.style_references,
@@ -45,6 +47,8 @@ export default function RecipeSection() {
     setParam('prompt', recipe.prompt)
     setParam('negative_prompt', recipe.negative_prompt)
     setParam('loras', recipe.loras as any)
+    setParam('mood', recipe.mood || '')
+    setParam('moodboard_strength', recipe.moodboard_strength ?? 0.35)
     setParam('selected_moodboard_ids', recipe.moodboard_ids)
     setParam('moodboard_uuids', recipe.moodboard_uuids)
     setParam('style_references', recipe.style_references as any)

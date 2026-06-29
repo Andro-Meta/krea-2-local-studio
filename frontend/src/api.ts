@@ -149,6 +149,8 @@ export interface PromptRecipe {
   negative_prompt: string
   planner_instruction: string
   loras: any[]
+  mood: string
+  moodboard_strength: number
   moodboard_ids: number[]
   moodboard_uuids: string[]
   style_references: any[]

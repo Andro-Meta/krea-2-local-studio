@@ -31,6 +31,7 @@ export default function MoodboardSection() {
   const [catalogQuery, setCatalogQuery] = useState('')
   const [catalogResults, setCatalogResults] = useState<MoodboardItem[]>([])
   const [selectedBoards, setSelectedBoards] = useState<MoodboardItem[]>([])
+  const [catalogImageMap, setCatalogImageMap] = useState<Record<number, string[]>>({})
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [catalogMessage, setCatalogMessage] = useState('')
   const [open, setOpen] = useState(false)
@@ -90,6 +91,7 @@ export default function MoodboardSection() {
       const nextUuids = Array.from(new Set([...current.moodboard_uuids, moodboard.uuid].filter(Boolean)))
       const nextImages = Array.from(new Set([...current.moodboard_images, ...images])).slice(0, MAX_CATALOG_REFS)
       setSelectedBoards(prev => prev.some(board => board.id === moodboard.id) ? prev : [...prev, moodboard])
+      setCatalogImageMap(prev => ({ ...prev, [moodboard.id]: images }))
       setParam('selected_moodboard_ids', nextIds)
       setParam('moodboard_uuids', nextUuids)
       setParam('moodboard_images', nextImages)
@@ -103,9 +105,16 @@ export default function MoodboardSection() {
 
   const removeCatalogMoodboard = (id: number) => {
     const board = selectedBoards.find(board => board.id === id)
+    const imagesToRemove = new Set(catalogImageMap[id] || [])
     setParam('selected_moodboard_ids', selectedCatalogIds.filter(existing => existing !== id))
     if (board?.uuid) setParam('moodboard_uuids', params.moodboard_uuids.filter(uuid => uuid !== board.uuid))
+    if (imagesToRemove.size) setParam('moodboard_images', params.moodboard_images.filter(image => !imagesToRemove.has(image)))
     setSelectedBoards(prev => prev.filter(board => board.id !== id))
+    setCatalogImageMap(prev => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
   }
 
   const addImages = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -184,7 +193,7 @@ export default function MoodboardSection() {
                 })}
               </Stack>
               <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
-                Removing a catalog chip stops its text style conditioning. Reference thumbnails remain until removed below.
+                Removing a catalog chip also removes its catalog reference thumbnails. Manually uploaded references stay until removed below.
               </Typography>
             </Box>
           )}

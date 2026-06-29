@@ -319,6 +319,74 @@ class MoodboardCatalogTests(unittest.TestCase):
             self.assertEqual(item["keywords"], ["cinematic realism"])
             self.assertEqual(item["qwen_guidance"]["prompt_guidance"], "Translate this board into candid urban realism.")
             self.assertIn("Translate this board", context["style_text"])
+            self.assertIn("gritty realism", context["style_text"])
+            self.assertIn("Use references for texture", context["style_text"])
+            self.assertIn("Avoid glossy studio light", context["negative_text"])
+
+    def test_search_uses_qwen_guidance_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def run() -> dict:
+                await init_moodboard_db(db_path)
+                board_id = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/plain-board-11111111-1111-5111-9111-111111111111",
+                        slug="plain-board-11111111-1111-5111-9111-111111111111",
+                        uuid="11111111-1111-5111-9111-111111111111",
+                        title="Plain Board",
+                        taste_profile="Neutral board.",
+                        keywords=["neutral"],
+                        primary_image_url="https://optim-images.krea.ai/plain.webp",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                await set_moodboard_qwen_guidance(
+                    board_id,
+                    {
+                        "prompt_guidance": "opal cyber shrine lighting",
+                        "negative_guidance": "avoid sterile white",
+                        "style_axes": ["ritual neon"],
+                        "conditioning_notes": ["glass refractions"],
+                        "source_summary": "prismatic altar",
+                        "guidance_version": 1,
+                    },
+                    db_path=db_path,
+                )
+                return await list_moodboards(query="refractions", db_path=db_path)
+
+            result = asyncio.run(run())
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["items"][0]["title"], "Plain Board")
+
+    def test_generation_context_caps_images_across_boards(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def run() -> dict:
+                await init_moodboard_db(db_path)
+                ids = []
+                for index in range(2):
+                    ids.append(await upsert_moodboard(
+                        MoodboardRecord(
+                            url=f"https://www.krea.ai/moodboard-feed/board-{index}-11111111-1111-5111-9111-11111111111{index}",
+                            slug=f"board-{index}-11111111-1111-5111-9111-11111111111{index}",
+                            uuid=f"11111111-1111-5111-9111-11111111111{index}",
+                            title=f"Board {index}",
+                            taste_profile="",
+                            keywords=[],
+                            primary_image_url=f"https://optim-images.krea.ai/{index}-primary.webp",
+                            image_urls=[f"https://optim-images.krea.ai/{index}-{n}.webp" for n in range(4)],
+                            related_urls=[],
+                        ),
+                        db_path,
+                    ))
+                return moodboard_generation_context(ids, db_path=db_path, max_images=3)
+
+            context = asyncio.run(run())
+            self.assertEqual(len(context["image_urls"]), 3)
 
     def test_generation_context_resolves_uuid_moodboards(self) -> None:
         with tempfile.TemporaryDirectory() as td:

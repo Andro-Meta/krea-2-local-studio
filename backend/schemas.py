@@ -295,6 +295,8 @@ class PromptRecipe(BaseModel):
     negative_prompt: str = ""
     planner_instruction: str = ""
     loras: list[dict] = []
+    mood: str = ""
+    moodboard_strength: float = 0.35
     moodboard_ids: list[int] = []
     moodboard_uuids: list[str] = []
     style_references: list[dict] = []

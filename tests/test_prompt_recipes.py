@@ -22,6 +22,8 @@ class PromptRecipeTests(unittest.TestCase):
                     "name": "Neon fashion recipe",
                     "prompt": "neon jacket editorial",
                     "loras": [{"name": "style", "strength": 0.7}],
+                    "mood": "retro_web,film_noir",
+                    "moodboard_strength": 0.65,
                     "moodboard_uuids": ["abc"],
                     "seed_variance_preset": "balanced",
                 },
@@ -30,6 +32,8 @@ class PromptRecipeTests(unittest.TestCase):
 
             self.assertEqual(recipe["id"], "neon-fashion-recipe")
             self.assertEqual(list_recipes(path=path)[0]["loras"][0]["name"], "style")
+            self.assertEqual(list_recipes(path=path)[0]["mood"], "retro_web,film_noir")
+            self.assertEqual(list_recipes(path=path)[0]["moodboard_strength"], 0.65)
             self.assertTrue(delete_recipe(recipe["id"], path=path))
             self.assertEqual(list_recipes(path=path), [])
 

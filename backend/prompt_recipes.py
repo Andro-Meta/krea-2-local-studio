@@ -40,6 +40,8 @@ def _clean_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         "negative_prompt": str(recipe.get("negative_prompt", "") or ""),
         "planner_instruction": str(recipe.get("planner_instruction", "") or ""),
         "loras": list(recipe.get("loras", []) or [])[:16],
+        "mood": str(recipe.get("mood", "") or "")[:240],
+        "moodboard_strength": float(recipe.get("moodboard_strength", 0.35) or 0.35),
         "moodboard_ids": list(recipe.get("moodboard_ids", []) or [])[:24],
         "moodboard_uuids": list(recipe.get("moodboard_uuids", []) or [])[:24],
         "style_references": list(recipe.get("style_references", []) or [])[:10],

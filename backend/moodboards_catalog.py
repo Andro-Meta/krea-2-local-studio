@@ -768,11 +768,17 @@ def _tokens(text: str) -> list[str]:
 def _score_item(item: dict, query: str) -> int:
     if not query.strip():
         return 1
+    guidance = item.get("qwen_guidance") or {}
     haystack = " ".join(
         [
             item.get("title", ""),
             item.get("taste_profile", ""),
             " ".join(item.get("keywords", [])),
+            str(guidance.get("prompt_guidance") or ""),
+            str(guidance.get("negative_guidance") or ""),
+            " ".join(str(v) for v in guidance.get("style_axes", []) or []),
+            " ".join(str(v) for v in guidance.get("conditioning_notes", []) or []),
+            str(guidance.get("source_summary") or ""),
         ]
     ).lower()
     score = 0
@@ -784,6 +790,12 @@ def _score_item(item: dict, query: str) -> int:
             score += 10
         if any(token in keyword.lower() for keyword in item.get("keywords", [])):
             score += 8
+        if token in str(guidance.get("prompt_guidance") or "").lower():
+            score += 6
+        if token in " ".join(str(v) for v in guidance.get("style_axes", []) or []).lower():
+            score += 4
+        if token in " ".join(str(v) for v in guidance.get("conditioning_notes", []) or []).lower():
+            score += 4
     return score
 
 
@@ -893,11 +905,17 @@ def moodboard_generation_context(
             style_axes_text = ", ".join(str(a).strip() for a in style_axes if str(a).strip())
         else:
             style_axes_text = str(style_axes).strip()
+        conditioning_notes = guidance.get("conditioning_notes") or []
+        if isinstance(conditioning_notes, (list, tuple)):
+            conditioning_notes_text = ", ".join(str(a).strip() for a in conditioning_notes if str(a).strip())
+        else:
+            conditioning_notes_text = str(conditioning_notes).strip()
         style_bits = [
             item.get("title", ""),
             str(guidance.get("prompt_guidance") or item.get("taste_profile", "")),
             f"Style keywords: {', '.join(item.get('keywords', []))}" if item.get("keywords") else "",
             f"Style axes: {style_axes_text}" if style_axes_text else "",
+            f"Conditioning notes: {conditioning_notes_text}" if conditioning_notes_text else "",
         ]
         text = ". ".join(bit.strip().rstrip(".") for bit in style_bits if bit.strip())
         if text:
@@ -912,6 +930,8 @@ def moodboard_generation_context(
                 seen_images.add(url)
             if len(image_urls) >= max_images:
                 break
+        if len(image_urls) >= max_images:
+            break
     style_text = "Apply these Krea moodboard styles: " + " | ".join(parts) if parts else ""
     negative_text = ", ".join(negative_parts)
     return {
