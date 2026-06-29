@@ -105,8 +105,28 @@ def is_krea_ui_image_url(url: str) -> bool:
     )
 
 
+def is_krea_thumbnail_image_url(url: str) -> bool:
+    normalized = str(url or "").lower()
+    return bool(re.search(r"-png-(16|32|64|128)\.webp(?:$|\?)", normalized))
+
+
+def _krea_image_family_key(url: str) -> str:
+    normalized = str(url or "").lower()
+    return re.sub(r"-png-(16|32|64|128|256|512|1024)\.webp(?:$|\?)", "-png.webp", normalized)
+
+
 def _moodboard_image_urls(urls: list[str]) -> list[str]:
-    return [url for url in _dedupe(urls) if url and not is_krea_ui_image_url(url)]
+    out: list[str] = []
+    seen_families: set[str] = set()
+    for url in _dedupe(urls):
+        if not url or is_krea_ui_image_url(url) or is_krea_thumbnail_image_url(url):
+            continue
+        family = _krea_image_family_key(url)
+        if family in seen_families:
+            continue
+        seen_families.add(family)
+        out.append(url)
+    return out
 
 
 def fetch_krea_image_b64(url: str, *, timeout: int = 30) -> str:

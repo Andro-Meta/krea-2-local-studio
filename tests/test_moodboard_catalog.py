@@ -141,7 +141,9 @@ class MoodboardCatalogTests(unittest.TestCase):
                         primary_image_url="https://optim-images.krea.ai/https---gen-krea-ai-images-real-png-1024.webp",
                         image_urls=[
                             "https://optim-images.krea.ai/https---s-krea-ai-icons-HomeIcon-png-128.webp",
+                            "https://optim-images.krea.ai/https---gen-krea-ai-images-real-png-32.webp",
                             "https://optim-images.krea.ai/https---gen-krea-ai-images-secondary-png-1024.webp",
+                            "https://optim-images.krea.ai/https---gen-krea-ai-images-secondary-png-32.webp",
                         ],
                         related_urls=[],
                     ),
@@ -151,6 +153,7 @@ class MoodboardCatalogTests(unittest.TestCase):
                 item = (await list_moodboards(db_path=db_path))["items"][0]
 
                 self.assertNotIn("HomeIcon", " ".join(item["image_urls"]))
+                self.assertNotIn("png-32.webp", " ".join(item["image_urls"]))
                 self.assertEqual(len(item["preview_image_urls"]), 2)
                 self.assertTrue(item["preview_image_urls"][0].startswith("/api/moodboards/cached-image?url="))
                 self.assertIn("gen-krea-ai-images-real", item["primary_image_url"])
