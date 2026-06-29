@@ -102,7 +102,7 @@ class PlanGenerationTests(unittest.TestCase):
         from resource_manager import plan_parallel_batch
 
         plan = plan_parallel_batch(
-            free_vram_gb=24.0,
+            free_vram_gb=18.0,
             width=1024,
             height=1024,
             quantization="fp8",
@@ -114,6 +114,33 @@ class PlanGenerationTests(unittest.TestCase):
 
         self.assertTrue(plan["allowed"])
         self.assertTrue(plan["fits"])
+
+    def test_parallel_batch_requires_strict_headroom_and_small_batch(self) -> None:
+        from resource_manager import plan_parallel_batch
+
+        low_headroom = plan_parallel_batch(
+            free_vram_gb=10.7,
+            width=1024,
+            height=1024,
+            quantization="fp8",
+            batch=2,
+            cfg_active=False,
+            mode="txt2img",
+            checkpoint="turbo",
+        )
+        high_batch = plan_parallel_batch(
+            free_vram_gb=24.0,
+            width=1024,
+            height=1024,
+            quantization="fp8",
+            batch=4,
+            cfg_active=False,
+            mode="txt2img",
+            checkpoint="turbo",
+        )
+
+        self.assertFalse(low_headroom["allowed"])
+        self.assertFalse(high_batch["allowed"])
 
     def test_parallel_batch_blocks_raw_and_2k(self) -> None:
         from resource_manager import plan_parallel_batch

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -42,6 +43,11 @@ def wait_for_url(url: str, *, timeout_seconds: int = 90, interval_seconds: float
             response = urllib.request.urlopen(url, timeout=2)
             response.close()
             return True
+        except urllib.error.HTTPError as exc:
+            if exc.code in {401, 403}:
+                exc.close()
+                return True
+            time.sleep(interval_seconds)
         except Exception:
             time.sleep(interval_seconds)
     return False

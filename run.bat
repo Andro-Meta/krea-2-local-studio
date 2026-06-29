@@ -84,7 +84,9 @@ set "KREA_SERVER_LOG=logs\server-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
 python -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:PYTHONUNBUFFERED='1'; python -u -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info 2>&1 | Tee-Object -FilePath '%KREA_SERVER_LOG%' -Append"
+echo Waiting for app startup... this can take 20-60 seconds.
+set "PYTHONUNBUFFERED=1"
+python scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- python -u -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info
 exit /b %ERRORLEVEL%
 
 :local
@@ -183,7 +185,9 @@ set "KREA_SERVER_LOG=logs\server-local-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea local server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
 python -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:PYTHONUNBUFFERED='1'; python -u -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info 2>&1 | Tee-Object -FilePath '%KREA_SERVER_LOG%' -Append"
+echo Waiting for app startup... this can take 20-60 seconds.
+set "PYTHONUNBUFFERED=1"
+python scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- python -u -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info
 
 echo.
 echo Server stopped.

@@ -239,7 +239,9 @@ export default function GeneratePanel() {
           <Box>
             <LinearProgress variant="determinate" value={progress} />
             <Typography variant="caption" sx={{ color: 'text.secondary', mt: 0.5, display: 'block' }}>
-              {queuePosition ? `Queued — position ${queuePosition}${queueLength ? ` of ${queueLength}` : ''}` : `${progress}% complete`}
+              {params.num_images > 1 && params.batch_mode === 'safe_queue'
+                ? `Batch queued — ${results.length}/${params.num_images} complete${queuePosition ? ` · next queue position ${queuePosition}${queueLength ? ` of ${queueLength}` : ''}` : ''}`
+                : queuePosition ? `Queued — position ${queuePosition}${queueLength ? ` of ${queueLength}` : ''}` : `${progress}% complete`}
             </Typography>
           </Box>
         )}

@@ -74,9 +74,6 @@ export default function ParameterSection() {
     }).then(plan => {
       if (!alive) return
       setBatchPlan(plan)
-      if (params.batch_mode === 'parallel') {
-        setParam('parallel_batch_confirmed', Boolean(plan.allowed))
-      }
     }).catch(() => { if (alive) setBatchPlan(null) })
     return () => { alive = false }
   }, [params.width, params.height, params.quantization, params.num_images, params.cfg, params.mode, params.checkpoint, params.batch_mode])

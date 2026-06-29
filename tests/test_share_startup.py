@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import io
 from pathlib import Path
 from unittest.mock import patch
 
@@ -47,6 +48,17 @@ class ShareStartupTests(unittest.TestCase):
             self.assertTrue(share_startup.wait_for_url("http://127.0.0.1:8200/krea/api/auth/me", timeout_seconds=5))
 
         self.assertEqual(attempts["count"], 3)
+
+    def test_wait_for_url_treats_login_gate_as_ready(self) -> None:
+        import urllib.error
+
+        def fake_urlopen(url: str, **_kwargs):
+            raise urllib.error.HTTPError(url, 401, "Unauthorized", hdrs=None, fp=io.BytesIO())
+
+        with patch("share_startup.urllib.request.urlopen", side_effect=fake_urlopen):
+            self.assertTrue(
+                share_startup.wait_for_url("http://127.0.0.1:8200/krea/api/auth/me", timeout_seconds=1)
+            )
 
     def test_auto_funnel_starts_tailscale_and_funnel(self) -> None:
         calls: list[str] = []

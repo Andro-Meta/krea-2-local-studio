@@ -223,6 +223,8 @@ def plan_parallel_batch(
 
     if batch <= 1:
         blocked_reasons.append("Parallel batch only applies when Batch is greater than 1.")
+    if batch > 2:
+        blocked_reasons.append("Parallel batch is capped at 2 images until visual/VRAM benchmarks prove higher batches safe.")
     if str(mode) in {"inpaint", "outpaint"}:
         blocked_reasons.append("Parallel batch is disabled for inpaint/outpaint; use safe queue.")
     if str(checkpoint).lower() == "raw":
@@ -232,6 +234,10 @@ def plan_parallel_batch(
 
     working = float(plan["estimated_scratch_gb"]) + float(plan["estimated_decode_gb"])
     fits = free_vram_gb is None or (working + headroom_gb) <= float(free_vram_gb)
+    if free_vram_gb is None:
+        blocked_reasons.append("Free VRAM is unknown; use safe queue.")
+    elif float(free_vram_gb) < 14.0:
+        blocked_reasons.append("Parallel batch needs at least 14GB free VRAM after the model is loaded.")
     if not fits:
         blocked_reasons.append("Estimated batch working set exceeds free VRAM headroom.")
     allowed = not blocked_reasons
