@@ -18,6 +18,7 @@ class RealtimePreviewRegistry:
         self.max_jobs = max_jobs
         self._jobs: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._latest_revision: dict[str, int] = {}
+        self._pending_payloads: dict[str, dict[str, Any]] = {}
 
     def create(self, session_id: str) -> dict[str, Any]:
         revision = self._latest_revision.get(session_id, 0) + 1
@@ -57,6 +58,17 @@ class RealtimePreviewRegistry:
 
     def busy(self) -> bool:
         return any(job.get("status") in {"queued", "running"} for job in self._jobs.values())
+
+    def create_pending(self, session_id: str, payload: Any) -> dict[str, Any]:
+        previous = self._pending_payloads.get(session_id)
+        if previous:
+            self.update(previous["job"]["job_id"], status="stale", progress=100)
+        job = self.create(session_id)
+        self._pending_payloads[session_id] = {"job": job, "payload": payload}
+        return job
+
+    def pop_pending(self, session_id: str) -> dict[str, Any] | None:
+        return self._pending_payloads.pop(session_id, None)
 
     def is_current(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)

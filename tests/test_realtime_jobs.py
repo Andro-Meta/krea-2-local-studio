@@ -60,6 +60,21 @@ class RealtimePreviewRegistryTests(unittest.TestCase):
         registry.update(second["job_id"], status="running")
         self.assertTrue(registry.busy())
 
+    def test_pending_slot_keeps_only_latest_frame_per_session(self) -> None:
+        registry = RealtimePreviewRegistry(max_jobs=10)
+        running = registry.create("session-a")
+        registry.update(running["job_id"], status="running")
+
+        old_pending = registry.create_pending("session-a", {"frame": "old"})
+        new_pending = registry.create_pending("session-a", {"frame": "new"})
+
+        self.assertEqual(registry.get(old_pending["job_id"])["status"], "stale")
+        self.assertEqual(registry.get(new_pending["job_id"])["status"], "queued")
+        popped = registry.pop_pending("session-a")
+        self.assertEqual(popped["job"]["job_id"], new_pending["job_id"])
+        self.assertEqual(popped["payload"], {"frame": "new"})
+        self.assertIsNone(registry.pop_pending("session-a"))
+
     def test_evicts_oldest_jobs(self) -> None:
         registry = RealtimePreviewRegistry(max_jobs=2)
         first = registry.create("a")

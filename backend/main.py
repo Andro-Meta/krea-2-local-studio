@@ -707,9 +707,18 @@ def _safe_served_filename(filename: str) -> str | None:
 async def realtime_preview(req: RealtimePreviewRequest):
     if not pipeline.is_loaded():
         raise HTTPException(503, "No Krea model is loaded. Load a model before realtime preview.")
-    if (generation_queue is not None and generation_queue.has_active_or_pending()) or realtime_previews.busy():
+    if generation_queue is not None and generation_queue.has_active_or_pending():
         raise HTTPException(409, "Krea is busy with another generation or preview. Try again when it finishes.")
     session_id = req.session_id.strip() or uuid.uuid4().hex
+    if realtime_previews.busy():
+        job = realtime_previews.create_pending(session_id, req)
+        return {
+            "job_id": job["job_id"],
+            "session_id": session_id,
+            "revision": job["revision"],
+            "status": "queued",
+            "dropped_intermediate_frames": True,
+        }
     job = realtime_previews.create(session_id)
     asyncio.create_task(_run_realtime_preview(job["job_id"], req, session_id))
     return {
@@ -717,6 +726,7 @@ async def realtime_preview(req: RealtimePreviewRequest):
         "session_id": session_id,
         "revision": job["revision"],
         "status": job["status"],
+        "dropped_intermediate_frames": False,
     }
 
 
@@ -771,6 +781,10 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
     except Exception as e:
         logger.exception("Realtime preview failed")
         realtime_previews.fail(job_id, str(e))
+    finally:
+        pending = realtime_previews.pop_pending(session_id)
+        if pending is not None:
+            asyncio.create_task(_run_realtime_preview(pending["job"]["job_id"], pending["payload"], session_id))
 
 
 async def _run_generation(job_id: str, req: GenerationRequest, *, username: str | None = None, role: str = "user"):
