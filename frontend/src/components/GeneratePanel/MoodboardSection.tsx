@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
-  Box, Button, Chip, CircularProgress, Collapse, IconButton, Slider, Stack, TextField, Tooltip, Typography,
+  Alert, Box, Button, Chip, CircularProgress, Collapse, IconButton, Slider, Stack, TextField, Tooltip, Typography,
 } from '@mui/material'
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate'
 import CloseIcon from '@mui/icons-material/Close'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { useStore } from '../../store'
 import { apiFetch, type Mood, type MoodboardItem } from '../../api'
 
@@ -26,8 +27,9 @@ export default function MoodboardSection() {
   const [catalogResults, setCatalogResults] = useState<MoodboardItem[]>([])
   const [selectedBoards, setSelectedBoards] = useState<MoodboardItem[]>([])
   const [catalogLoading, setCatalogLoading] = useState(false)
+  const [mashupLoading, setMashupLoading] = useState(false)
   const [catalogMessage, setCatalogMessage] = useState('')
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { apiFetch.moods().then(setMoods).catch(() => {}) }, [])
@@ -59,11 +61,11 @@ export default function MoodboardSection() {
       .catch(() => undefined)
   }, [selectedCatalogIds, selectedBoards])
 
-  const searchCatalog = async () => {
+  const searchCatalog = async (query = catalogQuery) => {
     setCatalogLoading(true)
     setCatalogMessage('')
     try {
-      const data = await apiFetch.moodboards({ q: catalogQuery, page: 1, pageSize: 8 })
+      const data = await apiFetch.moodboards({ q: query, page: 1, pageSize: 12 })
       setCatalogResults(data.items)
       if (!data.items.length) setCatalogMessage('No catalog moodboards matched that search.')
     } catch (e: any) {
@@ -72,6 +74,13 @@ export default function MoodboardSection() {
       setCatalogLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!open || catalogResults.length) return
+    searchCatalog('')
+    // Only auto-load a small browse set when the section is first opened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   const addCatalogMoodboard = async (moodboard: MoodboardItem) => {
     setCatalogLoading(true)
@@ -96,6 +105,30 @@ export default function MoodboardSection() {
     setParam('selected_moodboard_ids', selectedCatalogIds.filter(existing => existing !== id))
     if (board?.uuid) setParam('moodboard_uuids', params.moodboard_uuids.filter(uuid => uuid !== board.uuid))
     setSelectedBoards(prev => prev.filter(board => board.id !== id))
+  }
+
+  const createMashupFromSelected = async () => {
+    if (selectedCatalogIds.length < 2) {
+      setCatalogMessage('Select at least two Krea catalog moodboards to create a mashup.')
+      return
+    }
+    setMashupLoading(true)
+    setCatalogMessage('')
+    try {
+      const created = await apiFetch.createMoodboardMashup({
+        moodboard_ids: selectedCatalogIds,
+        weights: selectedCatalogIds.map(() => 1.0),
+      })
+      setSelectedBoards([created])
+      setParam('selected_moodboard_ids', [created.id])
+      setParam('moodboard_uuids', created.uuid ? [created.uuid] : [])
+      setParam('moodboard_strength', 0.35)
+      setCatalogMessage(`Created mashup moodboard "${created.title}" and applied it.`)
+    } catch (e: any) {
+      setCatalogMessage(moodboardErrorMessage(e, 'Could not create moodboard mashup.'))
+    } finally {
+      setMashupLoading(false)
+    }
   }
 
   const addImages = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -125,15 +158,18 @@ export default function MoodboardSection() {
         sx={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 1 }}>
           Moodboard{active ? ` · ${[summary, catalogSummary, board.length ? `${board.length} img` : ''].filter(Boolean).join(' + ')}` : ''}
+          <Tooltip title="Moodboards are style controls. Catalog moodboards apply Qwen-enriched text guidance by default; uploaded images are optional stronger visual references.">
+            <InfoOutlinedIcon sx={{ fontSize: 14, color: 'text.disabled', ml: 0.5, verticalAlign: 'middle' }} />
+          </Tooltip>
         </Typography>
         <ExpandMoreIcon sx={{ color: 'text.secondary', transform: open ? 'rotate(180deg)' : 'none', transition: '0.2s' }} />
       </Stack>
 
       <Collapse in={open}>
         <Box sx={{ pt: 1 }}>
-          <Typography variant="caption" sx={{ color: 'text.disabled', mb: 1, display: 'block' }}>
-            Build a style stack by selecting one or more presets. Horror presets are grounded in photoreal, grainy analog horror by default.
-          </Typography>
+          <Alert severity="info" sx={{ py: 0.75, mb: 1.5 }}>
+            Search official Krea moodboards here, add one or more styles, then generate normally. Catalog boards use style guidance only by default, so they should not copy the source moodboard image layout.
+          </Alert>
 
           {selectedMoods.length > 0 && (
             <Box sx={{ mb: 1.5 }}>
@@ -176,6 +212,17 @@ export default function MoodboardSection() {
               <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
                 Catalog moodboards use their enriched Qwen style guidance by default. Add reference images below only when you want a stronger visual pull.
               </Typography>
+              {selectedCatalogIds.length >= 2 && (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  sx={{ mt: 1 }}
+                  disabled={mashupLoading}
+                  onClick={createMashupFromSelected}
+                >
+                  {mashupLoading ? 'Creating mashup...' : `Create mashup from selected (${selectedCatalogIds.length})`}
+                </Button>
+              )}
             </Box>
           )}
 
@@ -207,21 +254,41 @@ export default function MoodboardSection() {
 
           {/* Krea catalog moodboards */}
           <Box sx={{ mb: 1.5 }}>
-            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5, fontWeight: 600 }}>
-              Search Krea Moodboard Catalog
-            </Typography>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
+              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', fontWeight: 600 }}>
+                Search Official Krea Moodboards
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                Click Add to apply. Select 2+ to mash up.
+              </Typography>
+            </Stack>
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
               <TextField
                 size="small"
                 value={catalogQuery}
                 onChange={e => setCatalogQuery(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') searchCatalog() }}
-                placeholder="cinematic realism, pastel product, horror..."
+                onKeyDown={e => { if (e.key === 'Enter') searchCatalog(catalogQuery) }}
+                placeholder="fantasy, sci-fi, product, noir, ethereal..."
                 fullWidth
               />
-              <Button variant="outlined" onClick={searchCatalog} disabled={catalogLoading}>
+              <Button variant="outlined" onClick={() => searchCatalog(catalogQuery)} disabled={catalogLoading}>
                 {catalogLoading ? <CircularProgress size={16} /> : 'Search'}
               </Button>
+            </Stack>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+              {['fantasy', 'sci-fi', 'product', 'noir', 'ethereal'].map(term => (
+                <Chip
+                  key={term}
+                  size="small"
+                  clickable
+                  label={term}
+                  variant="outlined"
+                  onClick={() => {
+                    setCatalogQuery(term)
+                    searchCatalog(term)
+                  }}
+                />
+              ))}
             </Stack>
             {catalogMessage && (
               <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
@@ -229,21 +296,34 @@ export default function MoodboardSection() {
               </Typography>
             )}
             {catalogResults.length > 0 && (
-              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+              <Stack spacing={0.75} sx={{ mt: 1, maxHeight: 260, overflowY: 'auto' }}>
                 {catalogResults.map(result => (
-                  <Tooltip key={result.id} title={result.taste_profile || result.keywords.join(', ')} arrow>
-                    <span>
-                      <Chip
-                        label={result.title}
+                  <Box
+                    key={result.id}
+                    sx={{
+                      border: '1px solid rgba(202,196,208,0.18)',
+                      borderRadius: 1.5,
+                      p: 1,
+                      bgcolor: selectedCatalogIds.includes(result.id) ? 'rgba(187,134,252,0.12)' : 'rgba(255,255,255,0.03)',
+                    }}
+                  >
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
+                      <Box>
+                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{result.title}</Typography>
+                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                          {(result.qwen_guidance?.prompt_guidance || result.taste_profile || result.keywords.join(', ')).slice(0, 160)}
+                        </Typography>
+                      </Box>
+                      <Button
                         size="small"
-                        clickable
-                        disabled={catalogLoading || selectedCatalogIds.includes(result.id)}
-                        color={selectedCatalogIds.includes(result.id) ? 'primary' : 'default'}
-                        variant={selectedCatalogIds.includes(result.id) ? 'filled' : 'outlined'}
-                        onClick={() => addCatalogMoodboard(result)}
-                      />
-                    </span>
-                  </Tooltip>
+                        variant={selectedCatalogIds.includes(result.id) ? 'contained' : 'outlined'}
+                        disabled={catalogLoading}
+                        onClick={() => selectedCatalogIds.includes(result.id) ? removeCatalogMoodboard(result.id) : addCatalogMoodboard(result)}
+                      >
+                        {selectedCatalogIds.includes(result.id) ? 'Added' : 'Add'}
+                      </Button>
+                    </Stack>
+                  </Box>
                 ))}
               </Stack>
             )}
@@ -261,7 +341,7 @@ export default function MoodboardSection() {
                 </IconButton>
               </Box>
             ))}
-            <Tooltip title="Add reference image(s) to the board">
+            <Tooltip title="Optional: upload reference images only when you want stronger visual pull than style text guidance.">
               <IconButton onClick={() => fileRef.current?.click()}
                 sx={{ width: 56, height: 56, border: '1px dashed rgba(202,196,208,0.4)', borderRadius: 1 }}>
                 <AddPhotoAlternateIcon fontSize="small" />

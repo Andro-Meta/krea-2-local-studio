@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Button, IconButton, MenuItem, Stack, TextField, Typography } from '@mui/material'
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Button, IconButton, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import DeleteIcon from '@mui/icons-material/Delete'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { apiFetch, type PromptRecipe } from '../../api'
 import { useStore } from '../../store'
 
@@ -76,20 +77,45 @@ export default function RecipeSection() {
   return (
     <Accordion disableGutters>
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Typography variant="subtitle2">Prompt, LoRA, Moodboard Recipes</Typography>
+        <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center' }}>
+          Prompt, LoRA, Moodboard Recipes
+          <Tooltip title="Recipes are reusable presets. They save the current prompt, negative prompt, LoRAs, selected moodboards, style references, regional prompts, seed variance, enhancer, and rebalance settings.">
+            <InfoOutlinedIcon sx={{ fontSize: 15, color: 'text.disabled', ml: 0.75 }} />
+          </Tooltip>
+        </Typography>
       </AccordionSummary>
       <AccordionDetails>
         <Stack spacing={1.5}>
+          <Alert severity="info" sx={{ py: 0.75 }}>
+            Save the current setup as a reusable recipe after you have a prompt or moodboard stack you like. Apply restores the saved settings into this panel.
+          </Alert>
           {notice ? <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert> : null}
-          <TextField label="Recipe name" value={name} onChange={e => setName(e.target.value)} size="small" fullWidth />
-          <Button variant="outlined" onClick={save} disabled={!params.prompt.trim()}>Save current recipe</Button>
+          <TextField
+            label="Recipe name"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            size="small"
+            fullWidth
+            helperText={params.prompt.trim() ? 'Optional. Empty uses the first part of your prompt.' : 'Add a prompt before saving a recipe.'}
+          />
+          <Tooltip title={!params.prompt.trim() ? 'Recipes need at least prompt text to save.' : 'Save the current prompt and advanced style setup.'}>
+            <span>
+              <Button variant="outlined" onClick={save} disabled={!params.prompt.trim()} fullWidth>
+                Save current recipe
+              </Button>
+            </span>
+          </Tooltip>
           <Stack direction="row" spacing={1} alignItems="center">
             <TextField select label="Saved recipes" value={selected} onChange={e => setSelected(e.target.value)} size="small" fullWidth>
-              <MenuItem value="">Choose recipe</MenuItem>
+              <MenuItem value="">{recipes.length ? 'Choose recipe' : 'No saved recipes yet'}</MenuItem>
               {recipes.map(recipe => <MenuItem key={recipe.id} value={recipe.id}>{recipe.name}</MenuItem>)}
             </TextField>
-            <Button variant="contained" onClick={apply} disabled={!selected}>Apply</Button>
-            <IconButton onClick={remove} disabled={!selected}><DeleteIcon /></IconButton>
+            <Tooltip title={!selected ? 'Choose a saved recipe first.' : 'Apply this saved setup to the current generation panel.'}>
+              <span><Button variant="contained" onClick={apply} disabled={!selected}>Apply</Button></span>
+            </Tooltip>
+            <Tooltip title={!selected ? 'Choose a saved recipe first.' : 'Delete this saved recipe.'}>
+              <span><IconButton onClick={remove} disabled={!selected}><DeleteIcon /></IconButton></span>
+            </Tooltip>
           </Stack>
           <Typography variant="caption" color="text.secondary">
             Recipes restore prompt text, negatives, LoRAs, moodboards, style refs, regional prompts, seed variance, enhancer, and rebalance preset.

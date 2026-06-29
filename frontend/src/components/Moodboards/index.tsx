@@ -67,6 +67,7 @@ export default function MoodboardsPanel() {
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
+  const [loadError, setLoadError] = useState('')
   const [auth, setAuth] = useState<AuthSession | null>(null)
   const [mashupIds, setMashupIds] = useState<number[]>([])
   const [mashupWeights, setMashupWeights] = useState<Record<number, number>>({})
@@ -76,6 +77,7 @@ export default function MoodboardsPanel() {
 
   const load = useCallback(async (pg = 1) => {
     setLoading(true)
+    setLoadError('')
     try {
       if (moodboardView === 'new') {
         const discovery = await apiFetch.latestMoodboardDiscovery()
@@ -103,7 +105,9 @@ export default function MoodboardsPanel() {
       setTotal(data.total)
       setPage(pg)
     } catch (e: any) {
-      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not load moodboards') })
+      const detail = moodboardErrorMessage(e, 'Could not load moodboards')
+      setLoadError(detail)
+      setMessage({ severity: 'error', text: detail })
     } finally {
       setLoading(false)
     }
@@ -410,6 +414,19 @@ export default function MoodboardsPanel() {
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
             <CircularProgress />
           </Box>
+        ) : loadError ? (
+          <Box sx={{ textAlign: 'center', py: 8, maxWidth: 720, mx: 'auto' }}>
+            <Alert severity="error" sx={{ textAlign: 'left', mb: 2 }}>
+              Moodboard catalog failed to load: {loadError}
+            </Alert>
+            <Typography sx={{ color: 'text.secondary', mb: 2 }}>
+              This does not mean your local catalog was deleted. The official Krea moodboards are stored in the local database and can be retried without syncing.
+            </Typography>
+            <Stack direction="row" spacing={1} justifyContent="center">
+              <Button variant="contained" onClick={() => load(1)}>Retry local catalog</Button>
+              {isAdmin && <Button variant="outlined" onClick={refreshCatalog}>Sync Krea</Button>}
+            </Stack>
+          </Box>
         ) : items.length === 0 ? (
           <Box sx={{ textAlign: 'center', py: 8 }}>
             <Typography sx={{ color: 'text.secondary' }}>
@@ -417,7 +434,9 @@ export default function MoodboardsPanel() {
                 ? 'No new moodboards have been discovered yet.'
                 : moodboardView === 'custom'
                   ? 'No custom moodboards yet. Click Create custom and choose reference images.'
-                  : 'No moodboards yet. Click Sync Krea or import a moodboard URL.'}
+                  : query.trim()
+                    ? 'No moodboards matched that search. Clear the search or try a broader style word.'
+                    : 'No moodboards are visible in this view. Try Retry local catalog; admins can use Sync Krea only to refresh from Krea.'}
             </Typography>
           </Box>
         ) : (
@@ -485,7 +504,7 @@ export default function MoodboardsPanel() {
                           Qwen guidance
                         </Button>
                       </Stack>
-                      <Button startIcon={<AutoAwesomeIcon />} variant="contained" onClick={() => useMoodboard(board)} disabled={!!busy || !(board.image_urls.length || board.primary_image_url)}>
+                      <Button startIcon={<AutoAwesomeIcon />} variant="contained" onClick={() => useMoodboard(board)} disabled={!!busy}>
                         Use moodboard
                       </Button>
                     </CardContent>
