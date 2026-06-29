@@ -71,10 +71,6 @@ export function useRealtimePreview() {
 
   const previewNow = useCallback(async () => {
     if (paused) return
-    const previous = latestJobRef.current
-    if (previous) {
-      apiFetch.cancelRealtimePreview(previous).catch(() => undefined)
-    }
     setRealtimePreview({ status: 'queued', error: null, progress: 0 })
     try {
       const canvasB64 = await documentToPngB64(document)

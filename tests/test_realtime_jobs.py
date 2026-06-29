@@ -60,6 +60,17 @@ class RealtimePreviewRegistryTests(unittest.TestCase):
         registry.update(second["job_id"], status="running")
         self.assertTrue(registry.busy())
 
+    def test_cancelled_running_job_still_counts_busy_until_finished(self) -> None:
+        registry = RealtimePreviewRegistry(max_jobs=10)
+        job = registry.create("session-a")
+        registry.mark_started(job["job_id"])
+
+        registry.cancel(job["job_id"])
+        self.assertTrue(registry.busy())
+
+        registry.mark_finished(job["job_id"])
+        self.assertFalse(registry.busy())
+
     def test_pending_slot_keeps_only_latest_frame_per_session(self) -> None:
         registry = RealtimePreviewRegistry(max_jobs=10)
         running = registry.create("session-a")

@@ -746,7 +746,7 @@ async def realtime_preview_cancel(job_id: str):
 
 
 async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, session_id: str):
-    realtime_previews.update(job_id, status="running", progress=1)
+    realtime_previews.mark_started(job_id)
     loop = asyncio.get_event_loop()
 
     def progress_cb(step: int, total: int):
@@ -782,6 +782,7 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
         logger.exception("Realtime preview failed")
         realtime_previews.fail(job_id, str(e))
     finally:
+        realtime_previews.mark_finished(job_id)
         pending = realtime_previews.pop_pending(session_id)
         if pending is not None:
             asyncio.create_task(_run_realtime_preview(pending["job"]["job_id"], pending["payload"], session_id))

@@ -28,7 +28,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import AddLinkIcon from '@mui/icons-material/AddLink'
 import DeleteIcon from '@mui/icons-material/Delete'
 import SaveAltIcon from '@mui/icons-material/SaveAlt'
-import { apiFetch, type MoodboardItem } from '../../api'
+import { apiFetch, type AuthSession, type MoodboardItem } from '../../api'
 import { useStore } from '../../store'
 
 const PAGE_SIZE = 48
@@ -71,10 +71,12 @@ export default function MoodboardsPanel() {
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
+  const [auth, setAuth] = useState<AuthSession | null>(null)
   const [mashupIds, setMashupIds] = useState<number[]>([])
   const [mashupWeights, setMashupWeights] = useState<Record<number, number>>({})
   const customFileRef = useRef<HTMLInputElement>(null)
   const { params, setParams, setTab, moodboardView, setMoodboardView } = useStore()
+  const isAdmin = auth?.role === 'admin'
 
   const load = useCallback(async (pg = 1) => {
     setLoading(true)
@@ -112,6 +114,9 @@ export default function MoodboardsPanel() {
   }, [moodboardView, query])
 
   useEffect(() => { load(1) }, [load])
+  useEffect(() => {
+    apiFetch.authMe().then(setAuth).catch(() => setAuth(null))
+  }, [])
 
   const toggleFavorite = async (board: MoodboardItem) => {
     await apiFetch.setMoodboardFavorite(board.id, !board.favorite)
@@ -325,26 +330,30 @@ export default function MoodboardsPanel() {
               Search public Krea moodboards, save favorites, and load up to {MAX_LOCAL_MOODBOARD_REFS} reference images into local txt2img Qwen conditioning.
             </Typography>
           </Box>
-          <Stack direction="row" spacing={1}>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Button variant="outlined" onClick={createMashup} disabled={!!busy || mashupIds.length < 2}>
               Create mashup{mashupIds.length ? ` (${mashupIds.length})` : ''}
-            </Button>
-            <Button variant="outlined" onClick={generateMissingGuidance} disabled={!!busy}>
-              Generate missing guidance
             </Button>
             <Button variant="contained" onClick={() => customFileRef.current?.click()} disabled={!!busy}>
               Create custom
             </Button>
             <input ref={customFileRef} type="file" accept="image/*" multiple hidden onChange={createCustomMoodboard} />
-            <Button variant="outlined" startIcon={<AddLinkIcon />} onClick={importUrls} disabled={!!busy}>
-              Import URLs
-            </Button>
-            <Button variant="outlined" startIcon={<SaveAltIcon />} onClick={exportSeed} disabled={!!busy}>
-              Export seed
-            </Button>
-            <Button variant="contained" startIcon={busy ? <CircularProgress size={16} /> : <RefreshIcon />} onClick={refreshCatalog} disabled={!!busy}>
-              Sync Krea
-            </Button>
+            {isAdmin && (
+              <>
+                <Button variant="outlined" onClick={generateMissingGuidance} disabled={!!busy}>
+                  Generate missing guidance
+                </Button>
+                <Button variant="outlined" startIcon={<AddLinkIcon />} onClick={importUrls} disabled={!!busy}>
+                  Import URLs
+                </Button>
+                <Button variant="outlined" startIcon={<SaveAltIcon />} onClick={exportSeed} disabled={!!busy}>
+                  Export seed
+                </Button>
+                <Button variant="contained" startIcon={busy ? <CircularProgress size={16} /> : <RefreshIcon />} onClick={refreshCatalog} disabled={!!busy}>
+                  Sync Krea
+                </Button>
+              </>
+            )}
           </Stack>
         </Stack>
 
@@ -392,7 +401,7 @@ export default function MoodboardsPanel() {
               startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>,
             }}
           />
-          <Tabs value={moodboardView} onChange={(_, v) => setMoodboardView(v)} sx={{ minWidth: 360 }}>
+          <Tabs value={moodboardView} onChange={(_, v) => setMoodboardView(v)} variant="scrollable" scrollButtons="auto" sx={{ minWidth: { xs: 0, sm: 360 }, maxWidth: '100%' }}>
             <Tab label="Official" value="official" />
             <Tab label="Favorites" value="favorites" />
             <Tab label="Custom" value="custom" />

@@ -5,7 +5,7 @@ import { useStore } from '../../store'
 const PROFILES = [
   {
     id: 'krea_turbo', label: 'Krea Turbo',
-    desc: 'Euler/simple · 8 steps · CFG 1 · fp8 · fastest Krea profile',
+    desc: 'Euler/simple · 8 steps · CFG 0 · fp8 · fastest Krea profile',
     enabled: true,
   },
   {
@@ -51,13 +51,13 @@ export default function ModelSection() {
         model_profile: profileId,
         checkpoint: 'turbo',
         steps: 8,
-        cfg: 1.0,
+        cfg: 0.0,
         mu: 1.15,            // pinned shift; Turbo is frozen to 1024 — never scale by resolution
         quantization: 'fp8',
         sampler: 'euler',
         scheduler: 'simple',
         conditioning_mode: 'auto',
-        negative_prompt: '', // LLM-conditioned model: negatives are unused at CFG 1
+        negative_prompt: '', // Turbo is distilled: keep CFG at 0 and negatives empty
       })
     }
     if (profileId === 'krea_raw') {

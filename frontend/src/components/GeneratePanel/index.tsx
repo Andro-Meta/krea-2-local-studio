@@ -26,6 +26,11 @@ export default function GeneratePanel() {
   const wsRef = useRef<WebSocket | null>(null)
   const [modelLoading, setModelLoading] = useState(false)
 
+  useEffect(() => () => {
+    wsRef.current?.close()
+    wsRef.current = null
+  }, [])
+
   // Poll model status every 5s
   useEffect(() => {
     const check = () =>
@@ -138,6 +143,7 @@ export default function GeneratePanel() {
         return
       }
 
+      wsRef.current?.close()
       wsRef.current = connectWS(job_id, (data: any) => {
         if (data.type === 'init' || data.type === 'queue') {
           setQueue(data.queue_position ?? null, data.queue_length ?? null)

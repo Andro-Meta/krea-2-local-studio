@@ -19,6 +19,7 @@ class RealtimePreviewRegistry:
         self._jobs: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._latest_revision: dict[str, int] = {}
         self._pending_payloads: dict[str, dict[str, Any]] = {}
+        self._inflight: set[str] = set()
 
     def create(self, session_id: str) -> dict[str, Any]:
         revision = self._latest_revision.get(session_id, 0) + 1
@@ -57,7 +58,14 @@ class RealtimePreviewRegistry:
         return self.update(job_id, status="cancelled", progress=100)
 
     def busy(self) -> bool:
-        return any(job.get("status") in {"queued", "running"} for job in self._jobs.values())
+        return bool(self._inflight) or any(job.get("status") in {"queued", "running"} for job in self._jobs.values())
+
+    def mark_started(self, job_id: str) -> bool:
+        self._inflight.add(job_id)
+        return self.update(job_id, status="running", progress=1)
+
+    def mark_finished(self, job_id: str) -> None:
+        self._inflight.discard(job_id)
 
     def create_pending(self, session_id: str, payload: Any) -> dict[str, Any]:
         previous = self._pending_payloads.get(session_id)
