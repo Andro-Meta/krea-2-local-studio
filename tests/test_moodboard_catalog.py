@@ -161,6 +161,51 @@ class MoodboardCatalogTests(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_seed_export_import_preserves_qwen_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source_db = Path(td) / "source.db"
+            target_db = Path(td) / "target.db"
+            seed_path = Path(td) / "krea_moodboards_seed.json"
+
+            async def run() -> tuple[dict, dict]:
+                await init_moodboard_db(source_db)
+                board_id = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        slug="gritty-cinematic-realism-4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        uuid="4e938f5c-ff17-539b-bdb2-ad7884cdb369",
+                        title="Gritty Cinematic Realism",
+                        taste_profile="Somber urban documentary suspense.",
+                        keywords=["cinematic realism"],
+                        primary_image_url="https://optim-images.krea.ai/primary.webp",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    source_db,
+                )
+                await set_moodboard_qwen_guidance(
+                    board_id,
+                    {
+                        "prompt_guidance": "Use gritty cinematic realism.",
+                        "negative_guidance": "Avoid clean studio shine.",
+                        "style_axes": ["grain", "moody"],
+                        "conditioning_notes": ["texture first"],
+                        "source_summary": "summary",
+                        "guidance_version": 1,
+                    },
+                    db_path=source_db,
+                )
+                await export_moodboard_seed(seed_path, db_path=source_db)
+                await init_moodboard_db(target_db)
+                await import_moodboard_seed(seed_path, db_path=target_db)
+                original = (await list_moodboards(db_path=source_db))["items"][0]
+                imported = (await list_moodboards(db_path=target_db))["items"][0]
+                return original, imported
+
+            original, imported = asyncio.run(run())
+            self.assertEqual(imported["qwen_guidance"], original["qwen_guidance"])
+            self.assertEqual(imported["qwen_guidance"]["prompt_guidance"], "Use gritty cinematic realism.")
+
     def test_import_reports_new_moodboards_and_records_latest_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "catalog.db"

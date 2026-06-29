@@ -94,6 +94,23 @@ class MoodboardEnrichmentTests(unittest.TestCase):
         self.assertIn("cyber-noir", guidance["keywords"])
         self.assertIn("Images: 1", guidance["prompt_guidance"])
 
+    def test_invalid_qwen_response_falls_back_to_structured_guidance(self) -> None:
+        source = MoodboardSource(
+            title="Gritty Cinematic Realism",
+            taste_profile="Somber urban documentary suspense.",
+            keywords=["cinematic realism", "tactile texture"],
+        )
+
+        guidance = generate_moodboard_guidance(
+            [source],
+            mode="official",
+            generator=lambda _prompt, _images: "not json at all",
+        )
+
+        self.assertIn("Gritty Cinematic Realism", guidance["prompt_guidance"])
+        self.assertIn("cinematic realism", guidance["style_axes"])
+        self.assertEqual(guidance["guidance_backend"], "heuristic_fallback")
+
 
 if __name__ == "__main__":
     unittest.main()

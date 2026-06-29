@@ -1000,7 +1000,7 @@ async def latest_moodboard_discovery(db_path: Path = DB_PATH) -> dict:
 
 
 def _seed_item_from_catalog_item(item: dict) -> dict:
-    return {
+    seed = {
         "url": item["url"],
         "slug": item["slug"],
         "uuid": item.get("uuid", ""),
@@ -1011,6 +1011,11 @@ def _seed_item_from_catalog_item(item: dict) -> dict:
         "image_urls": item.get("image_urls", []),
         "related_urls": item.get("related_urls", []),
     }
+    if item.get("qwen_guidance"):
+        seed["qwen_guidance"] = item.get("qwen_guidance")
+        seed["qwen_guidance_at"] = item.get("qwen_guidance_at", "")
+        seed["qwen_guidance_version"] = int(item.get("qwen_guidance_version") or 0)
+    return seed
 
 
 async def export_moodboard_seed(seed_path: Path = MOODBOARD_SEED_PATH, *, db_path: Path = DB_PATH) -> int:
@@ -1042,7 +1047,10 @@ async def import_moodboard_seed(seed_path: Path = MOODBOARD_SEED_PATH, *, db_pat
         record = _record_from_seed_item(item)
         if not is_allowed_krea_moodboard_url(record.url):
             continue
-        await upsert_moodboard(record, db_path)
+        board_id = await upsert_moodboard(record, db_path)
+        guidance = item.get("qwen_guidance")
+        if isinstance(guidance, dict) and guidance.get("prompt_guidance"):
+            await set_moodboard_qwen_guidance(board_id, guidance, db_path=db_path)
         imported += 1
     return imported
 

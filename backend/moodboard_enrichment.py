@@ -111,6 +111,45 @@ def build_moodboard_guidance_prompt(sources: list[MoodboardSource], mode: Guidan
     )
 
 
+def _fallback_guidance(sources: list[MoodboardSource], mode: GuidanceMode) -> dict:
+    titles = [source.title for source in sources if source.title]
+    tastes = [source.taste_profile for source in sources if source.taste_profile]
+    keywords: list[str] = []
+    for source in sources:
+        for keyword in source.keywords:
+            if keyword and keyword not in keywords:
+                keywords.append(keyword)
+    title_text = ", ".join(titles[:4])
+    taste_text = " ".join(tastes[:4])
+    keyword_text = ", ".join(keywords[:16])
+    prompt_guidance = ". ".join(
+        part for part in [
+            f"Use the moodboard direction from {title_text}" if title_text else "",
+            taste_text,
+            f"Emphasize: {keyword_text}" if keyword_text else "",
+        ] if part
+    ).strip()
+    if not prompt_guidance:
+        prompt_guidance = "Use the uploaded moodboard references as visual style, palette, lighting, and texture guidance."
+    guidance = {
+        "prompt_guidance": prompt_guidance,
+        "negative_guidance": "Avoid generic styling, mismatched lighting, visual clutter, and off-theme details.",
+        "style_axes": keywords[:12] or ["moodboard style", "palette", "lighting", "texture"],
+        "conditioning_notes": [
+            "Use reference images for palette, lighting, surface texture, and composition mood.",
+            "Keep the user prompt subject primary while applying moodboard style as art direction.",
+        ],
+        "source_summary": f"Fallback guidance synthesized from {len(sources)} moodboard source(s).",
+        "guidance_version": GUIDANCE_VERSION,
+        "guidance_backend": "heuristic_fallback",
+    }
+    if mode in {"custom", "mashup"}:
+        guidance["title"] = titles[0] if titles else "Custom Moodboard"
+        guidance["taste_profile"] = taste_text or prompt_guidance
+        guidance["keywords"] = keywords[:12]
+    return guidance
+
+
 def _local_qwen_generate(prompt: str, image_b64s: list[str]) -> str:
     from prompt_expander import _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen, _strip_data_url
 
@@ -161,4 +200,9 @@ def generate_moodboard_guidance(
     for source in sources:
         images.extend([image for image in source.image_b64s if image])
     response = (generator or _local_qwen_generate)(prompt, images[:10])
-    return parse_qwen_guidance_json(response, allow_catalog_metadata=mode in {"custom", "mashup"})
+    try:
+        guidance = parse_qwen_guidance_json(response, allow_catalog_metadata=mode in {"custom", "mashup"})
+        guidance.setdefault("guidance_backend", "qwen")
+        return guidance
+    except ValueError:
+        return _fallback_guidance(sources, mode)
