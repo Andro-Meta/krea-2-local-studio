@@ -635,11 +635,15 @@ export const apiFetch = {
     ).then(r => r.data),
 }
 
-export function connectWS(jobId: string, onMessage: (data: unknown) => void): WebSocket {
+export function connectWS(jobId: string, onMessage: (data: unknown) => void, onClose?: () => void): WebSocket {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const host = window.location.host
   const ws = new WebSocket(`${proto}://${host}${publicBasePath()}/ws/${jobId}`)
   ws.onmessage = e => onMessage(JSON.parse(e.data))
+  if (onClose) {
+    ws.onclose = onClose
+    ws.onerror = onClose
+  }
   return ws
 }
 
