@@ -4,7 +4,10 @@ import sys
 import unittest
 from pathlib import Path
 
-import torch
+try:
+    import torch
+except ImportError as exc:  # pragma: no cover - exercised by lightweight CI
+    raise unittest.SkipTest("torch is not installed in the lightweight CI environment") from exc
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
