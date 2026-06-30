@@ -1,9 +1,7 @@
-import { Alert, Box, Button, Snackbar, Tabs, Tab } from '@mui/material'
-import { useEffect, useState } from 'react'
+import { Alert, Box, Button, CircularProgress, Snackbar, Tabs, Tab } from '@mui/material'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import Layout from './components/Layout'
 import GeneratePanel from './components/GeneratePanel'
-import GalleryPanel from './components/Gallery'
-import MoodboardsPanel from './components/Moodboards'
 import SystemStatus from './components/SystemStatus'
 import RedrawStudio from './components/RedrawStudio'
 import RealtimeStudio from './components/RealtimeStudio'
@@ -12,6 +10,16 @@ import { useStore } from './store'
 import { apiFetch, type MoodboardDiscovery } from './api'
 
 const SEEN_MOODBOARD_DISCOVERY_KEY = 'krea2_seen_moodboard_discovery_id'
+const GalleryPanel = lazy(() => import('./components/Gallery'))
+const MoodboardsPanel = lazy(() => import('./components/Moodboards'))
+
+function LazyTabFallback() {
+  return (
+    <Box sx={{ display: 'grid', placeItems: 'center', minHeight: 280 }}>
+      <CircularProgress size={28} />
+    </Box>
+  )
+}
 
 export default function App() {
   const { tab, lightbox, params, setParam, setParams, setTab, setMoodboardView, createMode, setCreateMode } = useStore()
@@ -108,8 +116,16 @@ export default function App() {
   return (
     <Layout>
       {tab === 0 && renderCreate()}
-      {tab === 1 && <GalleryPanel />}
-      {tab === 2 && <MoodboardsPanel />}
+      {tab === 1 && (
+        <Suspense fallback={<LazyTabFallback />}>
+          <GalleryPanel />
+        </Suspense>
+      )}
+      {tab === 2 && (
+        <Suspense fallback={<LazyTabFallback />}>
+          <MoodboardsPanel />
+        </Suspense>
+      )}
       {tab === 3 && <SystemStatus />}
       {lightbox && <Lightbox />}
       <Snackbar open={!!moodboardToast} autoHideDuration={8000} onClose={() => setMoodboardToast(null)}>
