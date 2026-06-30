@@ -1527,7 +1527,8 @@ async def upscale(req: UpscaleRequest):
         result = await loop.run_in_executor(
             None, lambda: upscale_tiled_vae(
                 img, pipeline.ae,
-                device=pipeline._device, dtype=pipeline._dtype
+                device=pipeline._device, dtype=pipeline._dtype,
+                scale=req.upscale_by,
             )
         )
     elif req.method == "model_refine":

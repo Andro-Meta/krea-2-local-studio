@@ -32,6 +32,36 @@ class FakePipeline:
         return ([_image_b64((req.width, req.height))], 42, [], [], [{"seed": 42}])
 
 
+class FakeDecoded:
+    def __init__(self, sample):
+        self.sample = sample
+
+
+class FakeInnerVae:
+    def enable_tiling(self) -> None:
+        pass
+
+    def decode(self, latent):
+        import torch
+
+        b, _c, _t, h, w = latent.shape
+        return FakeDecoded(torch.zeros((b, 3, 1, h * 8, w * 8), device=latent.device, dtype=latent.dtype))
+
+
+class FakeAe:
+    latents_std = 1.0
+    latents_mean = 0.0
+
+    def __init__(self) -> None:
+        self.ae = FakeInnerVae()
+
+    def encode(self, tensor):
+        import torch
+
+        b, _c, h, w = tensor.shape
+        return torch.zeros((b, 16, h // 8, w // 8), device=tensor.device, dtype=tensor.dtype)
+
+
 class UltimateUpscaleTests(unittest.TestCase):
     def test_linear_tile_rects_cover_image(self) -> None:
         rects = ultimate_tile_rects(2300, 1400, tile=1024, mode="linear", seam_mode="none")
@@ -76,6 +106,16 @@ class UltimateUpscaleTests(unittest.TestCase):
         )
 
         self.assertEqual(result.size, (64, 64))
+
+    @unittest.skipIf(importlib.util.find_spec("torch") is None, "torch is required for tiled VAE upscale tests")
+    def test_tiled_vae_upscale_returns_requested_scale(self) -> None:
+        from upscaler import upscale_tiled_vae
+
+        image = Image.new("RGB", (64, 48), (12, 34, 56))
+
+        result = upscale_tiled_vae(image, FakeAe(), device="cpu", scale=2.0)
+
+        self.assertEqual(result.size, (128, 96))
 
 
 if __name__ == "__main__":

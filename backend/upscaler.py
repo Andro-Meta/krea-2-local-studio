@@ -75,15 +75,20 @@ def upscale_tiled_vae(
     ae,
     device: str = "cuda",
     dtype=BFLOAT16,
+    scale: float = 2.0,
     tile: int = 512,
     overlap: int = 64,
 ) -> Image.Image:
-    """2× upscale via decode_tiled (pixel-perfect, no model needed)."""
+    """Latent-space upscale via tiled VAE decode (no diffusion model needed)."""
     try:
         import numpy as np
+        import torch.nn.functional as F
         arr = (np.array(img.convert("RGB")).astype("float32") / 127.5) - 1.0
         t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
         latent = ae.encode(t)  # normalized 4D (B,C,H,W)
+        scale = max(1.0, float(scale or 2.0))
+        if scale != 1.0:
+            latent = F.interpolate(latent.float(), scale_factor=scale, mode="bilinear", align_corners=False).to(dtype)
         # Denormalize + add the video VAE's temporal axis before the raw decode,
         # mirroring QwenAutoencoder.decode (the raw VAE doesn't apply latents_*).
         x = latent.float() * ae.latents_std + ae.latents_mean
@@ -95,9 +100,10 @@ def upscale_tiled_vae(
         pixel = ((decoded + 1.0) / 2.0 * 255).byte().permute(1, 2, 0).cpu().numpy()
         return Image.fromarray(pixel)
     except Exception as e:
-        logger.warning(f"Tiled VAE upscale failed ({e}); falling back to bicubic 2×")
+        logger.warning(f"Tiled VAE upscale failed ({e}); falling back to bicubic {scale:g}×")
         w, h = img.size
-        return img.resize((w * 2, h * 2), Image.LANCZOS)
+        scale = max(1.0, float(scale or 2.0))
+        return img.resize((int(round(w * scale)), int(round(h * scale))), Image.LANCZOS)
 
 
 def upscale_model_refine(
