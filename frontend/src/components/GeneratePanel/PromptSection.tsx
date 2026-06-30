@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Alert, Box, Button, Checkbox, CircularProgress, Collapse, FormControlLabel, IconButton, MenuItem, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
+import { Alert, Box, Button, Checkbox, CircularProgress, Collapse, FormControlLabel, MenuItem, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
 import TipsAndUpdatesIcon from '@mui/icons-material/TipsAndUpdates'
 import { useStore } from '../../store'
