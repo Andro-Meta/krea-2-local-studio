@@ -70,17 +70,17 @@ export default function PromptSection() {
       setParam('mu', 1.15)
       setParam('sampler', result.sampler.sampler as typeof params.sampler)
       setParam('scheduler', result.sampler.scheduler as typeof params.scheduler)
-      setParam('use_prompt_expander', true)
+      setParam('use_prompt_expander', result.use_prompt_expander ?? false)
       setParam('negative_prompt', '')
       setParam('loras', [
         ...params.loras.filter(lora => lora.name !== result.lora.name),
-        { name: result.lora.name, filename: result.lora.filename, strength: result.lora.strength, enabled: true, block_filter: 'style_safe' },
+        { name: result.lora.name, filename: result.lora.filename, strength: result.lora.strength, enabled: true, block_filter: result.lora.block_filter ?? 'late' },
       ])
       const skipped = result.assets.filter(asset => asset.skipped).length
-      const notes = result.warnings.length ? ` Notes: ${result.warnings.join(' ')}` : ''
+      const notes = [result.benchmark_note, ...result.warnings].filter(Boolean).join(' ')
       setNotice({
         severity: 'success',
-        message: `Xperiment Settings applied. ${skipped}/${result.assets.length} assets were already installed.${notes}`,
+        message: `Xperiment Settings applied. ${skipped}/${result.assets.length} assets were already installed.${notes ? ` Notes: ${notes}` : ''}`,
       })
     } catch (err: any) {
       const status = err?.response?.status
@@ -103,7 +103,7 @@ export default function PromptSection() {
           <Box>
             <Typography variant="subtitle2">Xperiment Settings</Typography>
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-              One-click Pastebin-style Krea2 Turbo setup: assets, Wan VAE override, 8 steps, CFG 1, beta57, and Realism LoRA at 0.6.
+              One-click Krea2 Turbo setup: assets, Wan VAE override, 6 steps, CFG 0, beta57, and Realism LoKr late@0.55.
             </Typography>
           </Box>
           <Button

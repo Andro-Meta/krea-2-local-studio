@@ -1792,12 +1792,15 @@ async def xperiment_setup_endpoint():
         "ok": True,
         "assets": results,
         "vae_path": str(wan_vae),
-        "lora": {"name": "Krea2-realism-V1", "filename": "Krea2-realism-V1.safetensors", "strength": 0.6},
-        "sampler": {"sampler": "er_sde", "scheduler": "beta57", "steps": 8, "cfg": 1.0},
+        "lora": {"name": "Krea2-realism-V1", "filename": "Krea2-realism-V1.safetensors", "strength": 0.55, "block_filter": "late"},
+        "sampler": {"sampler": "er_sde", "scheduler": "beta57", "steps": 6, "cfg": 0.0},
+        "use_prompt_expander": False,
+        "benchmark_note": "Verified on RTX 4090: 1024px, er_sde/beta57, 6 steps, CFG 0, Realism LoKr late@0.55 completed in ~10s with good prompt adherence.",
         "manual_only": [bypass],
         "warnings": [
             "Exact ClownsharKSampler_Beta is a Comfy/RES4LYF node; native Krea Studio applies the closest safe native mapping: er_sde + beta57.",
             "krea2filterbypass3 is manual-only and not auto-downloaded.",
+            "GGUF Q3/Q4 tests were fast at 512px but did not preserve prompt accuracy, so native PyTorch remains the Xperiment default.",
         ],
     }
 
@@ -2144,8 +2147,9 @@ async def gguf_benchmark_quick_endpoint():
         "seed": seed,
         "filenames": filenames,
         "output": metadata[0]["filename"] if metadata else "",
-        "live_candidate": elapsed <= 30.0,
-        "message": "GGUF 512/4 txt2img benchmark passed; Realtime Studio redraw remains gated because the sidecar path is txt2img-only.",
+        "live_candidate": False,
+        "speed_candidate": elapsed <= 30.0,
+        "message": "GGUF 512/4 speed benchmark completed, but visual prompt-adherence sweep did not meet native quality. Keep GGUF experimental and txt2img-only.",
     }
 
 

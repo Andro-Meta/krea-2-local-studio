@@ -63,8 +63,9 @@ def main() -> int:
         "seed": seed,
         "filenames": filenames,
         "output": metadata[0]["filename"] if metadata else "",
-        "live_candidate": elapsed <= 30.0,
-        "message": "GGUF 512/4 txt2img benchmark passed; Realtime Studio redraw remains gated because the sidecar path is txt2img-only.",
+        "live_candidate": False,
+        "speed_candidate": elapsed <= 30.0,
+        "message": "GGUF 512/4 speed benchmark completed, but visual prompt-adherence sweep did not meet native quality. Keep GGUF experimental and txt2img-only.",
     }))
     return 0
 

@@ -426,6 +426,28 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertFalse(status["download_enabled"])
         self.assertIn("safety", status["disabled_reason"].lower())
 
+    def test_xperiment_setup_returns_measured_fast_defaults(self) -> None:
+        from fastapi.testclient import TestClient
+        import main
+        import quality_assets
+
+        def fake_installed(spec):
+            return True
+
+        with (
+            patch.object(quality_assets, "asset_installed", side_effect=fake_installed),
+            TestClient(main.app) as client,
+        ):
+            response = client.post("/api/xperiment/setup")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["sampler"], {"sampler": "er_sde", "scheduler": "beta57", "steps": 6, "cfg": 0.0})
+        self.assertEqual(data["lora"]["strength"], 0.55)
+        self.assertEqual(data["lora"]["block_filter"], "late")
+        self.assertFalse(data["use_prompt_expander"])
+        self.assertIn("1024px", data["benchmark_note"])
+
     def test_gguf_low_vram_setup_skips_installed_assets_and_sets_paths(self) -> None:
         from fastapi.testclient import TestClient
         import gguf_runtime_installer

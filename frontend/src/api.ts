@@ -440,8 +440,10 @@ export interface XperimentSetupResult {
   ok: boolean
   assets: Array<{ id: string; path: string; skipped: boolean; item: QualityAsset }>
   vae_path: string
-  lora: { name: string; filename: string; strength: number }
+  lora: { name: string; filename: string; strength: number; block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom' }
   sampler: { sampler: string; scheduler: string; steps: number; cfg: number }
+  use_prompt_expander?: boolean
+  benchmark_note?: string
   manual_only: QualityAsset[]
   warnings: string[]
 }
