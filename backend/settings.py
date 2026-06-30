@@ -25,6 +25,7 @@ class AppSettings(BaseSettings):
     prompt_expander_backend: str = "local"  # local | openrouter | ideogram-json
     local_llm_backend: str = "transformers"  # transformers | gguf_server
     local_qwen_model_id: str = ""  # optional Transformers repo/path override for local prompt expansion
+    local_qwen_device: str = "auto"  # auto | cuda | cpu; auto avoids CUDA when VRAM is tight
     gguf_helper_base_url: str = "http://127.0.0.1:1234/v1"
     gguf_helper_model: str = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M"
     gguf_helper_timeout_sec: int = 120

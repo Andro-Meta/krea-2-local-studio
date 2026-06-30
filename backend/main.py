@@ -29,6 +29,7 @@ _BACKEND = Path(__file__).parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+from crash_reporter import clear_generation_breadcrumb, enable_fault_logging, stale_generation_breadcrumbs, write_generation_breadcrumb
 from gallery import delete_image, get_gallery, get_image_record_by_filename, init_db, save_image, set_favorite
 from generation_queue import GenerationQueue
 from inference import pipeline
@@ -550,6 +551,11 @@ realtime_previews = RealtimePreviewRegistry(max_jobs=64)
 @app.on_event("startup")
 async def startup():
     global generation_queue
+    fault_path = enable_fault_logging(LOGS_DIR)
+    stale = stale_generation_breadcrumbs(LOGS_DIR)
+    if stale:
+        logger.warning("Found %d stale active generation breadcrumb(s) after previous shutdown/crash: %s", len(stale), stale)
+    logger.info("Python fault handler logging to %s", fault_path)
     await init_db()
     await init_moderation_db()
     await init_moodboard_db()
@@ -923,6 +929,13 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
         )
 
     try:
+        write_generation_breadcrumb(
+            LOGS_DIR,
+            job_id=job_id,
+            req=req,
+            stage="generation_start",
+            extra={"username": username, "role": role},
+        )
         if getattr(req, "diffusion_engine", "native_pytorch") == "gguf_external":
             from gguf_diffusion_provider import generate_gguf_external
 
@@ -936,6 +949,7 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             req.krea_enhancer_variant = "off"
             job["edit_provider"] = "gguf_external"
             job["provider_warning"] = "GGUF external engine active: Krea-native LoRAs, style refs, moodboards, regional prompts, rebalance, and enhancer are disabled."
+            write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="gguf_external_start")
             results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
                 None, lambda: generate_gguf_external(req, _gguf_runtime_settings(), progress_cb=progress_cb)
             )
@@ -964,13 +978,30 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
                     req.steps = 50
                 if req.cfg < 30:
                     req.cfg = 30
+                write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="flux_fill_start", extra={"provider": provider.name})
                 results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
                     None, lambda: generate_flux_fill(req, progress_cb=progress_cb)
                 )
             else:
+                write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="native_generation_start", extra={"provider": provider.name})
                 results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
                     None, lambda: pipeline.generate(req, progress_cb=progress_cb)
                 )
+        missing_outputs = [fname for fname in (filenames or []) if fname and not (OUTPUTS_DIR / fname).exists()]
+        write_generation_breadcrumb(
+            LOGS_DIR,
+            job_id=job_id,
+            req=req,
+            stage="generation_returned",
+            extra={
+                "seed": seed,
+                "filenames": filenames,
+                "result_count": len(results or []),
+                "missing_outputs": missing_outputs,
+            },
+        )
+        if missing_outputs:
+            logger.error("Generation job %s returned missing output files: %s", job_id, missing_outputs)
         if role == "child":
             image_decision = moderate_images(_job_images_from_b64(results), role=role)
             if not image_decision.allowed:
@@ -1047,6 +1078,7 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
 
     except Exception as e:
         logger.exception(f"Generation failed for job {job_id}")
+        write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="generation_error", extra={"error": str(e)})
         job["status"] = "error"
         job["error"] = str(e)
         await ws_manager.broadcast(job_id, {"type": "error", "error": str(e)})
@@ -1055,6 +1087,9 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             parent = _refresh_parent_batch_job(str(parent_job_id))
             if parent:
                 await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
+    finally:
+        if job.get("status") in {"done", "blocked", "error"}:
+            clear_generation_breadcrumb(LOGS_DIR, job_id=job_id)
 
 
 @app.get("/api/generate/{job_id}")
@@ -1931,6 +1966,7 @@ async def get_settings():
         "prompt_expander_backend": env.get("PROMPT_EXPANDER_BACKEND", settings.prompt_expander_backend),
         "local_llm_backend": env.get("LOCAL_LLM_BACKEND", settings.local_llm_backend),
         "local_qwen_model_id": env.get("LOCAL_QWEN_MODEL_ID", settings.local_qwen_model_id),
+        "local_qwen_device": env.get("LOCAL_QWEN_DEVICE", settings.local_qwen_device),
         "gguf_helper_base_url": env.get("GGUF_HELPER_BASE_URL", settings.gguf_helper_base_url),
         "gguf_helper_model": env.get("GGUF_HELPER_MODEL", settings.gguf_helper_model),
         "gguf_helper_timeout_sec": int(env.get("GGUF_HELPER_TIMEOUT_SEC", str(settings.gguf_helper_timeout_sec)) or 120),
@@ -1982,6 +2018,9 @@ async def update_settings(req: SettingsUpdate):
     if req.local_qwen_model_id is not None:
         env["LOCAL_QWEN_MODEL_ID"] = req.local_qwen_model_id
         settings.local_qwen_model_id = req.local_qwen_model_id
+    if req.local_qwen_device is not None:
+        env["LOCAL_QWEN_DEVICE"] = req.local_qwen_device
+        settings.local_qwen_device = req.local_qwen_device
     if req.gguf_helper_base_url is not None:
         env["GGUF_HELPER_BASE_URL"] = req.gguf_helper_base_url
         settings.gguf_helper_base_url = req.gguf_helper_base_url

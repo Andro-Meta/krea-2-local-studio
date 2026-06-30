@@ -30,6 +30,7 @@ OPENROUTER_VISION_FALLBACKS = (
 GGUF_HELPER_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
 GGUF_HELPER_DEFAULT_MODEL = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M"
 LOCAL_GGUF_HOSTS = {"127.0.0.1", "localhost", "::1"}
+LOCAL_QWEN_MIN_FREE_VRAM_GB = 12.0
 
 # Verbatim from Krea's official prompt expansion used by the krea.ai API
 # (github.com/krea-ai/krea-2 docs/expansion.txt). Matching it locally closes the
@@ -83,7 +84,7 @@ def _load_local_qwen(model_id: str = ""):
     from support_models import support_model_path
     from settings import settings
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _resolve_local_qwen_device(torch)
     model_path = str(model_id or getattr(settings, "local_qwen_model_id", "") or support_model_path(LOCAL_QWEN_MODEL_ID))
     processor_source = model_path
     if "Huihui-Qwen3-VL-4B-Instruct-abliterated" in model_path:
@@ -97,6 +98,36 @@ def _load_local_qwen(model_id: str = ""):
         low_cpu_mem_usage=True,
     ).eval().to(device)
     return tokenizer, processor, model
+
+
+def _resolve_local_qwen_device(torch_module) -> str:
+    from settings import settings
+
+    requested = str(getattr(settings, "local_qwen_device", "auto") or "auto").lower()
+    if requested == "cpu":
+        logger.info("Local Qwen prompt helper using CPU by setting.")
+        return "cpu"
+    if not torch_module.cuda.is_available():
+        return "cpu"
+    if requested == "cuda":
+        return "cuda"
+    try:
+        free_b, total_b = torch_module.cuda.mem_get_info()
+        free_gb = free_b / (1024 ** 3)
+        total_gb = total_b / (1024 ** 3)
+    except Exception:
+        logger.info("Local Qwen prompt helper using CPU; could not read CUDA memory state.")
+        return "cpu"
+    if free_gb < LOCAL_QWEN_MIN_FREE_VRAM_GB:
+        logger.warning(
+            "Local Qwen prompt helper using CPU because only %.1f/%.1fGB VRAM is free. "
+            "This avoids loading a second Qwen3-VL model beside the active Krea pipeline.",
+            free_gb,
+            total_gb,
+        )
+        return "cpu"
+    logger.info("Local Qwen prompt helper using CUDA (%.1f/%.1fGB VRAM free).", free_gb, total_gb)
+    return "cuda"
 
 
 def _strip_data_url(image_b64: str) -> str:

@@ -443,6 +443,7 @@ class SettingsUpdate(BaseModel):
     prompt_expander_backend: Optional[str] = None
     local_llm_backend: Optional[Literal["transformers", "gguf_server"]] = None
     local_qwen_model_id: Optional[str] = None
+    local_qwen_device: Optional[Literal["auto", "cuda", "cpu"]] = None
     gguf_helper_base_url: Optional[str] = None
     gguf_helper_model: Optional[str] = None
     gguf_helper_timeout_sec: Optional[int] = None

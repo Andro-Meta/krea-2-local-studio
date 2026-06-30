@@ -40,7 +40,10 @@ def encode_images(
             if item_metadata is not None:
                 item_metadata["filename"] = fname
             pnginfo = _pnginfo(item_metadata)
-            img.save(str(outputs_dir / fname), pnginfo=pnginfo)
+            final_path = outputs_dir / fname
+            tmp_path = outputs_dir / f".{fname}.tmp"
+            img.save(str(tmp_path), format="PNG", pnginfo=pnginfo)
+            tmp_path.replace(final_path)
             filenames.append(fname)
         else:
             pnginfo = _pnginfo(item_metadata)
