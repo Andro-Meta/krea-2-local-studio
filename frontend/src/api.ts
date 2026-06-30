@@ -236,6 +236,7 @@ export interface RealtimePreviewRequest {
   moodboard_ids?: number[]
   moodboard_uuids?: string[]
   moodboard_images?: string[]
+  loras?: GenerationRequest['loras']
   seed?: number
 }
 

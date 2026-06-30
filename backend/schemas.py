@@ -144,6 +144,7 @@ class RealtimePreviewRequest(BaseModel):
     moodboard_ids: List[int] = []
     moodboard_uuids: List[str] = []
     moodboard_images: List[str] = []
+    loras: List[dict] = []
     seed: int = -1
 
 

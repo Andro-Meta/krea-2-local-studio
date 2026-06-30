@@ -17,6 +17,7 @@ import { createDefaultDocument, documentToPngB64, promptFromLayerNotes } from '.
 import { useRealtimePreview } from './useRealtimePreview'
 import CreatePromptFromImage from '../CreatePromptFromImage'
 import MoodboardSection from '../GeneratePanel/MoodboardSection'
+import LoraSection from '../GeneratePanel/LoraSection'
 
 function statusText(status: string) {
   if (status === 'queued') return 'Queued'
@@ -89,6 +90,7 @@ export default function RealtimeStudio() {
           ? params.moodboard_strength
           : realtime.settings.canvasInfluence,
         moodboard_images: [canvasB64, ...params.moodboard_images],
+        loras: params.loras,
       })
       const final = await waitForFinal(job.job_id)
       const image = final.images?.[0] ?? ''
@@ -251,6 +253,7 @@ export default function RealtimeStudio() {
                       promptValue={realtime.prompt}
                       onPromptFallback={prompt => setRealtime({ prompt })}
                     />
+                    <LoraSection />
                     <Divider />
                     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
                       <TextField

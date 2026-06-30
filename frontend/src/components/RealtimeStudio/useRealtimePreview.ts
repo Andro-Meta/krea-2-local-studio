@@ -25,6 +25,7 @@ export function useRealtimePreview() {
   const moodboardUuids = useStore(s => s.params.moodboard_uuids)
   const moodboardImages = useStore(s => s.params.moodboard_images)
   const moodboardStrength = useStore(s => s.params.moodboard_strength)
+  const loras = useStore(s => s.params.loras)
   const sessionId = useStore(s => s.realtime.preview.sessionId)
   const paused = useStore(s => s.realtime.preview.paused)
   const settings = useStore(s => s.realtime.settings)
@@ -92,6 +93,7 @@ export function useRealtimePreview() {
         moodboard_ids: selectedMoodboardIds,
         moodboard_uuids: moodboardUuids,
         moodboard_images: moodboardImages,
+        loras,
         seed: settings.lockSeed ? settings.seed : -1,
       })
       latestJobRef.current = job.job_id
@@ -109,7 +111,7 @@ export function useRealtimePreview() {
         lastUpdated: Date.now(),
       })
     }
-  }, [document, mood, moodboardImages, moodboardStrength, moodboardUuids, negativePrompt, paused, pollJob, prompt, selectedMoodboardIds, sessionId, setRealtimePreview, settings.canvasInfluence, settings.lockSeed, settings.previewSize, settings.previewSteps, settings.seed])
+  }, [document, loras, mood, moodboardImages, moodboardStrength, moodboardUuids, negativePrompt, paused, pollJob, prompt, selectedMoodboardIds, sessionId, setRealtimePreview, settings.canvasInfluence, settings.lockSeed, settings.previewSize, settings.previewSteps, settings.seed])
 
   const cancelPreview = useCallback(async () => {
     clearPoll()
@@ -139,6 +141,7 @@ export function useRealtimePreview() {
     settings.previewSize,
     settings.previewSteps,
     settings.canvasInfluence,
+    loras,
     mood,
     moodboardImages,
     moodboardStrength,

@@ -889,6 +889,7 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
             moodboard_ids=list(req.moodboard_ids or []),
             moodboard_uuids=list(req.moodboard_uuids or []),
             moodboard_images=[req.canvas_image_b64, *list(req.moodboard_images or [])],
+            loras=list(req.loras or []),
         )
         results, seed, filenames, _, metadata = await loop.run_in_executor(
             None, lambda: pipeline.generate(preview_req, progress_cb=progress_cb, save_outputs=False)

@@ -18,6 +18,7 @@ export default function LoraSection() {
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState('')
   const [showImport, setShowImport] = useState(false)
+  const [query, setQuery] = useState('')
 
   const refresh = () => apiFetch.loras().then(setLoras).catch(() => {})
 
@@ -30,7 +31,8 @@ export default function LoraSection() {
     if (existing) {
       setParam('loras', params.loras.filter(l => l.name !== name))
     } else {
-      setParam('loras', [...params.loras, { name, filename, strength: 1.0, enabled: true, block_filter: 'style_safe' }])
+      const info = loras.find(lora => lora.name === name)
+      setParam('loras', [...params.loras, { name, filename, strength: info?.strength ?? 1.0, enabled: true, block_filter: 'style_safe' }])
     }
   }
 
@@ -75,102 +77,174 @@ export default function LoraSection() {
 
   if (!loras.length) return null
 
-  return (
+  const needle = query.trim().toLowerCase()
+  const visibleLoras = loras.filter(lora => {
+    if (!needle) return true
+    return [
+      lora.display_name,
+      lora.name,
+      lora.filename,
+      lora.is_official ? 'official krea 2' : 'local',
+      ...(lora.trigger_words ?? []),
+      lora.match_info ?? '',
+    ].join(' ').toLowerCase().includes(needle)
+  })
+  const installed = visibleLoras.filter(lora => lora.installed)
+  const missing = visibleLoras.filter(lora => !lora.installed)
+
+  const renderLora = (lora: typeof loras[number]) => {
+    const active = activeLora(lora.name)
+    const isDownloading = downloading[lora.name]
+    const disabled = lora.installed && lora.compatible === false
+    return (
+      <Box
+        key={lora.name}
+        sx={{
+          p: 0.85,
+          border: '1px solid',
+          borderColor: active ? 'primary.main' : 'divider',
+          borderRadius: 2,
+          bgcolor: active ? 'rgba(187,134,252,0.10)' : 'rgba(255,255,255,0.02)',
+        }}
+      >
+        <Stack direction="row" alignItems="center" spacing={1} justifyContent="space-between">
+          <Box sx={{ minWidth: 0 }}>
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Tooltip
+                title={lora.compatible === false
+                  ? (lora.match_info ?? 'Not a Krea-2 LoRA — will not affect output')
+                  : (lora.trigger_words.length
+                    ? `Trigger word: "${lora.trigger_words.join(', ')}" — added only for positive strength`
+                    : lora.display_name)}
+                placement="right"
+                arrow
+              >
+                <span>
+                  <Chip
+                    label={lora.compatible === false ? `${lora.display_name} ⚠` : lora.display_name}
+                    size="small"
+                    variant={active ? 'filled' : 'outlined'}
+                    color={lora.compatible === false ? 'warning' : (active ? 'secondary' : 'default')}
+                    onClick={() => lora.installed && !disabled && toggleLora(lora.name, lora.filename)}
+                    clickable={lora.installed && !disabled}
+                    disabled={!lora.installed || disabled}
+                    icon={active ? <CheckCircleIcon sx={{ fontSize: '14px !important' }} /> : undefined}
+                  />
+                </span>
+              </Tooltip>
+              <Chip
+                label={lora.is_official ? 'Official Krea 2' : 'Local'}
+                size="small"
+                variant="outlined"
+                sx={{ height: 20, fontSize: 11, opacity: 0.8 }}
+              />
+              {!lora.installed && <Chip label="Not downloaded" size="small" variant="outlined" sx={{ height: 20, fontSize: 11, opacity: 0.65 }} />}
+            </Stack>
+            {lora.trigger_words.length > 0 && (
+              <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.35 }}>
+                Trigger: {lora.trigger_words.join(', ')}
+              </Typography>
+            )}
+            {lora.match_info && !lora.is_official && (
+              <Typography variant="caption" sx={{ color: lora.compatible === false ? 'warning.main' : 'text.disabled', display: 'block', mt: 0.35 }}>
+                {lora.match_info}
+              </Typography>
+            )}
+          </Box>
+          {!lora.installed && (
+            <Tooltip title={`Download ${lora.display_name}`} arrow>
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={() => download(lora.name)}
+                  disabled={isDownloading}
+                  sx={{ p: 0.5 }}
+                >
+                  {isDownloading
+                    ? <CircularProgress size={16} />
+                    : <DownloadIcon sx={{ fontSize: 18, color: 'text.disabled' }} />}
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
+        </Stack>
+        {active && lora.installed && (
+          <Stack spacing={0.5} sx={{ pt: 0.85 }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                Strength: {active.strength.toFixed(2)}
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                negative avoids · positive applies
+              </Typography>
+            </Stack>
+            <Slider
+              value={active.strength}
+              min={-2} max={2} step={0.05}
+              marks={[
+                { value: -1, label: 'avoid' },
+                { value: 0, label: 'off' },
+                { value: 1, label: 'apply' },
+              ]}
+              onChange={(_, v) => setStrength(lora.name, v as number)}
+              size="small"
+              valueLabelDisplay="auto"
+            />
+            <TextField
+              select
+              size="small"
+              label="Block filter"
+              value={active.block_filter ?? 'all'}
+              onChange={e => setBlockFilter(lora.name, e.target.value as typeof BLOCK_FILTERS[number])}
+              helperText={(active.block_filter ?? 'all') === 'style_safe' ? 'Recommended for Krea style LoRAs' : undefined}
+              sx={{ maxWidth: 220 }}
+            >
+              {BLOCK_FILTERS.map(filter => (
+                <MenuItem key={filter} value={filter}>{filter.replace('_', '-')}</MenuItem>
+              ))}
+            </TextField>
+          </Stack>
+        )}
+      </Box>
+    )
+  }
+
+  const renderGroup = (title: string, items: typeof loras) => (
     <Box>
-      <Typography variant="caption" sx={{ color: 'text.secondary', mb: 1, display: 'block', textTransform: 'uppercase', letterSpacing: 1 }}>
-        LoRAs
-      </Typography>
-      <Typography variant="caption" sx={{ color: 'text.disabled', mb: 1.5, display: 'block' }}>
-        Style adapters. Click to toggle. Trigger words added to prompt automatically.
+      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.75, fontWeight: 700 }}>
+        {title} ({items.length})
       </Typography>
       <Stack spacing={0.75}>
-        {loras.map(lora => {
-          const active = activeLora(lora.name)
-          const isDownloading = downloading[lora.name]
-          return (
-            <Box key={lora.name}>
-              <Stack direction="row" alignItems="center" spacing={1}>
-                {lora.installed ? (
-                  <Tooltip
-                    title={lora.compatible === false
-                      ? (lora.match_info ?? 'Not a Krea-2 LoRA — will not affect output')
-                      : (lora.trigger_words.length
-                        ? `Trigger word: "${lora.trigger_words.join(', ')}" — added to prompt automatically`
-                        : lora.display_name)}
-                    placement="right"
-                    arrow
-                  >
-                    <Chip
-                      label={lora.compatible === false ? `${lora.display_name} ⚠` : lora.display_name}
-                      size="small"
-                      variant={active ? 'filled' : 'outlined'}
-                      color={lora.compatible === false ? 'warning' : (active ? 'secondary' : 'default')}
-                      onClick={() => toggleLora(lora.name, lora.filename)}
-                      clickable
-                      icon={active ? <CheckCircleIcon sx={{ fontSize: '14px !important' }} /> : undefined}
-                    />
-                  </Tooltip>
-                ) : (
-                  <Tooltip title={`Not downloaded. Click to download from HuggingFace.`} placement="right" arrow>
-                    <span>
-                      <Chip
-                        label={lora.display_name}
-                        size="small"
-                        variant="outlined"
-                        color="default"
-                        disabled
-                        sx={{ opacity: 0.5 }}
-                      />
-                    </span>
-                  </Tooltip>
-                )}
-                {!lora.installed && (
-                  <Tooltip title={`Download ${lora.display_name}`} arrow>
-                    <span>
-                      <IconButton
-                        size="small"
-                        onClick={() => download(lora.name)}
-                        disabled={isDownloading}
-                        sx={{ p: 0.25 }}
-                      >
-                        {isDownloading
-                          ? <CircularProgress size={14} />
-                          : <DownloadIcon sx={{ fontSize: 16, color: 'text.disabled' }} />}
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                )}
-              </Stack>
-              {active && lora.installed && (
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ pl: 1, pt: 0.25, maxWidth: 340 }}>
-                  <Typography variant="caption" sx={{ color: 'text.disabled', minWidth: 40 }}>
-                    {active.strength.toFixed(2)}
-                  </Typography>
-                  <Slider
-                    value={active.strength}
-                    min={0} max={2} step={0.05}
-                    onChange={(_, v) => setStrength(lora.name, v as number)}
-                    size="small"
-                    valueLabelDisplay="auto"
-                  />
-                  <TextField
-                    select
-                    size="small"
-                    label="Block filter"
-                    value={active.block_filter ?? 'all'}
-                    onChange={e => setBlockFilter(lora.name, e.target.value as typeof BLOCK_FILTERS[number])}
-                    helperText={(active.block_filter ?? 'all') === 'style_safe' ? 'Recommended for Krea style LoRAs' : undefined}
-                    sx={{ minWidth: 135 }}
-                  >
-                    {BLOCK_FILTERS.map(filter => (
-                      <MenuItem key={filter} value={filter}>{filter.replace('_', '-')}</MenuItem>
-                    ))}
-                  </TextField>
-                </Stack>
-              )}
-            </Box>
-          )
-        })}
+        {items.length ? items.map(renderLora) : (
+          <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+            {needle ? 'No LoRAs matched this search.' : 'None here yet.'}
+          </Typography>
+        )}
+      </Stack>
+    </Box>
+  )
+
+  return (
+    <Box>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.75 }}>
+        <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 1 }}>
+          LoRA Library{params.loras.length ? ` · ${params.loras.length} attached` : ''}
+        </Typography>
+      </Stack>
+      <Typography variant="caption" sx={{ color: 'text.disabled', mb: 1, display: 'block' }}>
+        Attach multiple style adapters from `models/loras`. Positive strength applies a LoRA; negative strength pushes away from it.
+      </Typography>
+      <TextField
+        size="small"
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        placeholder="Search installed, official, local, trigger words..."
+        fullWidth
+        sx={{ mb: 1 }}
+      />
+      <Stack spacing={1.25}>
+        {renderGroup('Installed', installed)}
+        {renderGroup('Available official downloads', missing)}
       </Stack>
 
       {/* URL import */}

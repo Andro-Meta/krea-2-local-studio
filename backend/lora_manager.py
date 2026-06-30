@@ -88,6 +88,8 @@ def build_trigger_prompt(prompt: str, loras: list[dict]) -> str:
     for lora in loras:
         if not lora.get("enabled", True):
             continue
+        if float(lora.get("strength", 1.0) or 0.0) <= 0:
+            continue
         name = lora.get("name", "")
         if name in OFFICIAL_LORAS:
             words.extend(OFFICIAL_LORAS[name]["trigger_words"])

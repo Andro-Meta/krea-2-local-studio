@@ -17,6 +17,16 @@ if str(BACKEND) not in sys.path:
 
 
 class QualityUpgradeTests(unittest.TestCase):
+    def test_negative_lora_strength_does_not_inject_positive_trigger_words(self) -> None:
+        from lora_manager import build_trigger_prompt
+
+        prompt = build_trigger_prompt(
+            "a red fox",
+            [{"name": "krea2_darkbrush", "enabled": True, "strength": -0.7}],
+        )
+
+        self.assertEqual(prompt, "a red fox")
+
     def test_realtime_preview_request_accepts_shared_moodboards(self) -> None:
         from schemas import RealtimePreviewRequest
 
@@ -29,6 +39,7 @@ class QualityUpgradeTests(unittest.TestCase):
             moodboard_uuids=["one", "two"],
             moodboard_images=["style-ref"],
             moodboard_strength=0.4,
+            loras=[{"name": "krea2_darkbrush", "strength": -0.5, "enabled": True}],
         )
 
         self.assertEqual(req.mood, "cinematic")
@@ -36,6 +47,7 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(req.moodboard_uuids, ["one", "two"])
         self.assertEqual(req.moodboard_images, ["style-ref"])
         self.assertEqual(req.moodboard_strength, 0.4)
+        self.assertEqual(req.loras[0]["strength"], -0.5)
 
     def test_provider_auto_uses_krea_when_flux_missing(self) -> None:
         import edit_providers
