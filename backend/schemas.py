@@ -438,6 +438,11 @@ class SettingsUpdate(BaseModel):
     gguf_vae_path: Optional[str] = None
     gguf_lora_dir: Optional[str] = None
     gguf_timeout_sec: Optional[int] = None
+    comfy_base_url: Optional[str] = None
+    comfy_int8_model: Optional[str] = None
+    comfy_clip_name: Optional[str] = None
+    comfy_vae_name: Optional[str] = None
+    comfy_timeout_sec: Optional[int] = None
     ideogram_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     openrouter_model: Optional[str] = None

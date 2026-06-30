@@ -182,10 +182,21 @@ def engine_catalog() -> dict[str, Any]:
     int8 = {
         **gguf,
         "engine_id": "int8_convrot_external",
-        "label": "INT8 ConvRot external runtime",
+        "label": "Comfy INT8 external runtime",
         "profiles": ["int8_convrot_turbo"],
+        "supports_lora": True,
         "supports_lora_ab_test": True,
+        "supports_cfg": True,
         "recommended_steps": 8,
+        "unsupported_controls": [
+            "style_references",
+            "moodboards",
+            "regional_prompts",
+            "rebalance",
+            "krea_enhancer",
+            "cfg_zero_star",
+            "mu_shift",
+        ],
     }
     return {"engines": [native, gguf, int8], "default_engine": "native_pytorch"}
 

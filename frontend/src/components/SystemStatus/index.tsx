@@ -57,6 +57,11 @@ export default function SystemStatus() {
     gguf_vae_path: '',
     gguf_lora_dir: '',
     gguf_timeout_sec: 600,
+    comfy_base_url: 'http://127.0.0.1:8188',
+    comfy_int8_model: 'krea2_turbo_int8.safetensors',
+    comfy_clip_name: 'qwen3vl_4b_fp8_scaled.safetensors',
+    comfy_vae_name: 'qwen_image_vae.safetensors',
+    comfy_timeout_sec: 900,
   })
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState<{ severity: 'success' | 'warning' | 'error'; text: string } | null>(null)
@@ -141,6 +146,11 @@ export default function SystemStatus() {
         gguf_vae_path: s.gguf_vae_path ?? '',
         gguf_lora_dir: s.gguf_lora_dir ?? '',
         gguf_timeout_sec: s.gguf_timeout_sec ?? 600,
+        comfy_base_url: s.comfy_base_url ?? 'http://127.0.0.1:8188',
+        comfy_int8_model: s.comfy_int8_model ?? 'krea2_turbo_int8.safetensors',
+        comfy_clip_name: s.comfy_clip_name ?? 'qwen3vl_4b_fp8_scaled.safetensors',
+        comfy_vae_name: s.comfy_vae_name ?? 'qwen_image_vae.safetensors',
+        comfy_timeout_sec: s.comfy_timeout_sec ?? 900,
       })
     } catch {
       setSettingsMessage({ severity: 'error', text: 'Could not load settings.' })
@@ -268,6 +278,11 @@ export default function SystemStatus() {
         gguf_vae_path: settingsDraft.gguf_vae_path,
         gguf_lora_dir: settingsDraft.gguf_lora_dir,
         gguf_timeout_sec: settingsDraft.gguf_timeout_sec,
+        comfy_base_url: settingsDraft.comfy_base_url,
+        comfy_int8_model: settingsDraft.comfy_int8_model,
+        comfy_clip_name: settingsDraft.comfy_clip_name,
+        comfy_vae_name: settingsDraft.comfy_vae_name,
+        comfy_timeout_sec: settingsDraft.comfy_timeout_sec,
         ...(settingsDraft.ideogram_api_key.trim() ? { ideogram_api_key: settingsDraft.ideogram_api_key.trim() } : {}),
         openrouter_model: settingsDraft.openrouter_model,
         openrouter_free_only: settingsDraft.openrouter_free_only,
@@ -321,6 +336,33 @@ export default function SystemStatus() {
       await loadSettings()
     } catch (e: any) {
       setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'GGUF runtime test failed.' })
+    } finally {
+      setGgufRuntimeBusy(false)
+    }
+  }
+
+  const testComfyInt8Workflow = async () => {
+    setGgufRuntimeBusy(true)
+    setSettingsMessage(null)
+    try {
+      await apiFetch.updateSettings({
+        comfy_base_url: settingsDraft.comfy_base_url,
+        comfy_int8_model: settingsDraft.comfy_int8_model,
+        comfy_clip_name: settingsDraft.comfy_clip_name,
+        comfy_vae_name: settingsDraft.comfy_vae_name,
+        comfy_timeout_sec: settingsDraft.comfy_timeout_sec,
+      })
+      const status = await apiFetch.int8Status()
+      const workflow = await apiFetch.testInt8Workflow()
+      setSettingsMessage({
+        severity: status.ok ? 'success' : 'warning',
+        text: status.ok
+          ? `Comfy INT8 reachable; workflow dry-run built ${workflow.node_count} nodes.`
+          : `Comfy INT8 workflow dry-run built ${workflow.node_count} nodes, but Comfy is not reachable: ${status.error}`,
+      })
+      await loadSettings()
+    } catch (e: any) {
+      setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Comfy INT8 workflow test failed.' })
     } finally {
       setGgufRuntimeBusy(false)
     }
@@ -1250,6 +1292,32 @@ export default function SystemStatus() {
             <TextField label="Qwen3-VL GGUF LLM path" size="small" fullWidth value={settingsDraft.gguf_llm_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_llm_path: e.target.value }))} />
             <TextField label="VAE path" size="small" fullWidth value={settingsDraft.gguf_vae_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_vae_path: e.target.value }))} />
             <TextField label="LoRA directory (optional; disabled until A/B verified)" size="small" fullWidth value={settingsDraft.gguf_lora_dir} onChange={e => setSettingsDraft(d => ({ ...d, gguf_lora_dir: e.target.value }))} />
+            <Typography variant="subtitle2" sx={{ pt: 1 }}>Comfy INT8 Sidecar</Typography>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              Uses current ComfyUI native Krea2/INT8 workflow APIs. Keep Comfy running, then dry-run the workflow before switching the engine.
+            </Typography>
+            <TextField label="Comfy base URL" size="small" fullWidth value={settingsDraft.comfy_base_url} onChange={e => setSettingsDraft(d => ({ ...d, comfy_base_url: e.target.value }))} placeholder="http://127.0.0.1:8188" />
+            <TextField label="Comfy INT8 diffusion model" size="small" fullWidth value={settingsDraft.comfy_int8_model} onChange={e => setSettingsDraft(d => ({ ...d, comfy_int8_model: e.target.value }))} placeholder="krea2_turbo_int8.safetensors" />
+            <TextField label="Comfy Krea2 CLIP/text encoder" size="small" fullWidth value={settingsDraft.comfy_clip_name} onChange={e => setSettingsDraft(d => ({ ...d, comfy_clip_name: e.target.value }))} placeholder="qwen3vl_4b_fp8_scaled.safetensors" />
+            <TextField label="Comfy VAE" size="small" fullWidth value={settingsDraft.comfy_vae_name} onChange={e => setSettingsDraft(d => ({ ...d, comfy_vae_name: e.target.value }))} placeholder="qwen_image_vae.safetensors" />
+            <TextField
+              label="Comfy timeout (seconds)"
+              type="number"
+              size="small"
+              value={settingsDraft.comfy_timeout_sec}
+              onChange={e => setSettingsDraft(d => ({ ...d, comfy_timeout_sec: Math.max(60, Number(e.target.value) || 900) }))}
+              inputProps={{ min: 60, step: 60 }}
+            />
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={testComfyInt8Workflow}
+              disabled={ggufRuntimeBusy}
+              startIcon={ggufRuntimeBusy ? <CircularProgress size={14} color="inherit" /> : undefined}
+              sx={{ alignSelf: 'flex-start' }}
+            >
+              Test Comfy INT8 Workflow
+            </Button>
             <TextField
               label="GGUF runtime timeout (seconds)"
               type="number"

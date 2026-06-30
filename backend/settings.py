@@ -33,6 +33,11 @@ class AppSettings(BaseSettings):
     gguf_vae_path: str = ""
     gguf_lora_dir: str = ""
     gguf_timeout_sec: int = 600
+    comfy_base_url: str = "http://127.0.0.1:8188"
+    comfy_int8_model: str = "krea2_turbo_int8.safetensors"
+    comfy_clip_name: str = "qwen3vl_4b_fp8_scaled.safetensors"
+    comfy_vae_name: str = "qwen_image_vae.safetensors"
+    comfy_timeout_sec: int = 900
     ideogram_api_key: str = ""
     openrouter_api_key: str = ""
     openrouter_model: str = "google/gemma-4-31b-it:free"

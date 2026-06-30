@@ -404,6 +404,11 @@ export interface AppSettings {
   gguf_vae_path: string
   gguf_lora_dir: string
   gguf_timeout_sec: number
+  comfy_base_url: string
+  comfy_int8_model: string
+  comfy_clip_name: string
+  comfy_vae_name: string
+  comfy_timeout_sec: number
   openrouter_model: string
   openrouter_free_only: boolean
   krea_share_auto_funnel: boolean
@@ -672,6 +677,9 @@ export const apiFetch = {
 
   ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; configured: boolean }> }>('/api/gguf/status').then(r => r.data),
   testGgufRuntime: () => api.post<{ ok: boolean; command: string[]; output: string }>('/api/gguf/test-runtime').then(r => r.data),
+
+  int8Status: () => api.get<{ ok: boolean; base_url: string; error?: string; system?: Record<string, any> }>('/api/int8/status').then(r => r.data),
+  testInt8Workflow: () => api.post<{ ok: boolean; workflow: Record<string, any>; node_count: number }>('/api/int8/test-workflow').then(r => r.data),
 
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
   installTritonWindows: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-triton-windows', {}, { timeout: 600000 }).then(r => r.data),
