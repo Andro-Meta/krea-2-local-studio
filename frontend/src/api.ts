@@ -440,6 +440,18 @@ export interface XperimentSetupResult {
   warnings: string[]
 }
 
+export interface GgufLowVramSetupResult {
+  ok: boolean
+  assets: Array<{ id: string; path: string; skipped: boolean; item: QualityAsset }>
+  diffusion_engine: 'gguf_external'
+  turbo_path: string
+  realtime_candidate_path: string
+  llm_path: string
+  vae_path: string
+  realtime: { preview_size: number; preview_steps: number; final_steps: number }
+  warnings: string[]
+}
+
 export interface ModerationEvent {
   id: number
   created_at: string
@@ -637,6 +649,9 @@ export const apiFetch = {
 
   setupXperiment: () =>
     api.post<XperimentSetupResult>('/api/xperiment/setup', {}, { timeout: 7200000 }).then(r => r.data),
+
+  setupGgufLowVram: () =>
+    api.post<GgufLowVramSetupResult>('/api/gguf/setup-low-vram', {}, { timeout: 7200000 }).then(r => r.data),
 
   settings: () => api.get<AppSettings>('/api/settings').then(r => r.data),
   updateSettings: (data: Partial<AppSettings> & { hf_token?: string; ideogram_api_key?: string; openrouter_api_key?: string }) =>

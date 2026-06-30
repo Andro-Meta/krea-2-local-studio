@@ -291,6 +291,34 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertFalse(status["download_enabled"])
         self.assertIn("safety", status["disabled_reason"].lower())
 
+    def test_gguf_low_vram_setup_skips_installed_assets_and_sets_paths(self) -> None:
+        from fastapi.testclient import TestClient
+        import main
+        import quality_assets
+
+        downloaded: list[str] = []
+
+        def fake_installed(spec):
+            return spec.id in {"gguf_krea2_turbo_q4km", "wan_2_1_vae"}
+
+        def fake_download(spec, token=None):
+            downloaded.append(spec.id)
+            return spec.local_path
+
+        with (
+            patch.object(quality_assets, "asset_installed", side_effect=fake_installed),
+            patch.object(quality_assets, "download_asset", side_effect=fake_download),
+            TestClient(main.app) as client,
+        ):
+            response = client.post("/api/gguf/setup-low-vram")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["diffusion_engine"], "gguf_external")
+        self.assertEqual(data["realtime"]["preview_size"], 512)
+        self.assertIn("gguf_krea2_turbo_q3km", downloaded)
+        self.assertIn("gguf_qwen3vl_4b_q4km", downloaded)
+
 
 if __name__ == "__main__":
     unittest.main()

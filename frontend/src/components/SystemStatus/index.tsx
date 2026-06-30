@@ -59,7 +59,7 @@ export default function SystemStatus() {
     gguf_timeout_sec: 600,
   })
   const [savingSettings, setSavingSettings] = useState(false)
-  const [settingsMessage, setSettingsMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
+  const [settingsMessage, setSettingsMessage] = useState<{ severity: 'success' | 'warning' | 'error'; text: string } | null>(null)
   const [auth, setAuth] = useState<AuthSession | null>(null)
   const [users, setUsers] = useState<ShareUser[]>([])
   const [sharing, setSharing] = useState<SharingStatus | null>(null)
@@ -83,7 +83,7 @@ export default function SystemStatus() {
   const [acceleratorMessage, setAcceleratorMessage] = useState<{ severity: 'success' | 'error' | 'warning'; text: string } | null>(null)
   const [ggufHelperBusy, setGgufHelperBusy] = useState(false)
   const [ggufRuntimeBusy, setGgufRuntimeBusy] = useState(false)
-  const { setSystemReport } = useStore()
+  const { setSystemReport, setRealtimeSettings } = useStore()
   const isAdmin = auth?.role === 'admin'
 
   const refresh = async () => {
@@ -321,6 +321,36 @@ export default function SystemStatus() {
       await loadSettings()
     } catch (e: any) {
       setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'GGUF runtime test failed.' })
+    } finally {
+      setGgufRuntimeBusy(false)
+    }
+  }
+
+  const setupGgufLowVram = async () => {
+    setGgufRuntimeBusy(true)
+    setSettingsMessage(null)
+    try {
+      const result = await apiFetch.setupGgufLowVram()
+      setSettingsDraft(d => ({
+        ...d,
+        diffusion_engine: result.diffusion_engine,
+        gguf_turbo_path: result.turbo_path,
+        gguf_llm_path: result.llm_path,
+        gguf_vae_path: result.vae_path,
+      }))
+      setRealtimeSettings({
+        previewSize: result.realtime.preview_size,
+        previewSteps: result.realtime.preview_steps,
+        finalSteps: result.realtime.final_steps,
+      })
+      await loadQualityAssets()
+      await loadSettings()
+      setSettingsMessage({
+        severity: 'warning',
+        text: `GGUF low-VRAM setup applied. ${result.assets.filter(asset => asset.skipped).length}/${result.assets.length} assets were already installed. ${result.warnings.join(' ')}`,
+      })
+    } catch (e: any) {
+      setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'GGUF low-VRAM setup failed.' })
     } finally {
       setGgufRuntimeBusy(false)
     }
@@ -1190,6 +1220,17 @@ export default function SystemStatus() {
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               Experimental low-VRAM sidecar path. Native PyTorch remains the default. Configure stable-diffusion.cpp paths here, then use the engine selector in Create.
             </Typography>
+            <Button
+              variant="contained"
+              color="warning"
+              size="small"
+              onClick={setupGgufLowVram}
+              disabled={ggufRuntimeBusy}
+              startIcon={ggufRuntimeBusy ? <CircularProgress size={14} color="inherit" /> : undefined}
+              sx={{ alignSelf: 'flex-start' }}
+            >
+              {ggufRuntimeBusy ? 'Setting up GGUF...' : 'Setup GGUF Low-VRAM'}
+            </Button>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {(['native_pytorch', 'gguf_external', 'int8_convrot_external'] as const).map(engine => (
                 <Chip

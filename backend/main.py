@@ -1798,6 +1798,57 @@ async def xperiment_setup_endpoint():
     }
 
 
+@app.post("/api/gguf/setup-low-vram")
+async def gguf_setup_low_vram_endpoint():
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
+    from quality_assets import asset_by_id, asset_installed, asset_status, download_asset
+
+    required_ids = ["gguf_krea2_turbo_q4km", "gguf_krea2_turbo_q3km", "gguf_qwen3vl_4b_q4km", "wan_2_1_vae"]
+    token = settings.hf_token or os.environ.get("HF_TOKEN") or None
+    loop = asyncio.get_event_loop()
+    results: list[dict] = []
+    for asset_id in required_ids:
+        spec = asset_by_id(asset_id)
+        skipped = asset_installed(spec)
+        path = spec.local_path
+        if not skipped:
+            try:
+                path = await loop.run_in_executor(None, lambda spec=spec: download_asset(spec, token=token))
+            except (GatedRepoError, HfHubHTTPError) as exc:
+                raise HTTPException(502, f"Could not download {asset_id}: {exc}") from exc
+            except Exception as exc:
+                logger.exception("GGUF low-VRAM asset download failed")
+                raise HTTPException(502, f"Could not download {asset_id}. Check connection and server logs.") from exc
+        results.append({"id": asset_id, "path": str(path), "skipped": skipped, "item": asset_status(spec, has_hf_token=bool(token))})
+
+    q4 = asset_by_id("gguf_krea2_turbo_q4km").local_path
+    q3 = asset_by_id("gguf_krea2_turbo_q3km").local_path
+    qwen = asset_by_id("gguf_qwen3vl_4b_q4km").local_path
+    vae = asset_by_id("wan_2_1_vae").local_path
+    env = _read_env()
+    env["DIFFUSION_ENGINE"] = "gguf_external"
+    env["GGUF_TURBO_PATH"] = str(q4)
+    env["GGUF_LLM_PATH"] = str(qwen)
+    env["GGUF_VAE_PATH"] = str(vae)
+    env["GGUF_REALTIME_PROFILE"] = "turbo_q3_or_q4_512"
+    settings.diffusion_engine = "gguf_external"
+    settings.gguf_turbo_path = str(q4)
+    settings.gguf_llm_path = str(qwen)
+    settings.gguf_vae_path = str(vae)
+    _write_env(env)
+    return {
+        "ok": True,
+        "assets": results,
+        "diffusion_engine": "gguf_external",
+        "turbo_path": str(q4),
+        "realtime_candidate_path": str(q3),
+        "llm_path": str(qwen),
+        "vae_path": str(vae),
+        "realtime": {"preview_size": 512, "preview_steps": 4, "final_steps": 8},
+        "warnings": ["Realtime GGUF remains disabled until the sidecar benchmark passes, but 512/4/8 are the target low-VRAM live settings."],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------

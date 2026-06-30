@@ -296,7 +296,7 @@ const defaultRealtime: RealtimeState = {
   },
   settings: {
     debounceMs: 1500,
-    previewSize: 384,
+    previewSize: 512,
     previewSteps: 4,
     finalSteps: 8,
     canvasInfluence: 0.45,
