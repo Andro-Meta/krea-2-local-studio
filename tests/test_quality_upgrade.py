@@ -28,7 +28,10 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(prompt, "a red fox")
 
     def test_lokr_lora_inspection_and_application(self) -> None:
-        import torch
+        try:
+            import torch
+        except ModuleNotFoundError:
+            self.skipTest("torch is required for LoKr application tests")
         from safetensors.torch import save_file
         import lora_manager
 
