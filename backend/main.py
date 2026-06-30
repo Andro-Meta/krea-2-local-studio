@@ -1755,6 +1755,49 @@ async def download_quality_asset_endpoint(asset_id: str):
     return {"ok": True, "path": str(path), "item": asset_status(spec, has_hf_token=has_token)}
 
 
+@app.post("/api/xperiment/setup")
+async def xperiment_setup_endpoint():
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
+    from quality_assets import asset_by_id, asset_installed, asset_status, download_asset
+
+    required_ids = ["wan_2_1_vae", "qwen3vl_abliterated_fp8", "krea2_realism_v1_lora"]
+    results: list[dict] = []
+    token = settings.hf_token or os.environ.get("HF_TOKEN") or None
+    loop = asyncio.get_event_loop()
+    for asset_id in required_ids:
+        spec = asset_by_id(asset_id)
+        skipped = asset_installed(spec)
+        path = spec.local_path
+        if not skipped:
+            try:
+                path = await loop.run_in_executor(None, lambda spec=spec: download_asset(spec, token=token))
+            except (GatedRepoError, HfHubHTTPError) as exc:
+                raise HTTPException(502, f"Could not download {asset_id}: {exc}") from exc
+            except Exception as exc:
+                logger.exception("Xperiment asset download failed")
+                raise HTTPException(502, f"Could not download {asset_id}. Check connection and server logs.") from exc
+        results.append({"id": asset_id, "path": str(path), "skipped": skipped, "item": asset_status(spec, has_hf_token=bool(token))})
+
+    wan_vae = asset_by_id("wan_2_1_vae").local_path
+    env = _read_env()
+    env["KREA2_VAE_PATH"] = str(wan_vae)
+    settings.krea2_vae_path = str(wan_vae)
+    _write_env(env)
+    bypass = asset_status(asset_by_id("krea2_filter_bypass"), has_hf_token=bool(token))
+    return {
+        "ok": True,
+        "assets": results,
+        "vae_path": str(wan_vae),
+        "lora": {"name": "Krea2-realism-V1", "filename": "Krea2-realism-V1.safetensors", "strength": 0.6},
+        "sampler": {"sampler": "er_sde", "scheduler": "beta57", "steps": 8, "cfg": 1.0},
+        "manual_only": [bypass],
+        "warnings": [
+            "Exact ClownsharKSampler_Beta is a Comfy/RES4LYF node; native Krea Studio applies the closest safe native mapping: er_sde + beta57.",
+            "krea2filterbypass3 is manual-only and not auto-downloaded.",
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 
-FLOW_SCHEDULERS: tuple[str, ...] = ("simple", "normal", "beta", "sgm_uniform", "bong_tangent")
+FLOW_SCHEDULERS: tuple[str, ...] = ("simple", "normal", "beta", "beta57", "sgm_uniform", "bong_tangent")
 ALL_SCHEDULERS: tuple[str, ...] = FLOW_SCHEDULERS + ("karras", "exponential")
 
 # Default Beta(alpha, beta) shape parameters (ComfyUI beta_scheduler defaults).
@@ -183,6 +183,14 @@ def base_grid(steps: int, scheduler: str = "simple") -> list[float]:
         # ComfyUI: ts = 1 - linspace(0,1,steps, endpoint=False); beta.ppf(ts);
         # we keep it in normalized time and let the mu-shift apply afterwards.
         grid = [beta_ppf(1.0 - k / n) for k in range(n)]
+        grid.append(0.0)
+        return grid
+
+    if name == "beta57":
+        # RES4LYF workflow variant used by ClownsharKSampler_Beta in the
+        # referenced Krea2 Turbo workflow. It keeps beta-style endpoint emphasis
+        # but with a slightly asymmetric 0.5/0.7 shape.
+        grid = [beta_ppf(1.0 - k / n, 0.5, 0.7) for k in range(n)]
         grid.append(0.0)
         return grid
 

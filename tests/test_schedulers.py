@@ -60,6 +60,14 @@ class TestBaseGrid(unittest.TestCase):
         ends = max(gaps[0], gaps[-1])
         self.assertGreater(mid, ends)
 
+    def test_beta57_is_distinct_u_shaped_workflow_scheduler(self):
+        g = S.base_grid(8, "beta57")
+
+        self.assertEqual(len(g), 9)
+        self.assertAlmostEqual(g[0], 1.0, places=6)
+        self.assertEqual(g[-1], 0.0)
+        self.assertNotEqual(g, S.base_grid(8, "beta"))
+
     def test_sgm_uniform_drops_min_endpoint(self):
         g = S.base_grid(8, "sgm_uniform")
         # second-to-last is 1/steps (the sigma_min point is skipped vs simple).

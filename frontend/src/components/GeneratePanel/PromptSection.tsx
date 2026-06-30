@@ -7,9 +7,10 @@ import { apiFetch, type PromptPlan } from '../../api'
 import CreatePromptFromImage from '../CreatePromptFromImage'
 
 export default function PromptSection() {
-  const { params, setParam } = useStore()
+  const { params, setParam, setLoras } = useStore()
   const [expanding, setExpanding] = useState(false)
   const [planning, setPlanning] = useState(false)
+  const [xperimenting, setXperimenting] = useState(false)
   const [plan, setPlan] = useState<PromptPlan | null>(null)
   const [notice, setNotice] = useState<{ message: string; severity: 'success' | 'warning' | 'error' } | null>(null)
 
@@ -54,8 +55,60 @@ export default function PromptSection() {
     }
   }
 
+  const handleXperiment = async () => {
+    if (xperimenting) return
+    setXperimenting(true)
+    try {
+      const result = await apiFetch.setupXperiment()
+      apiFetch.loras().then(setLoras).catch(() => undefined)
+      setParam('diffusion_engine', 'native_pytorch')
+      setParam('model_profile', 'krea_turbo')
+      setParam('checkpoint', 'turbo')
+      setParam('quantization', 'fp8')
+      setParam('steps', result.sampler.steps)
+      setParam('cfg', result.sampler.cfg)
+      setParam('mu', 1.15)
+      setParam('sampler', result.sampler.sampler as typeof params.sampler)
+      setParam('scheduler', result.sampler.scheduler as typeof params.scheduler)
+      setParam('use_prompt_expander', true)
+      setParam('negative_prompt', '')
+      setParam('loras', [
+        ...params.loras.filter(lora => lora.name !== result.lora.name),
+        { name: result.lora.name, filename: result.lora.filename, strength: result.lora.strength, enabled: true, block_filter: 'style_safe' },
+      ])
+      const skipped = result.assets.filter(asset => asset.skipped).length
+      setNotice({
+        severity: result.warnings.length ? 'warning' : 'success',
+        message: `Xperiment Settings applied. ${skipped}/${result.assets.length} assets were already installed. ${result.warnings.join(' ')}`,
+      })
+    } catch (err: any) {
+      setNotice({ severity: 'error', message: err?.response?.data?.detail ?? err.message ?? 'Xperiment setup failed.' })
+    } finally {
+      setXperimenting(false)
+    }
+  }
+
   return (
     <Stack spacing={1}>
+      <Paper variant="outlined" sx={{ p: 1.25, bgcolor: 'background.default' }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+          <Box>
+            <Typography variant="subtitle2">Xperiment Settings</Typography>
+            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+              One-click Pastebin-style Krea2 Turbo setup: assets, Wan VAE override, 8 steps, CFG 1, beta57, and Realism LoRA at 0.6.
+            </Typography>
+          </Box>
+          <Button
+            variant="outlined"
+            size="small"
+            onClick={handleXperiment}
+            disabled={xperimenting}
+            startIcon={xperimenting ? <CircularProgress size={14} color="inherit" /> : undefined}
+          >
+            {xperimenting ? 'Setting up...' : 'Apply Xperiment'}
+          </Button>
+        </Stack>
+      </Paper>
       <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
         <TextField
           label="Prompt"

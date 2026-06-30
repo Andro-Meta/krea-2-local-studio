@@ -35,7 +35,7 @@ export interface GenerationRequest {
   seed?: number
   denoise?: number
   sampler?: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
-  scheduler?: 'simple' | 'normal' | 'beta' | 'sgm_uniform' | 'bong_tangent' | 'karras' | 'exponential'
+  scheduler?: 'simple' | 'normal' | 'beta' | 'beta57' | 'sgm_uniform' | 'bong_tangent' | 'karras' | 'exponential'
   inpaint_method?: 'native' | 'lanpaint_experimental' | 'flux_fill'
   differential_inpaint?: boolean
   differential_strength?: number
@@ -430,6 +430,16 @@ export interface QualityAsset {
   disabled_reason: string
 }
 
+export interface XperimentSetupResult {
+  ok: boolean
+  assets: Array<{ id: string; path: string; skipped: boolean; item: QualityAsset }>
+  vae_path: string
+  lora: { name: string; filename: string; strength: number }
+  sampler: { sampler: string; scheduler: string; steps: number; cfg: number }
+  manual_only: QualityAsset[]
+  warnings: string[]
+}
+
 export interface ModerationEvent {
   id: number
   created_at: string
@@ -624,6 +634,9 @@ export const apiFetch = {
   downloadQualityAsset: (assetId: string) =>
     api.post<{ ok: boolean; path: string; item: QualityAsset }>(`/api/quality-assets/${assetId}/download`, {}, { timeout: 7200000 })
       .then(r => r.data),
+
+  setupXperiment: () =>
+    api.post<XperimentSetupResult>('/api/xperiment/setup', {}, { timeout: 7200000 }).then(r => r.data),
 
   settings: () => api.get<AppSettings>('/api/settings').then(r => r.data),
   updateSettings: (data: Partial<AppSettings> & { hf_token?: string; ideogram_api_key?: string; openrouter_api_key?: string }) =>
