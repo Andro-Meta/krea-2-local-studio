@@ -28,6 +28,16 @@ SUPPORT_MODELS = [
         "optional": True,
     },
     {
+        "id": "qwen3_vl_abliterated",
+        "label": "Abliterated Qwen3-VL magic-wand model",
+        "repo_id": "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated",
+        "local_dir": LOCAL_AI_DIR / "qwen3_vl_4b_abliterated",
+        "purpose": "Optional Transformers-loadable abliterated Qwen3-VL for Xperiment magic-wand prompt expansion",
+        "required": ["config.json", "model.safetensors.index.json"],
+        "allow_patterns": None,
+        "optional": True,
+    },
+    {
         "id": "qwen_image_vae",
         "label": "Qwen-Image VAE",
         "repo_id": "Qwen/Qwen-Image",

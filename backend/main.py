@@ -1799,11 +1799,16 @@ async def xperiment_setup_endpoint():
     env["KREA2_VAE_PATH"] = str(wan_vae)
     env["PROMPT_EXPANDER_BACKEND"] = "local"
     env["LOCAL_LLM_BACKEND"] = "transformers"
-    env["LOCAL_QWEN_MODEL_ID"] = "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated"
+    try:
+        from support_models import support_model_path
+        xperiment_qwen = str(support_model_path("qwen3_vl_abliterated"))
+    except Exception:
+        xperiment_qwen = "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated"
+    env["LOCAL_QWEN_MODEL_ID"] = xperiment_qwen
     settings.krea2_vae_path = str(wan_vae)
     settings.prompt_expander_backend = "local"
     settings.local_llm_backend = "transformers"
-    settings.local_qwen_model_id = "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated"
+    settings.local_qwen_model_id = xperiment_qwen
     _write_env(env)
     bypass_spec = asset_by_id("krea2_filter_bypass")
     bypass = asset_status(bypass_spec, has_hf_token=bool(token))
@@ -1822,7 +1827,7 @@ async def xperiment_setup_endpoint():
         "use_prompt_expander": False,
         "prompt_expander_backend": "local",
         "local_llm_backend": "transformers",
-        "local_qwen_model_id": "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated",
+        "local_qwen_model_id": xperiment_qwen,
         "benchmark_note": "Verified on RTX 4090: 1024px, er_sde/beta57, 6 steps, CFG 0, Realism LoKr late@0.55 completed in ~10s with good prompt adherence.",
         "manual_only": [bypass],
         "warnings": [

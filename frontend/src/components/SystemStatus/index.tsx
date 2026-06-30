@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
+import { Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, MenuItem, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
 import GpuIcon from '@mui/icons-material/Memory'
 import { apiFetch, publicUrl, type AcceleratorStatus, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type ModerationStatus, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
 import { useStore } from '../../store'
@@ -91,6 +91,11 @@ export default function SystemStatus() {
   const [ggufRuntimeBusy, setGgufRuntimeBusy] = useState(false)
   const { setSystemReport, setRealtimeSettings } = useStore()
   const isAdmin = auth?.role === 'admin'
+  const localQwenChoice = !settingsDraft.local_qwen_model_id
+    ? 'default'
+    : /Huihui-Qwen3-VL-4B-Instruct-abliterated|qwen3_vl_4b_abliterated/i.test(settingsDraft.local_qwen_model_id)
+      ? 'abliterated'
+      : 'custom'
 
   const refresh = async () => {
     setLoading(true); setFetchError('')
@@ -1116,15 +1121,41 @@ export default function SystemStatus() {
               ))}
             </Stack>
             {settingsDraft.local_llm_backend === 'transformers' && (
-              <TextField
-                label="Local Qwen model repo/path"
-                value={settingsDraft.local_qwen_model_id}
-                onChange={e => setSettingsDraft(d => ({ ...d, local_qwen_model_id: e.target.value }))}
-                size="small"
-                fullWidth
-                placeholder="Blank = installed Qwen/Qwen3-VL-4B-Instruct"
-                helperText="Xperiment sets this to huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated for magic-wand prompt expansion. The Comfy FP8 file cannot be loaded directly by Transformers."
-              />
+              <Stack spacing={1}>
+                <TextField
+                  select
+                  label="Local Qwen model"
+                  value={localQwenChoice}
+                  onChange={e => {
+                    const choice = e.target.value
+                    setSettingsDraft(d => ({
+                      ...d,
+                      local_qwen_model_id: choice === 'default'
+                        ? ''
+                        : choice === 'abliterated'
+                          ? 'huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated'
+                          : d.local_qwen_model_id || 'custom/repo-or-path',
+                    }))
+                  }}
+                  size="small"
+                  fullWidth
+                  helperText="Xperiment selects Abliterated Qwen by default. The Comfy FP8 abliterated file is not Transformers-loadable; this uses the BF16 Transformers repo or a local downloaded copy."
+                >
+                  <MenuItem value="default">Default installed Qwen3-VL</MenuItem>
+                  <MenuItem value="abliterated">Abliterated Qwen3-VL (Xperiment)</MenuItem>
+                  <MenuItem value="custom">Custom repo/path</MenuItem>
+                </TextField>
+                {localQwenChoice === 'custom' && (
+                  <TextField
+                    label="Custom Qwen repo/path"
+                    value={settingsDraft.local_qwen_model_id}
+                    onChange={e => setSettingsDraft(d => ({ ...d, local_qwen_model_id: e.target.value }))}
+                    size="small"
+                    fullWidth
+                    placeholder="HF repo id or local model folder"
+                  />
+                )}
+              </Stack>
             )}
             {settingsDraft.local_llm_backend === 'gguf_server' && (
               <Stack spacing={1}>
