@@ -123,8 +123,8 @@ def comfy_int8_status(settings: ComfyInt8Settings) -> dict[str, Any]:
     try:
         system = _request_json(f"{base}/system_stats", timeout=5)
         return {"ok": True, "base_url": base, "system": system}
-    except Exception as exc:
-        return {"ok": False, "base_url": base, "error": str(exc)}
+    except Exception:
+        return {"ok": False, "base_url": base, "error": "Comfy server is not reachable or did not return system status."}
 
 
 def generate_comfy_int8_external(req: Any, settings: ComfyInt8Settings, *, output_dir: Path = OUTPUTS_DIR):
