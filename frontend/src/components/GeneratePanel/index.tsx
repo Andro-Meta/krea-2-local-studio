@@ -320,7 +320,7 @@ export default function GeneratePanel() {
         <DimensionSection />
         {!inRedrawStudio && (supports?.supports_style_references ?? true) && <StyleReferenceSection />}
         {!inRedrawStudio && (supports?.supports_regional_prompts ?? true) && <AdvancedSceneSection />}
-        {!inRedrawStudio && (supports?.supports_moodboards ?? true) && <MoodboardSection />}
+        {(supports?.supports_moodboards ?? true) && <MoodboardSection />}
         {!inRedrawStudio && <RecipeSection />}
         {(supports?.supports_lora ?? true) && <LoraSection />}
         {!inRedrawStudio && (supports?.supports_regional_prompts ?? true) && <CanvasControl />}

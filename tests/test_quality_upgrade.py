@@ -17,6 +17,26 @@ if str(BACKEND) not in sys.path:
 
 
 class QualityUpgradeTests(unittest.TestCase):
+    def test_realtime_preview_request_accepts_shared_moodboards(self) -> None:
+        from schemas import RealtimePreviewRequest
+
+        req = RealtimePreviewRequest(
+            session_id="rt-test",
+            prompt="a castle",
+            canvas_image_b64="abc",
+            mood="cinematic",
+            moodboard_ids=[12, 34],
+            moodboard_uuids=["one", "two"],
+            moodboard_images=["style-ref"],
+            moodboard_strength=0.4,
+        )
+
+        self.assertEqual(req.mood, "cinematic")
+        self.assertEqual(req.moodboard_ids, [12, 34])
+        self.assertEqual(req.moodboard_uuids, ["one", "two"])
+        self.assertEqual(req.moodboard_images, ["style-ref"])
+        self.assertEqual(req.moodboard_strength, 0.4)
+
     def test_provider_auto_uses_krea_when_flux_missing(self) -> None:
         import edit_providers
 
@@ -293,6 +313,7 @@ class QualityUpgradeTests(unittest.TestCase):
 
     def test_gguf_low_vram_setup_skips_installed_assets_and_sets_paths(self) -> None:
         from fastapi.testclient import TestClient
+        import gguf_runtime_installer
         import main
         import quality_assets
 
@@ -308,6 +329,7 @@ class QualityUpgradeTests(unittest.TestCase):
         with (
             patch.object(quality_assets, "asset_installed", side_effect=fake_installed),
             patch.object(quality_assets, "download_asset", side_effect=fake_download),
+            patch.object(gguf_runtime_installer, "install_stable_diffusion_cpp", return_value={"sd_cli_path": "E:\\Krea 2\\tools\\stable-diffusion.cpp\\sd-cli.exe", "skipped": "false"}),
             TestClient(main.app) as client,
         ):
             response = client.post("/api/gguf/setup-low-vram")
@@ -315,6 +337,7 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["diffusion_engine"], "gguf_external")
+        self.assertEqual(data["sd_cli_path"], "E:\\Krea 2\\tools\\stable-diffusion.cpp\\sd-cli.exe")
         self.assertEqual(data["realtime"]["preview_size"], 512)
         self.assertIn("gguf_krea2_turbo_q3km", downloaded)
         self.assertIn("gguf_qwen3vl_4b_q4km", downloaded)

@@ -177,6 +177,8 @@ export interface RealtimeState {
   settings: RealtimeSettings
 }
 
+export type CreateMode = 'txt2img' | 'redraw' | 'realtime'
+
 function makeSessionId(): string {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`
   return `rt-${id}`
@@ -339,6 +341,8 @@ interface AppState {
 
   tab: number
   setTab: (n: number) => void
+  createMode: CreateMode
+  setCreateMode: (mode: CreateMode) => void
   moodboardView: 'official' | 'favorites' | 'custom' | 'new'
   setMoodboardView: (view: 'official' | 'favorites' | 'custom' | 'new') => void
 
@@ -392,6 +396,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   tab: 0,
   setTab: (n) => set({ tab: n }),
+  createMode: 'txt2img',
+  setCreateMode: (mode) => set({ createMode: mode }),
   moodboardView: 'official',
   setMoodboardView: (view) => set({ moodboardView: view }),
 

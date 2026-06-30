@@ -20,7 +20,19 @@ function moodboardErrorMessage(error: any, fallback: string) {
   return detail ?? error?.message ?? fallback
 }
 
-export default function MoodboardSection() {
+interface MoodboardSectionProps {
+  intro?: string
+  promptValue?: string
+  onPromptFallback?: (prompt: string) => void
+  applyTitleToPrompt?: boolean
+}
+
+export default function MoodboardSection({
+  intro = 'Search official Krea moodboards here, add one or more styles, then generate normally. Catalog boards use style guidance only by default, so they should not copy the source moodboard image layout.',
+  promptValue,
+  onPromptFallback,
+  applyTitleToPrompt = true,
+}: MoodboardSectionProps) {
   const { params, setParam } = useStore()
   const [moods, setMoods] = useState<Mood[]>([])
   const [catalogQuery, setCatalogQuery] = useState('')
@@ -92,7 +104,11 @@ export default function MoodboardSection() {
       setSelectedBoards(prev => prev.some(board => board.id === moodboard.id) ? prev : [...prev, moodboard])
       setParam('selected_moodboard_ids', nextIds)
       setParam('moodboard_uuids', nextUuids)
-      if (!current.prompt.trim()) setParam('prompt', moodboard.title)
+      const existingPrompt = promptValue ?? current.prompt
+      if (applyTitleToPrompt && !existingPrompt.trim()) {
+        if (onPromptFallback) onPromptFallback(moodboard.title)
+        else setParam('prompt', moodboard.title)
+      }
     } catch (e: any) {
       setCatalogMessage(moodboardErrorMessage(e, 'Could not add Krea moodboard.'))
     } finally {
@@ -168,7 +184,7 @@ export default function MoodboardSection() {
       <Collapse in={open}>
         <Box sx={{ pt: 1 }}>
           <Alert severity="info" sx={{ py: 0.75, mb: 1.5 }}>
-            Search official Krea moodboards here, add one or more styles, then generate normally. Catalog boards use style guidance only by default, so they should not copy the source moodboard image layout.
+            {intro}
           </Alert>
 
           {selectedMoods.length > 0 && (

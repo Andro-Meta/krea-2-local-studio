@@ -334,6 +334,7 @@ export default function SystemStatus() {
       setSettingsDraft(d => ({
         ...d,
         diffusion_engine: result.diffusion_engine,
+        gguf_sd_cli_path: result.sd_cli_path,
         gguf_turbo_path: result.turbo_path,
         gguf_llm_path: result.llm_path,
         gguf_vae_path: result.vae_path,

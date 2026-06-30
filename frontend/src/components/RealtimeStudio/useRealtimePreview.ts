@@ -20,6 +20,11 @@ export function useRealtimePreview() {
   const document = useStore(s => s.realtime.document)
   const prompt = useStore(s => s.realtime.prompt)
   const negativePrompt = useStore(s => s.realtime.negativePrompt)
+  const mood = useStore(s => s.params.mood)
+  const selectedMoodboardIds = useStore(s => s.params.selected_moodboard_ids)
+  const moodboardUuids = useStore(s => s.params.moodboard_uuids)
+  const moodboardImages = useStore(s => s.params.moodboard_images)
+  const moodboardStrength = useStore(s => s.params.moodboard_strength)
   const sessionId = useStore(s => s.realtime.preview.sessionId)
   const paused = useStore(s => s.realtime.preview.paused)
   const settings = useStore(s => s.realtime.settings)
@@ -82,7 +87,11 @@ export function useRealtimePreview() {
         width: settings.previewSize,
         height: Math.round(settings.previewSize * (document.height / document.width)),
         preview_steps: settings.previewSteps,
-        moodboard_strength: settings.canvasInfluence,
+        moodboard_strength: selectedMoodboardIds.length || moodboardImages.length || mood ? moodboardStrength : settings.canvasInfluence,
+        mood,
+        moodboard_ids: selectedMoodboardIds,
+        moodboard_uuids: moodboardUuids,
+        moodboard_images: moodboardImages,
         seed: settings.lockSeed ? settings.seed : -1,
       })
       latestJobRef.current = job.job_id
@@ -100,7 +109,7 @@ export function useRealtimePreview() {
         lastUpdated: Date.now(),
       })
     }
-  }, [document, negativePrompt, paused, pollJob, prompt, sessionId, setRealtimePreview, settings.canvasInfluence, settings.lockSeed, settings.previewSize, settings.previewSteps, settings.seed])
+  }, [document, mood, moodboardImages, moodboardStrength, moodboardUuids, negativePrompt, paused, pollJob, prompt, selectedMoodboardIds, sessionId, setRealtimePreview, settings.canvasInfluence, settings.lockSeed, settings.previewSize, settings.previewSteps, settings.seed])
 
   const cancelPreview = useCallback(async () => {
     clearPoll()
@@ -130,6 +139,11 @@ export function useRealtimePreview() {
     settings.previewSize,
     settings.previewSteps,
     settings.canvasInfluence,
+    mood,
+    moodboardImages,
+    moodboardStrength,
+    moodboardUuids,
+    selectedMoodboardIds,
     settings.lockSeed,
     settings.seed,
     paused,

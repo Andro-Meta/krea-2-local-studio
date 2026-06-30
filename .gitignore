@@ -36,6 +36,7 @@ server_test.log.err
 
 # Downloaded model weights and caches
 models/
+tools/stable-diffusion.cpp/
 *.safetensors
 *.ckpt
 *.pt

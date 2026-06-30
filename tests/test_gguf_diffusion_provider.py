@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -59,6 +60,39 @@ class GgufDiffusionProviderTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "sd-cli"):
             build_gguf_command(req, GgufRuntimeSettings(), output_dir=Path("out"))
+
+    def test_installer_extracts_sd_cli_and_cudart(self) -> None:
+        import zipfile
+        import gguf_runtime_installer
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            downloads = root / "downloads"
+            cuda_zip = downloads / "sd-master-test-bin-win-cuda12-x64.zip"
+            cudart_zip = downloads / "cudart-sd-bin-win-cu12-x64.zip"
+            downloads.mkdir()
+            with zipfile.ZipFile(cuda_zip, "w") as zf:
+                zf.writestr("bin/sd-cli.exe", "exe")
+            with zipfile.ZipFile(cudart_zip, "w") as zf:
+                zf.writestr("bin/cudart64_12.dll", "dll")
+
+            def fake_download(url: str, dest: Path) -> Path:
+                source = cudart_zip if "cudart" in url else cuda_zip
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(source.read_bytes())
+                return dest
+
+            with (
+                patch.object(gguf_runtime_installer, "_latest_release_assets", return_value={
+                    "sd-master-test-bin-win-cuda12-x64.zip": "https://example.test/sd.zip",
+                    "cudart-sd-bin-win-cu12-x64.zip": "https://example.test/cudart.zip",
+                }),
+                patch.object(gguf_runtime_installer, "_download", side_effect=fake_download),
+            ):
+                result = gguf_runtime_installer.install_stable_diffusion_cpp(root / "runtime")
+
+            self.assertTrue(Path(result["sd_cli_path"]).exists())
+            self.assertTrue((root / "runtime" / "cudart64_12.dll").exists())
 
 
 if __name__ == "__main__":

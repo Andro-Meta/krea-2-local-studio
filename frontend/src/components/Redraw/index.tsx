@@ -6,6 +6,7 @@ import {
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import { useStore } from '../../store'
+import MoodboardSection from '../GeneratePanel/MoodboardSection'
 
 type RedrawRole = 'scene' | 'person' | 'object' | 'style' | 'mood'
 
@@ -213,8 +214,8 @@ export default function RedrawPanel() {
       ref_image1_b64: '',
       ref_image2_b64: '',
       ref_image3_b64: '',
-      moodboard_images: activeImages.map(slot => slot.image),
-      moodboard_strength: 0.75,
+      moodboard_images: [...params.moodboard_images, ...activeImages.map(slot => slot.image)],
+      moodboard_strength: params.selected_moodboard_ids.length || params.moodboard_images.length ? params.moodboard_strength : 0.75,
       denoise: 1.0,
       width: align16(params.width || 1024),
       height: align16(params.height || 1024),
@@ -230,6 +231,16 @@ export default function RedrawPanel() {
           Redraw creates a new coherent image from references. It does not preserve pixels exactly. Use it when you want
           Krea to reinterpret the inputs into one unified result.
         </Alert>
+
+        <Card variant="outlined" sx={{ borderRadius: 3 }}>
+          <CardContent>
+            <MoodboardSection
+              intro="Apply Krea moodboards to Redraw as text-first style guidance. Your uploaded redraw pictures still control subject, layout, and reference content."
+              promptValue={instruction}
+              applyTitleToPrompt={false}
+            />
+          </CardContent>
+        </Card>
 
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
           <Card variant="outlined" sx={{ flex: 1, borderRadius: 3 }}>

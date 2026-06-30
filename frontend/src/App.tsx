@@ -14,10 +14,7 @@ import { apiFetch, type MoodboardDiscovery } from './api'
 const SEEN_MOODBOARD_DISCOVERY_KEY = 'krea2_seen_moodboard_discovery_id'
 
 export default function App() {
-  const { tab, lightbox, params, setParam, setParams, setTab, setMoodboardView } = useStore()
-  const [createMode, setCreateMode] = useState<'txt2img' | 'redraw' | 'realtime'>(
-    params.mode === 'txt2img' ? 'txt2img' : 'redraw',
-  )
+  const { tab, lightbox, params, setParam, setParams, setTab, setMoodboardView, createMode, setCreateMode } = useStore()
   const [moodboardToast, setMoodboardToast] = useState<MoodboardDiscovery | null>(null)
 
   useEffect(() => {

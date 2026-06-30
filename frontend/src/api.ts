@@ -232,6 +232,10 @@ export interface RealtimePreviewRequest {
   height: number
   preview_steps?: number
   moodboard_strength?: number
+  mood?: string
+  moodboard_ids?: number[]
+  moodboard_uuids?: string[]
+  moodboard_images?: string[]
   seed?: number
 }
 
@@ -443,7 +447,9 @@ export interface XperimentSetupResult {
 export interface GgufLowVramSetupResult {
   ok: boolean
   assets: Array<{ id: string; path: string; skipped: boolean; item: QualityAsset }>
+  runtime: { sd_cli_path: string; skipped: string }
   diffusion_engine: 'gguf_external'
+  sd_cli_path: string
   turbo_path: string
   realtime_candidate_path: string
   llm_path: string

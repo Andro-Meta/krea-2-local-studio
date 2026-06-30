@@ -16,6 +16,7 @@ import RealtimeToolbar from './RealtimeToolbar'
 import { createDefaultDocument, documentToPngB64, promptFromLayerNotes } from './canvasDocument'
 import { useRealtimePreview } from './useRealtimePreview'
 import CreatePromptFromImage from '../CreatePromptFromImage'
+import MoodboardSection from '../GeneratePanel/MoodboardSection'
 
 function statusText(status: string) {
   if (status === 'queued') return 'Queued'
@@ -39,6 +40,7 @@ async function waitForFinal(jobId: string) {
 
 export default function RealtimeStudio() {
   const realtime = useStore(s => s.realtime)
+  const params = useStore(s => s.params)
   const setRealtime = useStore(s => s.setRealtime)
   const setRealtimeDocument = useStore(s => s.setRealtimeDocument)
   const setRealtimePreview = useStore(s => s.setRealtimePreview)
@@ -70,6 +72,7 @@ export default function RealtimeStudio() {
         prompt,
         negative_prompt: realtime.negativePrompt,
         mode: 'redraw',
+        diffusion_engine: 'native_pytorch',
         checkpoint: 'turbo',
         quantization: 'fp8',
         steps: realtime.settings.finalSteps,
@@ -79,8 +82,13 @@ export default function RealtimeStudio() {
         num_images: 1,
         seed: realtime.settings.lockSeed ? realtime.settings.seed : -1,
         denoise: 1,
-        moodboard_strength: realtime.settings.canvasInfluence,
-        moodboard_images: [canvasB64],
+        mood: params.mood,
+        moodboard_ids: params.selected_moodboard_ids,
+        moodboard_uuids: params.moodboard_uuids,
+        moodboard_strength: params.selected_moodboard_ids.length || params.moodboard_images.length || params.mood
+          ? params.moodboard_strength
+          : realtime.settings.canvasInfluence,
+        moodboard_images: [canvasB64, ...params.moodboard_images],
       })
       const final = await waitForFinal(job.job_id)
       const image = final.images?.[0] ?? ''
@@ -238,6 +246,11 @@ export default function RealtimeStudio() {
                       compact
                     />
                     <TextField label="Negative prompt" value={realtime.negativePrompt} onChange={e => setRealtime({ negativePrompt: e.target.value })} multiline minRows={2} />
+                    <MoodboardSection
+                      intro="Apply Krea moodboards to live previews and final renders as text-first style guidance. The canvas remains the composition reference; uploaded moodboard images are optional stronger style references."
+                      promptValue={realtime.prompt}
+                      onPromptFallback={prompt => setRealtime({ prompt })}
+                    />
                     <Divider />
                     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
                       <TextField

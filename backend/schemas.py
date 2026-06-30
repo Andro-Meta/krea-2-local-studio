@@ -140,6 +140,10 @@ class RealtimePreviewRequest(BaseModel):
     height: int = 512
     preview_steps: int = 5
     moodboard_strength: float = 0.75
+    mood: str = ""
+    moodboard_ids: List[int] = []
+    moodboard_uuids: List[str] = []
+    moodboard_images: List[str] = []
     seed: int = -1
 
 

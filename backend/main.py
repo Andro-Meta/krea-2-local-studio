@@ -885,7 +885,10 @@ async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, sessio
             use_prompt_expander=False,
             refine=False,
             moodboard_strength=max(0.0, min(1.0, float(req.moodboard_strength))),
-            moodboard_images=[req.canvas_image_b64],
+            mood=req.mood,
+            moodboard_ids=list(req.moodboard_ids or []),
+            moodboard_uuids=list(req.moodboard_uuids or []),
+            moodboard_images=[req.canvas_image_b64, *list(req.moodboard_images or [])],
         )
         results, seed, filenames, _, metadata = await loop.run_in_executor(
             None, lambda: pipeline.generate(preview_req, progress_cb=progress_cb, save_outputs=False)
@@ -1801,11 +1804,16 @@ async def xperiment_setup_endpoint():
 @app.post("/api/gguf/setup-low-vram")
 async def gguf_setup_low_vram_endpoint():
     from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
+    from gguf_runtime_installer import install_stable_diffusion_cpp
     from quality_assets import asset_by_id, asset_installed, asset_status, download_asset
 
     required_ids = ["gguf_krea2_turbo_q4km", "gguf_krea2_turbo_q3km", "gguf_qwen3vl_4b_q4km", "wan_2_1_vae"]
     token = settings.hf_token or os.environ.get("HF_TOKEN") or None
     loop = asyncio.get_event_loop()
+    runtime = await loop.run_in_executor(
+        None,
+        lambda: install_stable_diffusion_cpp(Path(settings.models_dir).parent / "tools" / "stable-diffusion.cpp"),
+    )
     results: list[dict] = []
     for asset_id in required_ids:
         spec = asset_by_id(asset_id)
@@ -1827,11 +1835,13 @@ async def gguf_setup_low_vram_endpoint():
     vae = asset_by_id("wan_2_1_vae").local_path
     env = _read_env()
     env["DIFFUSION_ENGINE"] = "gguf_external"
+    env["GGUF_SD_CLI_PATH"] = runtime["sd_cli_path"]
     env["GGUF_TURBO_PATH"] = str(q4)
     env["GGUF_LLM_PATH"] = str(qwen)
     env["GGUF_VAE_PATH"] = str(vae)
     env["GGUF_REALTIME_PROFILE"] = "turbo_q3_or_q4_512"
     settings.diffusion_engine = "gguf_external"
+    settings.gguf_sd_cli_path = runtime["sd_cli_path"]
     settings.gguf_turbo_path = str(q4)
     settings.gguf_llm_path = str(qwen)
     settings.gguf_vae_path = str(vae)
@@ -1839,7 +1849,9 @@ async def gguf_setup_low_vram_endpoint():
     return {
         "ok": True,
         "assets": results,
+        "runtime": runtime,
         "diffusion_engine": "gguf_external",
+        "sd_cli_path": runtime["sd_cli_path"],
         "turbo_path": str(q4),
         "realtime_candidate_path": str(q3),
         "llm_path": str(qwen),
@@ -2091,13 +2103,49 @@ async def gguf_test_runtime_endpoint():
     from gguf_diffusion_provider import build_gguf_command
 
     req = GenerationRequest(prompt="a small red fox in morning fog", width=512, height=512, steps=4, cfg=0.0)
-    cmd, output = build_gguf_command(req, _gguf_runtime_settings())
+    try:
+        cmd, output = build_gguf_command(req, _gguf_runtime_settings())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "command": cmd, "output": str(output)}
 
 
 @app.post("/api/gguf/benchmark-quick")
 async def gguf_benchmark_quick_endpoint():
-    return {"ok": False, "message": "GGUF runtime benchmark is available after runtime paths are configured and test-runtime succeeds."}
+    from types import SimpleNamespace
+    from gguf_diffusion_provider import generate_gguf_external
+
+    req = SimpleNamespace(
+        prompt="a red fox in morning fog, cinematic lighting",
+        negative_prompt="blurry",
+        checkpoint="turbo",
+        width=512,
+        height=512,
+        steps=4,
+        cfg=0.0,
+        seed=123,
+        mode="txt2img",
+    )
+    started = time.time()
+    try:
+        _images, seed, filenames, _lora_reports, metadata = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: generate_gguf_external(req, _gguf_runtime_settings())
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    elapsed = time.time() - started
+    return {
+        "ok": True,
+        "elapsed_sec": round(elapsed, 2),
+        "preview_size": 512,
+        "preview_steps": 4,
+        "final_steps": 8,
+        "seed": seed,
+        "filenames": filenames,
+        "output": metadata[0]["filename"] if metadata else "",
+        "live_candidate": elapsed <= 30.0,
+        "message": "GGUF 512/4 txt2img benchmark passed; Realtime Studio redraw remains gated because the sidecar path is txt2img-only.",
+    }
 
 
 @app.get("/api/runtime-advice")

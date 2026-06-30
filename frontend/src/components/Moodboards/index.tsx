@@ -80,7 +80,7 @@ export default function MoodboardsPanel() {
   const [mashupIds, setMashupIds] = useState<number[]>([])
   const [mashupWeights, setMashupWeights] = useState<Record<number, number>>({})
   const customFileRef = useRef<HTMLInputElement>(null)
-  const { params, setParams, setTab, moodboardView, setMoodboardView } = useStore()
+  const { params, realtime, setParams, setTab, createMode, setCreateMode, setRealtime, moodboardView, setMoodboardView } = useStore()
   const isAdmin = auth?.role === 'admin'
 
   const load = useCallback(async (pg = 1) => {
@@ -236,21 +236,25 @@ export default function MoodboardsPanel() {
     }
   }
 
-  const useMoodboard = async (board: MoodboardItem) => {
+  const useMoodboard = async (board: MoodboardItem, target: 'txt2img' | 'redraw' | 'realtime' = createMode) => {
     setBusy(`Loading ${board.title}`)
     setMessage(null)
     try {
-      const basePrompt = params.prompt.trim()
+      const basePrompt = target === 'realtime' ? realtime.prompt.trim() : params.prompt.trim()
+      const mode = target === 'txt2img' ? 'txt2img' : 'redraw'
       setParams({
-        mode: 'txt2img',
+        mode,
+        diffusion_engine: 'native_pytorch',
         mood: '',
         selected_moodboard_ids: [board.id],
         moodboard_uuids: board.uuid ? [board.uuid] : [],
         moodboard_strength: 0.35,
         moodboard_images: [],
-        prompt: basePrompt || board.title,
+        prompt: target === 'realtime' ? params.prompt : (basePrompt || board.title),
       })
-      setMessage({ severity: 'success', text: `Loaded ${board.title} style guidance.` })
+      if (target === 'realtime') setRealtime({ prompt: basePrompt || board.title })
+      setCreateMode(target)
+      setMessage({ severity: 'success', text: `Loaded ${board.title} style guidance into ${target === 'txt2img' ? 'Create' : target === 'redraw' ? 'Redraw' : 'Realtime'}.` })
       setTab(0)
     } catch (e: any) {
       setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not load moodboard') })
@@ -334,7 +338,7 @@ export default function MoodboardsPanel() {
           <Box>
             <Typography variant="h5">Moodboards</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Search public Krea moodboards, save favorites, and load their enriched style guidance into local txt2img conditioning.
+              Search public Krea moodboards, save favorites, and load enriched style guidance into Create, Redraw, or Realtime.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -523,9 +527,17 @@ export default function MoodboardsPanel() {
                           Qwen guidance
                         </Button>
                       </Stack>
-                      <Button startIcon={<AutoAwesomeIcon />} variant="contained" onClick={() => useMoodboard(board)} disabled={!!busy}>
-                        Use moodboard
-                      </Button>
+                      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                        <Button startIcon={<AutoAwesomeIcon />} size="small" variant="contained" onClick={() => useMoodboard(board, 'txt2img')} disabled={!!busy}>
+                          Create
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => useMoodboard(board, 'redraw')} disabled={!!busy}>
+                          Redraw
+                        </Button>
+                        <Button size="small" variant="outlined" onClick={() => useMoodboard(board, 'realtime')} disabled={!!busy}>
+                          Realtime
+                        </Button>
+                      </Stack>
                     </CardContent>
                   </Card>
                 </Grid>
