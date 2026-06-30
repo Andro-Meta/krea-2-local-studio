@@ -50,7 +50,9 @@ export default function SystemStatus() {
     gguf_helper_base_url: 'http://127.0.0.1:1234/v1',
     gguf_helper_model: 'BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M',
     gguf_helper_timeout_sec: 120,
-    diffusion_engine: 'native_pytorch' as 'native_pytorch' | 'gguf_external' | 'int8_convrot_external',
+    diffusion_engine: 'native_pytorch' as 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external',
+    krea2_turbo_int8_path: '',
+    krea2_raw_int8_path: '',
     gguf_sd_cli_path: '',
     gguf_turbo_path: '',
     gguf_raw_path: '',
@@ -58,11 +60,6 @@ export default function SystemStatus() {
     gguf_vae_path: '',
     gguf_lora_dir: '',
     gguf_timeout_sec: 600,
-    comfy_base_url: 'http://127.0.0.1:8188',
-    comfy_int8_model: 'krea2_turbo_int8.safetensors',
-    comfy_clip_name: 'qwen3vl_4b_fp8_scaled.safetensors',
-    comfy_vae_name: 'qwen_image_vae.safetensors',
-    comfy_timeout_sec: 900,
   })
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState<{ severity: 'success' | 'warning' | 'error'; text: string } | null>(null)
@@ -89,7 +86,7 @@ export default function SystemStatus() {
   const [acceleratorMessage, setAcceleratorMessage] = useState<{ severity: 'success' | 'error' | 'warning'; text: string } | null>(null)
   const [ggufHelperBusy, setGgufHelperBusy] = useState(false)
   const [ggufRuntimeBusy, setGgufRuntimeBusy] = useState(false)
-  const { setSystemReport, setRealtimeSettings } = useStore()
+  const { setSystemReport, setRealtimeSettings, setParams } = useStore()
   const isAdmin = auth?.role === 'admin'
   const localQwenChoice = !settingsDraft.local_qwen_model_id
     ? 'default'
@@ -146,6 +143,8 @@ export default function SystemStatus() {
         gguf_helper_model: s.gguf_helper_model ?? 'BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M',
         gguf_helper_timeout_sec: s.gguf_helper_timeout_sec ?? 120,
         diffusion_engine: s.diffusion_engine ?? 'native_pytorch',
+        krea2_turbo_int8_path: s.krea2_turbo_int8_path ?? '',
+        krea2_raw_int8_path: s.krea2_raw_int8_path ?? '',
         gguf_sd_cli_path: s.gguf_sd_cli_path ?? '',
         gguf_turbo_path: s.gguf_turbo_path ?? '',
         gguf_raw_path: s.gguf_raw_path ?? '',
@@ -153,11 +152,6 @@ export default function SystemStatus() {
         gguf_vae_path: s.gguf_vae_path ?? '',
         gguf_lora_dir: s.gguf_lora_dir ?? '',
         gguf_timeout_sec: s.gguf_timeout_sec ?? 600,
-        comfy_base_url: s.comfy_base_url ?? 'http://127.0.0.1:8188',
-        comfy_int8_model: s.comfy_int8_model ?? 'krea2_turbo_int8.safetensors',
-        comfy_clip_name: s.comfy_clip_name ?? 'qwen3vl_4b_fp8_scaled.safetensors',
-        comfy_vae_name: s.comfy_vae_name ?? 'qwen_image_vae.safetensors',
-        comfy_timeout_sec: s.comfy_timeout_sec ?? 900,
       })
     } catch {
       setSettingsMessage({ severity: 'error', text: 'Could not load settings.' })
@@ -286,11 +280,6 @@ export default function SystemStatus() {
         gguf_vae_path: settingsDraft.gguf_vae_path,
         gguf_lora_dir: settingsDraft.gguf_lora_dir,
         gguf_timeout_sec: settingsDraft.gguf_timeout_sec,
-        comfy_base_url: settingsDraft.comfy_base_url,
-        comfy_int8_model: settingsDraft.comfy_int8_model,
-        comfy_clip_name: settingsDraft.comfy_clip_name,
-        comfy_vae_name: settingsDraft.comfy_vae_name,
-        comfy_timeout_sec: settingsDraft.comfy_timeout_sec,
         ...(settingsDraft.ideogram_api_key.trim() ? { ideogram_api_key: settingsDraft.ideogram_api_key.trim() } : {}),
         openrouter_model: settingsDraft.openrouter_model,
         openrouter_free_only: settingsDraft.openrouter_free_only,
@@ -332,6 +321,8 @@ export default function SystemStatus() {
     try {
       await apiFetch.updateSettings({
         diffusion_engine: settingsDraft.diffusion_engine,
+        krea2_turbo_int8_path: settingsDraft.krea2_turbo_int8_path,
+        krea2_raw_int8_path: settingsDraft.krea2_raw_int8_path,
         gguf_sd_cli_path: settingsDraft.gguf_sd_cli_path,
         gguf_turbo_path: settingsDraft.gguf_turbo_path,
         gguf_raw_path: settingsDraft.gguf_raw_path,
@@ -350,28 +341,43 @@ export default function SystemStatus() {
     }
   }
 
-  const testComfyInt8Workflow = async () => {
+  const setupNativeInt8 = async () => {
     setGgufRuntimeBusy(true)
     setSettingsMessage(null)
     try {
-      await apiFetch.updateSettings({
-        comfy_base_url: settingsDraft.comfy_base_url,
-        comfy_int8_model: settingsDraft.comfy_int8_model,
-        comfy_clip_name: settingsDraft.comfy_clip_name,
-        comfy_vae_name: settingsDraft.comfy_vae_name,
-        comfy_timeout_sec: settingsDraft.comfy_timeout_sec,
+      const result = await apiFetch.setupNativeInt8()
+      setSettingsDraft(d => ({
+        ...d,
+        diffusion_engine: result.diffusion_engine,
+        krea2_turbo_int8_path: result.turbo_path,
+      }))
+      setParams({
+        diffusion_engine: 'native_int8_convrot',
+        model_profile: 'krea_turbo',
+        checkpoint: 'turbo',
+        quantization: 'int8',
+        steps: result.sampler.steps,
+        cfg: result.sampler.cfg,
+        mu: result.sampler.mu,
+        sampler: result.sampler.sampler as any,
+        scheduler: result.sampler.scheduler as any,
+        resolution_tier: '1k',
+        aspect_ratio: '1:1',
+        width: 1024,
+        height: 1024,
+        conditioning_mode: 'auto',
+        negative_prompt: '',
       })
-      const status = await apiFetch.int8Status()
-      const workflow = await apiFetch.testInt8Workflow()
-      setSettingsMessage({
-        severity: status.ok ? 'success' : 'warning',
-        text: status.ok
-          ? `Comfy INT8 reachable; workflow dry-run built ${workflow.node_count} nodes.`
-          : `Comfy INT8 workflow dry-run built ${workflow.node_count} nodes, but Comfy is not reachable: ${status.error}`,
-      })
+      setCpPath(result.turbo_path)
+      setQuant(result.quantization)
+      await loadQualityAssets()
       await loadSettings()
+      setSettingsMessage({
+        severity: 'success',
+        text: `Native INT8 setup applied. ${result.assets.filter(asset => asset.skipped).length}/${result.assets.length} assets were already installed. ${result.warnings.join(' ')}`,
+      })
     } catch (e: any) {
-      setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Comfy INT8 workflow test failed.' })
+      setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Native INT8 setup failed.' })
     } finally {
       setGgufRuntimeBusy(false)
     }
@@ -394,6 +400,35 @@ export default function SystemStatus() {
         previewSize: result.realtime.preview_size,
         previewSteps: result.realtime.preview_steps,
         finalSteps: result.realtime.final_steps,
+      })
+      setParams({
+        diffusion_engine: 'gguf_external',
+        model_profile: '',
+        mode: 'txt2img',
+        checkpoint: 'turbo',
+        quantization: 'fp8',
+        steps: result.sampler.steps,
+        cfg: result.sampler.cfg,
+        mu: result.sampler.mu,
+        sampler: result.sampler.sampler as any,
+        scheduler: result.sampler.scheduler as any,
+        resolution_tier: '1k',
+        aspect_ratio: '1:1',
+        width: 1024,
+        height: 1024,
+        num_images: 1,
+        loras: [],
+        style_references: [],
+        regional_prompts: [],
+        moodboard_images: [],
+        selected_moodboard_ids: [],
+        moodboard_uuids: [],
+        use_rebalance: false,
+        krea_enhancer_enabled: false,
+        krea_enhancer_variant: 'off',
+        cfg_zero_star: false,
+        conditioning_mode: 'auto',
+        negative_prompt: '',
       })
       await loadQualityAssets()
       await loadSettings()
@@ -1321,10 +1356,10 @@ export default function SystemStatus() {
               {ggufRuntimeBusy ? 'Setting up GGUF...' : 'Setup GGUF Low-VRAM'}
             </Button>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              {(['native_pytorch', 'gguf_external', 'int8_convrot_external'] as const).map(engine => (
+              {(['native_pytorch', 'native_int8_convrot', 'gguf_external'] as const).map(engine => (
                 <Chip
                   key={engine}
-                  label={engine === 'native_pytorch' ? 'Native PyTorch' : engine === 'gguf_external' ? 'GGUF external' : 'INT8 ConvRot external'}
+                  label={engine === 'native_pytorch' ? 'Native PyTorch' : engine === 'native_int8_convrot' ? 'Native INT8 ConvRot' : 'GGUF external'}
                   clickable
                   variant={settingsDraft.diffusion_engine === engine ? 'filled' : 'outlined'}
                   color={settingsDraft.diffusion_engine === engine ? (engine === 'native_pytorch' ? 'primary' : 'warning') : 'default'}
@@ -1338,31 +1373,22 @@ export default function SystemStatus() {
             <TextField label="Qwen3-VL GGUF LLM path" size="small" fullWidth value={settingsDraft.gguf_llm_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_llm_path: e.target.value }))} />
             <TextField label="VAE path" size="small" fullWidth value={settingsDraft.gguf_vae_path} onChange={e => setSettingsDraft(d => ({ ...d, gguf_vae_path: e.target.value }))} />
             <TextField label="LoRA directory (optional; disabled until A/B verified)" size="small" fullWidth value={settingsDraft.gguf_lora_dir} onChange={e => setSettingsDraft(d => ({ ...d, gguf_lora_dir: e.target.value }))} />
-            <Typography variant="subtitle2" sx={{ pt: 1 }}>Comfy INT8 Sidecar</Typography>
+            <Typography variant="subtitle2" sx={{ pt: 1 }}>Native INT8 ConvRot</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Uses current ComfyUI native Krea2/INT8 workflow APIs. Keep Comfy running, then dry-run the workflow before switching the engine.
+              Ported Krea2 INT8 ConvRot loader. Uses torch._int_mm first; comfy_kitchen/Triton are optional later and are not required.
             </Typography>
-            <TextField label="Comfy base URL" size="small" fullWidth value={settingsDraft.comfy_base_url} onChange={e => setSettingsDraft(d => ({ ...d, comfy_base_url: e.target.value }))} placeholder="http://127.0.0.1:8188" />
-            <TextField label="Comfy INT8 diffusion model" size="small" fullWidth value={settingsDraft.comfy_int8_model} onChange={e => setSettingsDraft(d => ({ ...d, comfy_int8_model: e.target.value }))} placeholder="krea2_turbo_int8.safetensors" />
-            <TextField label="Comfy Krea2 CLIP/text encoder" size="small" fullWidth value={settingsDraft.comfy_clip_name} onChange={e => setSettingsDraft(d => ({ ...d, comfy_clip_name: e.target.value }))} placeholder="qwen3vl_4b_fp8_scaled.safetensors" />
-            <TextField label="Comfy VAE" size="small" fullWidth value={settingsDraft.comfy_vae_name} onChange={e => setSettingsDraft(d => ({ ...d, comfy_vae_name: e.target.value }))} placeholder="qwen_image_vae.safetensors" />
-            <TextField
-              label="Comfy timeout (seconds)"
-              type="number"
-              size="small"
-              value={settingsDraft.comfy_timeout_sec}
-              onChange={e => setSettingsDraft(d => ({ ...d, comfy_timeout_sec: Math.max(60, Number(e.target.value) || 900) }))}
-              inputProps={{ min: 60, step: 60 }}
-            />
+            <TextField label="Krea2 Turbo INT8 ConvRot path" size="small" fullWidth value={settingsDraft.krea2_turbo_int8_path} onChange={e => setSettingsDraft(d => ({ ...d, krea2_turbo_int8_path: e.target.value }))} placeholder="models\\krea2\\diffusion_models\\krea2_turbo_int8_convrot.safetensors" />
+            <TextField label="Krea2 RAW INT8 ConvRot path (optional)" size="small" fullWidth value={settingsDraft.krea2_raw_int8_path} onChange={e => setSettingsDraft(d => ({ ...d, krea2_raw_int8_path: e.target.value }))} placeholder="models\\krea2\\diffusion_models\\krea2_raw_int8_convrot.safetensors" />
             <Button
-              variant="outlined"
+              variant="contained"
+              color="warning"
               size="small"
-              onClick={testComfyInt8Workflow}
+              onClick={setupNativeInt8}
               disabled={ggufRuntimeBusy}
               startIcon={ggufRuntimeBusy ? <CircularProgress size={14} color="inherit" /> : undefined}
               sx={{ alignSelf: 'flex-start' }}
             >
-              Test Comfy INT8 Workflow
+              Setup Native INT8
             </Button>
             <TextField
               label="GGUF runtime timeout (seconds)"

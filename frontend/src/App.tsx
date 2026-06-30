@@ -30,6 +30,23 @@ export default function App() {
   }, [createMode, params.mode])
 
   useEffect(() => {
+    let cancelled = false
+    apiFetch.settings()
+      .then(settings => {
+        if (cancelled) return
+        const engine = settings.diffusion_engine ?? 'native_pytorch'
+        setParams({
+          diffusion_engine: engine,
+          quantization: engine === 'native_int8_convrot' ? 'int8' : params.quantization === 'int8' ? 'fp8' : params.quantization,
+        })
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
     let stopped = false
     const checkDiscovery = async () => {
       try {
@@ -81,13 +98,13 @@ export default function App() {
       {createMode === 'txt2img' && <GeneratePanel />}
       {createMode === 'redraw' && (
         <>
-          {params.diffusion_engine !== 'native_pytorch' ? (
+          {params.diffusion_engine === 'gguf_external' || params.diffusion_engine === 'int8_convrot_external' ? (
             <Box sx={{ p: 2 }}>
               <Alert
                 severity="warning"
                 action={<Button color="inherit" size="small" onClick={() => setParam('diffusion_engine', 'native_pytorch')}>Use Native</Button>}
               >
-                Redraw, img2img, inpaint, and outpaint require the native Krea engine for now. GGUF/INT8 external engines are txt2img-only until benchmarks pass.
+                Redraw, img2img, inpaint, and outpaint require a native Krea engine. GGUF/external engines are txt2img-only until benchmarks pass.
               </Alert>
             </Box>
           ) : (
@@ -99,7 +116,7 @@ export default function App() {
         </>
       )}
       {createMode === 'realtime' && (
-        params.diffusion_engine !== 'native_pytorch' ? (
+        params.diffusion_engine === 'gguf_external' || params.diffusion_engine === 'int8_convrot_external' ? (
           <Box sx={{ p: 2 }}>
             <Alert
               severity="warning"

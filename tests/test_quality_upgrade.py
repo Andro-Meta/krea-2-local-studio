@@ -210,32 +210,73 @@ class QualityUpgradeTests(unittest.TestCase):
         req = GenerationRequest(
             prompt="a neon chair",
             negative_prompt="blurry",
+            diffusion_engine="native_int8_convrot",
             checkpoint="turbo",
-            quantization="fp8",
+            quantization="int8",
             steps=8,
             cfg=0.0,
             seed=42,
             sampler="euler_flow",
+            mode="img2img",
+            init_image_b64="C" * 128,
+            mask_b64="D" * 128,
             inpaint_method="lanpaint_experimental",
             lanpaint_inner_steps=5,
             lanpaint_strength=0.8,
             moodboard_images=["A" * 128],
             ref_image1_b64="B" * 128,
             loras=[{"name": "krea2_darkbrush", "filename": "krea2_darkbrush.safetensors", "strength": 0.7}],
+            seed_variance_algorithm="rbg",
+            seed_variance_preset="creative",
+            seed_variance_model_type="krea2",
+            seed_variance_direction="visceral_expression_grit",
+            seed_variance_shift_strength=170,
+            seed_variance_schedule="step_cutoff",
+            seed_variance_cutoff_step=3,
+            seed_variance_total_steps=13,
+            seed_variance_cutoff_strength=0.53,
         )
 
-        metadata = build_generation_metadata(req, base_seed=42, image_index=1, filename="out.png", resolved_provider="krea_native")
+        metadata = build_generation_metadata(
+            req,
+            base_seed=42,
+            image_index=1,
+            filename="out.png",
+            resolved_provider="krea_native",
+            runtime={"provider": "native_int8_convrot", "torch_int_mm": True},
+            model_runtime={"loaded_checkpoint_path": "models/krea2/diffusion_models/krea2_turbo_int8_convrot.safetensors"},
+        )
 
+        self.assertEqual(metadata["schema_version"], 2)
         self.assertEqual(metadata["prompt"], "a neon chair")
         self.assertEqual(metadata["seed"], 43)
+        self.assertEqual(metadata["diffusion_engine"], "native_int8_convrot")
+        self.assertEqual(metadata["engine"]["id"], "native_int8_convrot")
+        self.assertEqual(metadata["engine"]["resolved_provider"], "krea_native")
+        self.assertEqual(metadata["model"]["quantization"], "int8")
+        self.assertIn("krea2_turbo_int8_convrot", metadata["model"]["loaded_checkpoint_path"])
+        self.assertEqual(metadata["source"]["kind"], "image_to_image")
+        self.assertEqual(metadata["source"]["init_image_count"], 1)
+        self.assertTrue(metadata["source"]["init_image_hash"])
+        self.assertTrue(metadata["source"]["mask_hash"])
+        self.assertTrue(metadata["runtime"]["torch_int_mm"])
         self.assertEqual(metadata["checkpoint"], "turbo")
-        self.assertEqual(metadata["quantization"], "fp8")
+        self.assertEqual(metadata["quantization"], "int8")
         self.assertEqual(metadata["sampler"], "euler_flow")
         self.assertEqual(metadata["inpaint"]["method"], "lanpaint_experimental")
         self.assertEqual(metadata["inpaint"]["lanpaint_inner_steps"], 5)
         self.assertEqual(metadata["inpaint"]["lanpaint_strength"], 0.8)
         self.assertEqual(metadata["image_references"]["moodboard_count"], 1)
+        self.assertEqual(metadata["seed_variance"]["algorithm"], "rbg")
+        self.assertEqual(metadata["seed_variance"]["direction"], "visceral_expression_grit")
+        self.assertEqual(metadata["seed_variance"]["shift_strength"], 170)
+        self.assertEqual(metadata["seed_variance"]["schedule"], "step_cutoff")
+        self.assertEqual(metadata["seed_variance"]["cutoff_step"], 3)
+        self.assertEqual(metadata["seed_variance"]["total_steps"], 13)
+        self.assertAlmostEqual(metadata["seed_variance"]["cutoff_strength"], 0.53)
         self.assertNotIn("A" * 128, json.dumps(metadata))
+        self.assertNotIn("C" * 128, json.dumps(metadata))
+        self.assertNotIn("D" * 128, json.dumps(metadata))
 
     def test_generation_request_defaults_keep_experimental_inpaint_off(self) -> None:
         from schemas import GenerationRequest
@@ -436,6 +477,7 @@ class QualityUpgradeTests(unittest.TestCase):
 
         with (
             patch.object(quality_assets, "asset_installed", side_effect=fake_installed),
+            patch.object(main.settings, "diffusion_engine", "native_int8_convrot"),
             TestClient(main.app) as client,
         ):
             response = client.post("/api/xperiment/setup")
@@ -443,6 +485,8 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["sampler"], {"sampler": "er_sde", "scheduler": "beta57", "steps": 6, "cfg": 0.0})
+        self.assertEqual(data["diffusion_engine"], "native_int8_convrot")
+        self.assertEqual(data["quantization"], "int8")
         self.assertEqual(data["lora"]["strength"], 0.55)
         self.assertEqual(data["lora"]["block_filter"], "late")
         self.assertEqual(data["loras"][0]["name"], "Krea2-realism-V1")
@@ -483,6 +527,7 @@ class QualityUpgradeTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["diffusion_engine"], "gguf_external")
         self.assertEqual(data["sd_cli_path"], "E:\\Krea 2\\tools\\stable-diffusion.cpp\\sd-cli.exe")
+        self.assertEqual(data["sampler"], {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15})
         self.assertEqual(data["realtime"]["preview_size"], 512)
         self.assertIn("gguf_krea2_turbo_q3km", downloaded)
         self.assertIn("gguf_qwen3vl_4b_q4km", downloaded)

@@ -66,11 +66,16 @@ class ModelProfileTests(unittest.TestCase):
 
         self.assertIn("native_pytorch", engines)
         self.assertIn("gguf_external", engines)
+        self.assertIn("native_int8_convrot", engines)
         self.assertTrue(engines["native_pytorch"]["supports_lora"])
         self.assertTrue(engines["native_pytorch"]["supports_moodboards"])
         self.assertFalse(engines["gguf_external"]["supports_moodboards"])
         self.assertFalse(engines["gguf_external"]["supports_krea_enhancer"])
         self.assertEqual(engines["gguf_external"]["recommended_steps"], 8)
+        self.assertTrue(engines["native_int8_convrot"]["supports_moodboards"])
+        self.assertTrue(engines["native_int8_convrot"]["supports_realtime"])
+        self.assertEqual(engines["native_int8_convrot"]["quantization"], "int8")
+        self.assertNotIn("sidecar", engines["native_int8_convrot"]["label"].lower())
 
 
 if __name__ == "__main__":

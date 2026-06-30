@@ -138,7 +138,15 @@ def generate_flux_fill(
 
     images = [img.convert("RGB") for img in result.images]
     metadata = [
-        build_generation_metadata(request, base_seed=seed, image_index=i, filename="", resolved_provider="flux_fill")
+        build_generation_metadata(
+            request,
+            base_seed=seed,
+            image_index=i,
+            filename="",
+            resolved_provider="flux_fill",
+            runtime={"provider": "flux_fill"},
+            model_runtime={"loaded_checkpoint_path": "black-forest-labs/FLUX.1-Fill-dev"},
+        )
         for i in range(len(images))
     ]
     results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs, metadata=metadata)

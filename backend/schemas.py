@@ -36,10 +36,10 @@ class GenerationRequest(BaseModel):
     negative_prompt: str = ""
     mode: str = "txt2img"           # txt2img | redraw | img2img | inpaint | outpaint
     model_profile: str = ""         # krea_turbo | krea_raw | future gated profiles
-    diffusion_engine: Literal["native_pytorch", "gguf_external", "int8_convrot_external"] = "native_pytorch"
+    diffusion_engine: Literal["native_pytorch", "native_int8_convrot", "gguf_external", "int8_convrot_external"] = "native_pytorch"
     checkpoint: str = "turbo"       # turbo | raw | custom
     checkpoint_path: str = ""       # custom path override
-    quantization: str = "fp8"       # bf16 | fp8
+    quantization: str = "fp8"       # bf16 | fp16 | fp8 | int8
     steps: int = 8
     cfg: float = 0.0
     mu: Optional[float] = None  # None → inference resolves (turbo=1.15, RAW=adaptive)
@@ -122,13 +122,26 @@ class GenerationRequest(BaseModel):
     moodboard_uuids: List[str] = []
     moodboard_strength: float = 0.35
     moodboard_images: List[str] = []
-    seed_variance_preset: Literal["off", "subtle", "balanced", "creative", "bold", "custom"] = "off"
+    seed_variance_preset: Literal["off", "subtle", "balanced", "creative", "bold", "wild", "custom"] = "off"
     seed_variance_strength: float = 0.0
-    seed_variance_protection: Literal["none", "first_quarter", "first_half"] = "first_half"
-    seed_variance_direction: Literal["none", "forward", "reverse", "center", "edges"] = "none"
-    seed_variance_fade_curve: Literal["linear", "ease_in", "ease_out", "smoothstep"] = "linear"
+    seed_variance_algorithm: Literal["legacy", "rbg"] = "legacy"
+    seed_variance_model_type: Literal["krea2", "z_image", "qwen_image", "flux", "sdxl", "other"] = "krea2"
+    seed_variance_randomize_percent: float = Field(default=0.0, ge=0.0, le=10.0)
+    seed_variance_shift_strength: int = Field(default=100, ge=0, le=200)
+    seed_variance_protection: Literal["none", "first_quarter", "first_half", "last_quarter", "last_half"] = "first_half"
+    seed_variance_direction: Literal[
+        "none", "forward", "reverse", "center", "edges",
+        "chaos", "order", "abstract", "realistic", "vibrant", "moody", "dreamy",
+        "dynamic_pose", "composition", "diversity", "facevar", "visceral_expression_grit",
+        "semantic_drift", "structural_lock", "cinematic_framing", "identity_stretch", "texture_lift",
+    ] = "none"
+    seed_variance_fade_curve: Literal["instant", "linear", "ease_in", "ease_out", "ease_in_out", "smoothstep", "burst"] = "linear"
     seed_variance_injection_start: float = Field(default=0.0, ge=0.0, le=1.0)
     seed_variance_injection_end: float = Field(default=1.0, ge=0.0, le=1.0)
+    seed_variance_schedule: Literal["constant", "decreasing", "step_cutoff"] = "constant"
+    seed_variance_cutoff_step: int = Field(default=8, ge=0, le=100)
+    seed_variance_total_steps: int = Field(default=20, ge=1, le=100)
+    seed_variance_cutoff_strength: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class RealtimePreviewRequest(BaseModel):
@@ -424,6 +437,8 @@ class SettingsUpdate(BaseModel):
     civitai_token: Optional[str] = None
     krea2_turbo_path: Optional[str] = None
     krea2_raw_path: Optional[str] = None
+    krea2_turbo_int8_path: Optional[str] = None
+    krea2_raw_int8_path: Optional[str] = None
     output_dir: Optional[str] = None
     prompt_expander_backend: Optional[str] = None
     local_llm_backend: Optional[Literal["transformers", "gguf_server"]] = None
@@ -431,7 +446,7 @@ class SettingsUpdate(BaseModel):
     gguf_helper_base_url: Optional[str] = None
     gguf_helper_model: Optional[str] = None
     gguf_helper_timeout_sec: Optional[int] = None
-    diffusion_engine: Optional[Literal["native_pytorch", "gguf_external", "int8_convrot_external"]] = None
+    diffusion_engine: Optional[Literal["native_pytorch", "native_int8_convrot", "gguf_external", "int8_convrot_external"]] = None
     gguf_sd_cli_path: Optional[str] = None
     gguf_turbo_path: Optional[str] = None
     gguf_raw_path: Optional[str] = None
@@ -439,11 +454,6 @@ class SettingsUpdate(BaseModel):
     gguf_vae_path: Optional[str] = None
     gguf_lora_dir: Optional[str] = None
     gguf_timeout_sec: Optional[int] = None
-    comfy_base_url: Optional[str] = None
-    comfy_int8_model: Optional[str] = None
-    comfy_clip_name: Optional[str] = None
-    comfy_vae_name: Optional[str] = None
-    comfy_timeout_sec: Optional[int] = None
     ideogram_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     openrouter_model: Optional[str] = None

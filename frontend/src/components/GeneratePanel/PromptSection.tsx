@@ -97,10 +97,12 @@ export default function PromptSection() {
         block_filter: lora.block_filter ?? (lora.name === 'Krea2-realism-V1' ? 'late' : 'style_safe'),
       }))
       const xperimentLoraNames = new Set(xperimentLoras.map(lora => lora.name))
-      setParam('diffusion_engine', 'native_pytorch')
+      const configuredEngine = result.diffusion_engine ?? params.diffusion_engine
+      const configuredQuantization = result.quantization ?? (configuredEngine === 'native_int8_convrot' ? 'int8' : 'fp8')
+      setParam('diffusion_engine', configuredEngine)
       setParam('model_profile', 'krea_turbo')
       setParam('checkpoint', 'turbo')
-      setParam('quantization', 'fp8')
+      setParam('quantization', configuredQuantization)
       setParam('steps', result.sampler.steps)
       setParam('cfg', result.sampler.cfg)
       setParam('mu', 1.15)

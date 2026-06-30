@@ -376,13 +376,14 @@ export default function RedrawStudio() {
     : task.id === 'preserve'
       ? (preserveMode === 'masked' ? 'inpaint' : 'img2img')
       : task.pipeline
+  const activeQuantization = params.diffusion_engine === 'native_int8_convrot' ? 'int8' : preset.quantization
 
   useEffect(() => {
     setParams({
       mode: activePipelineMode,
       denoise: task.id === 'preserve' ? denoise : preset.denoise,
       checkpoint: preset.checkpoint,
-      quantization: preset.quantization,
+      quantization: activeQuantization,
       steps: preset.steps,
       cfg: preset.cfg,
       mu: preset.mu,
@@ -400,7 +401,7 @@ export default function RedrawStudio() {
     preset.editProvider,
     preset.mu,
     preset.qualityMode,
-    preset.quantization,
+    activeQuantization,
     preset.steps,
     preset.usePromptExpander,
     setParams,
@@ -445,7 +446,7 @@ export default function RedrawStudio() {
       style_fusion_mode: 'semantic_fusion',
       denoise: preset.denoise,
       checkpoint: preset.checkpoint,
-      quantization: preset.quantization,
+      quantization: activeQuantization,
       steps: preset.steps,
       cfg: preset.cfg,
       mu: preset.mu,
@@ -473,7 +474,7 @@ export default function RedrawStudio() {
       style_fusion_mode: 'preserve_structure',
       denoise,
       checkpoint: preset.checkpoint,
-      quantization: preset.quantization,
+      quantization: activeQuantization,
       steps: preset.steps,
       cfg: preset.cfg,
       mu: preset.mu,
@@ -520,7 +521,7 @@ export default function RedrawStudio() {
       height: result.height,
       denoise: preset.denoise,
       checkpoint: preset.checkpoint,
-      quantization: preset.quantization,
+      quantization: activeQuantization,
       steps: preset.steps,
       cfg: preset.cfg,
       mu: preset.mu,

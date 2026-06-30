@@ -15,6 +15,8 @@ class AppSettings(BaseSettings):
     civitai_token: str = ""
     krea2_turbo_path: str = ""
     krea2_raw_path: str = ""
+    krea2_turbo_int8_path: str = ""
+    krea2_raw_int8_path: str = ""
     output_dir: str = str(BASE_DIR / "outputs")
     models_dir: str = str(BASE_DIR / "models")
     loras_dir: str = str(BASE_DIR / "models" / "loras")
@@ -26,7 +28,7 @@ class AppSettings(BaseSettings):
     gguf_helper_base_url: str = "http://127.0.0.1:1234/v1"
     gguf_helper_model: str = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M"
     gguf_helper_timeout_sec: int = 120
-    diffusion_engine: str = "native_pytorch"  # native_pytorch | gguf_external | int8_convrot_external
+    diffusion_engine: str = "native_pytorch"  # native_pytorch | native_int8_convrot | gguf_external
     gguf_sd_cli_path: str = ""
     gguf_turbo_path: str = ""
     gguf_raw_path: str = ""
@@ -34,11 +36,6 @@ class AppSettings(BaseSettings):
     gguf_vae_path: str = ""
     gguf_lora_dir: str = ""
     gguf_timeout_sec: int = 600
-    comfy_base_url: str = "http://127.0.0.1:8188"
-    comfy_int8_model: str = "krea2_turbo_int8.safetensors"
-    comfy_clip_name: str = "qwen3vl_4b_fp8_scaled.safetensors"
-    comfy_vae_name: str = "qwen_image_vae.safetensors"
-    comfy_timeout_sec: int = 900
     ideogram_api_key: str = ""
     openrouter_api_key: str = ""
     openrouter_model: str = "google/gemma-4-31b-it:free"
@@ -75,6 +72,14 @@ _AUTO_RAW_CANDIDATES = [
     _KREA2_DIR / "krea2_raw_fp8_scaled.safetensors",
     _KREA2_DIR / "diffusion_models" / "krea2_raw_fp8_scaled.safetensors",
 ]
+_AUTO_TURBO_INT8_CANDIDATES = [
+    _KREA2_DIR / "krea2_turbo_int8_convrot.safetensors",
+    _KREA2_DIR / "diffusion_models" / "krea2_turbo_int8_convrot.safetensors",
+]
+_AUTO_RAW_INT8_CANDIDATES = [
+    _KREA2_DIR / "krea2_raw_int8_convrot.safetensors",
+    _KREA2_DIR / "diffusion_models" / "krea2_raw_int8_convrot.safetensors",
+]
 if not settings.krea2_turbo_path:
     for _c in _AUTO_TURBO_CANDIDATES:
         if _c.exists():
@@ -84,6 +89,16 @@ if not settings.krea2_raw_path:
     for _c in _AUTO_RAW_CANDIDATES:
         if _c.exists():
             settings.krea2_raw_path = str(_c)
+            break
+if not settings.krea2_turbo_int8_path:
+    for _c in _AUTO_TURBO_INT8_CANDIDATES:
+        if _c.exists():
+            settings.krea2_turbo_int8_path = str(_c)
+            break
+if not settings.krea2_raw_int8_path:
+    for _c in _AUTO_RAW_INT8_CANDIDATES:
+        if _c.exists():
+            settings.krea2_raw_int8_path = str(_c)
             break
 if not settings.krea2_auto_checkpoint and settings.krea2_turbo_path:
     settings.krea2_auto_checkpoint = settings.krea2_turbo_path

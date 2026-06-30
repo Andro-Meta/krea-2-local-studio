@@ -265,11 +265,19 @@ export default function GeneratePanel() {
         moodboard_images: params.moodboard_images,
         seed_variance_preset: params.seed_variance_preset,
         seed_variance_strength: params.seed_variance_strength,
+        seed_variance_algorithm: params.seed_variance_algorithm,
+        seed_variance_model_type: params.seed_variance_model_type,
+        seed_variance_randomize_percent: params.seed_variance_randomize_percent,
+        seed_variance_shift_strength: params.seed_variance_shift_strength,
         seed_variance_protection: params.seed_variance_protection,
         seed_variance_direction: params.seed_variance_direction,
         seed_variance_fade_curve: params.seed_variance_fade_curve,
         seed_variance_injection_start: params.seed_variance_injection_start,
         seed_variance_injection_end: params.seed_variance_injection_end,
+        seed_variance_schedule: params.seed_variance_schedule,
+        seed_variance_cutoff_step: params.seed_variance_cutoff_step,
+        seed_variance_total_steps: params.seed_variance_total_steps,
+        seed_variance_cutoff_strength: params.seed_variance_cutoff_strength,
       })
       setJobId(job_id)
       setQueue(queue_position ?? null, queue_length ?? null)

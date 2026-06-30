@@ -42,6 +42,36 @@ class GalleryMetadataTests(unittest.TestCase):
 
             asyncio.run(run())
 
+    def test_v2_metadata_shape_has_replay_engine_fields(self) -> None:
+        from generation_metadata import build_generation_metadata
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(
+            prompt="a silver robot",
+            mode="redraw",
+            diffusion_engine="gguf_external",
+            checkpoint="turbo",
+            quantization="fp8",
+            sampler="euler",
+            scheduler="simple",
+            width=1024,
+            height=1024,
+        )
+
+        metadata = build_generation_metadata(
+            req,
+            base_seed=7,
+            resolved_provider="gguf_external",
+            runtime={"provider": "gguf_external", "sd_cli_path": "tools/sd-cli.exe"},
+        )
+
+        self.assertEqual(metadata["schema_version"], 2)
+        self.assertEqual(metadata["diffusion_engine"], "gguf_external")
+        self.assertEqual(metadata["engine"]["id"], "gguf_external")
+        self.assertEqual(metadata["engine"]["resolved_provider"], "gguf_external")
+        self.assertEqual(metadata["runtime"]["provider"], "gguf_external")
+        self.assertEqual(metadata["source"]["mode"], "redraw")
+
     def test_gallery_scopes_rows_by_owner(self) -> None:
         import gallery
 

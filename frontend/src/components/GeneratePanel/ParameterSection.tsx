@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import {
   Accordion, AccordionDetails, AccordionSummary,
-  Box, Chip, FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, Tooltip, Typography,
+  Box, Button, Chip, FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
@@ -53,6 +53,37 @@ export default function ParameterSection() {
   const isTurbo = params.checkpoint === 'turbo'
   const [catalog, setCatalog] = useState<SamplerCatalog | null>(null)
   const [batchPlan, setBatchPlan] = useState<BatchPlan | null>(null)
+  const rbgExpressionDefaultsActive =
+    params.seed_variance_preset === 'creative' &&
+    params.seed_variance_algorithm === 'rbg' &&
+    params.seed_variance_model_type === 'krea2' &&
+    params.seed_variance_direction === 'visceral_expression_grit' &&
+    params.seed_variance_shift_strength === 170 &&
+    params.seed_variance_protection === 'none' &&
+    params.seed_variance_fade_curve === 'smoothstep' &&
+    params.seed_variance_schedule === 'step_cutoff' &&
+    params.seed_variance_cutoff_step === 3 &&
+    params.seed_variance_total_steps === 13 &&
+    params.seed_variance_cutoff_strength === 0.53
+  const toggleRbgExpressionDefaults = () => {
+    if (rbgExpressionDefaultsActive) {
+      setParam('seed_variance_preset', 'off')
+      return
+    }
+    setParams({
+      seed_variance_algorithm: 'rbg',
+      seed_variance_preset: 'creative',
+      seed_variance_model_type: 'krea2',
+      seed_variance_direction: 'visceral_expression_grit',
+      seed_variance_shift_strength: 170,
+      seed_variance_protection: 'none',
+      seed_variance_fade_curve: 'smoothstep',
+      seed_variance_schedule: 'step_cutoff',
+      seed_variance_cutoff_step: 3,
+      seed_variance_total_steps: 13,
+      seed_variance_cutoff_strength: 0.53,
+    })
+  }
 
   useEffect(() => {
     const profile = isTurbo ? 'krea_turbo' : 'krea_raw'
@@ -584,8 +615,18 @@ export default function ParameterSection() {
               )}
               <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', mt: 0.5 }}>
                 Seed Variance
-                <InfoTip text="Adds deterministic, bounded noise to unprotected conditioning tokens. Off is bitwise-equivalent to the normal seed path; high values can reduce prompt fidelity." />
+                <InfoTip text="Adds deterministic, bounded noise to unprotected conditioning tokens. Off bypasses the feature. RBG mode ports Smart Seed Variance-style sparse conditioning noise for stronger expression and identity variation." />
               </Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
+                <Button
+                  size="small"
+                  variant={rbgExpressionDefaultsActive ? 'contained' : 'outlined'}
+                  color={rbgExpressionDefaultsActive ? 'secondary' : 'primary'}
+                  onClick={toggleRbgExpressionDefaults}
+                >
+                  {rbgExpressionDefaultsActive ? 'RBG Expression: On' : 'RBG Expression: Off'}
+                </Button>
+              </Stack>
               <Grid container spacing={1.5}>
                 <Grid item xs={12} sm={6}>
                   <TextField
@@ -602,7 +643,23 @@ export default function ParameterSection() {
                     <MenuItem value="balanced">Balanced</MenuItem>
                     <MenuItem value="creative">Creative</MenuItem>
                     <MenuItem value="bold">Bold</MenuItem>
+                    <MenuItem value="wild">Wild</MenuItem>
                     <MenuItem value="custom">Custom</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    select
+                    label="Variance algorithm"
+                    value={params.seed_variance_algorithm}
+                    onChange={e => setParam('seed_variance_algorithm', e.target.value as typeof params.seed_variance_algorithm)}
+                    size="small"
+                    fullWidth
+                    disabled={params.seed_variance_preset === 'off'}
+                    helperText="Legacy is dense; RBG is sparse Smart Seed Variance"
+                  >
+                    <MenuItem value="legacy">Legacy</MenuItem>
+                    <MenuItem value="rbg">RBG sparse</MenuItem>
                   </TextField>
                 </Grid>
                 <Grid item xs={12} sm={6}>
@@ -618,6 +675,8 @@ export default function ParameterSection() {
                   >
                     <MenuItem value="first_half">First half</MenuItem>
                     <MenuItem value="first_quarter">First quarter</MenuItem>
+                    <MenuItem value="last_half">Last half</MenuItem>
+                    <MenuItem value="last_quarter">Last quarter</MenuItem>
                     <MenuItem value="none">None</MenuItem>
                   </TextField>
                 </Grid>
@@ -650,6 +709,14 @@ export default function ParameterSection() {
                         <MenuItem value="reverse">Reverse</MenuItem>
                         <MenuItem value="center">Center weighted</MenuItem>
                         <MenuItem value="edges">Edge weighted</MenuItem>
+                        <MenuItem value="realistic">RBG Realistic</MenuItem>
+                        <MenuItem value="facevar">RBG Face variance</MenuItem>
+                        <MenuItem value="visceral_expression_grit">RBG Visceral expression & grit</MenuItem>
+                        <MenuItem value="identity_stretch">RBG Identity stretch</MenuItem>
+                        <MenuItem value="cinematic_framing">RBG Cinematic framing</MenuItem>
+                        <MenuItem value="texture_lift">RBG Texture lift</MenuItem>
+                        <MenuItem value="diversity">RBG Diversity</MenuItem>
+                        <MenuItem value="dynamic_pose">RBG Dynamic pose</MenuItem>
                       </TextField>
                     </Grid>
                     <Grid item xs={12} sm={6}>
@@ -662,13 +729,102 @@ export default function ParameterSection() {
                         fullWidth
                         helperText="Default: linear"
                       >
+                        <MenuItem value="instant">Instant</MenuItem>
                         <MenuItem value="linear">Linear</MenuItem>
                         <MenuItem value="ease_in">Ease in</MenuItem>
                         <MenuItem value="ease_out">Ease out</MenuItem>
+                        <MenuItem value="ease_in_out">Ease in/out</MenuItem>
                         <MenuItem value="smoothstep">Smoothstep</MenuItem>
+                        <MenuItem value="burst">Burst</MenuItem>
                       </TextField>
                     </Grid>
                   </Grid>
+                  {params.seed_variance_algorithm === 'rbg' && (
+                    <>
+                      <Grid container spacing={1.5}>
+                        <Grid item xs={12} sm={6}>
+                          <TextField
+                            select
+                            label="RBG model type"
+                            value={params.seed_variance_model_type}
+                            onChange={e => setParam('seed_variance_model_type', e.target.value as typeof params.seed_variance_model_type)}
+                            size="small"
+                            fullWidth
+                            helperText="Krea2 default"
+                          >
+                            <MenuItem value="krea2">Krea2</MenuItem>
+                            <MenuItem value="qwen_image">Qwen Image</MenuItem>
+                            <MenuItem value="z_image">Z-Image</MenuItem>
+                            <MenuItem value="flux">Flux</MenuItem>
+                            <MenuItem value="sdxl">SDXL</MenuItem>
+                            <MenuItem value="other">Other</MenuItem>
+                          </TextField>
+                        </Grid>
+                        <Grid item xs={12} sm={6}>
+                          <TextField
+                            select
+                            label="RBG variance schedule"
+                            value={params.seed_variance_schedule}
+                            onChange={e => setParam('seed_variance_schedule', e.target.value as typeof params.seed_variance_schedule)}
+                            size="small"
+                            fullWidth
+                            helperText="Step cutoff approximates composition lock"
+                          >
+                            <MenuItem value="constant">Constant</MenuItem>
+                            <MenuItem value="decreasing">Decreasing</MenuItem>
+                            <MenuItem value="step_cutoff">Step cutoff</MenuItem>
+                          </TextField>
+                        </Grid>
+                      </Grid>
+                      <LabeledSlider
+                        label="RBG shift strength"
+                        value={params.seed_variance_shift_strength}
+                        min={0} max={200} step={1}
+                        onChange={v => setParam('seed_variance_shift_strength', v)}
+                        helperText="Screenshot recipe uses 170"
+                      />
+                      <LabeledSlider
+                        label="RBG randomize percent"
+                        value={params.seed_variance_randomize_percent}
+                        min={0} max={10} step={0.1}
+                        onChange={v => setParam('seed_variance_randomize_percent', v)}
+                        helperText="0 uses preset; RBG presets usually modify 1–5% of values"
+                      />
+                      <Grid container spacing={1.5}>
+                        <Grid item xs={12} sm={4}>
+                          <TextField
+                            label="Cutoff step"
+                            type="number"
+                            size="small"
+                            fullWidth
+                            value={params.seed_variance_cutoff_step}
+                            onChange={e => setParam('seed_variance_cutoff_step', Math.max(0, Number(e.target.value) || 0))}
+                          />
+                        </Grid>
+                        <Grid item xs={12} sm={4}>
+                          <TextField
+                            label="Total steps"
+                            type="number"
+                            size="small"
+                            fullWidth
+                            value={params.seed_variance_total_steps}
+                            onChange={e => setParam('seed_variance_total_steps', Math.max(1, Number(e.target.value) || 1))}
+                          />
+                        </Grid>
+                        <Grid item xs={12} sm={4}>
+                          <TextField
+                            label="Cutoff strength"
+                            type="number"
+                            size="small"
+                            fullWidth
+                            value={params.seed_variance_cutoff_strength}
+                            onChange={e => setParam('seed_variance_cutoff_strength', Math.max(0, Math.min(1, Number(e.target.value) || 0)))}
+                            inputProps={{ min: 0, max: 1, step: 0.01 }}
+                          />
+                        </Grid>
+                      </Grid>
+                    </>
+                  )}
                   <LabeledSlider
                     label="Variance injection start"
                     value={params.seed_variance_injection_start}

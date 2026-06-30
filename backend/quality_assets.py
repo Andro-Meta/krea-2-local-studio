@@ -57,7 +57,7 @@ def asset_specs() -> list[QualityAssetSpec]:
             filename="diffusion_models/krea2_turbo_int8_convrot.safetensors",
             local_path=diffusion_dir / "krea2_turbo_int8_convrot.safetensors",
             kind="file",
-            purpose="Krea 2 Turbo INT8 ConvRot for current ComfyUI/INT8 sidecar benchmarking",
+            purpose="Krea 2 Turbo INT8 ConvRot for native PyTorch W8A8 loading",
         ),
         QualityAssetSpec(
             id="krea2_turbo_int8",
@@ -73,7 +73,7 @@ def asset_specs() -> list[QualityAssetSpec]:
             filename="diffusion_models/krea2_raw_int8_convrot.safetensors",
             local_path=diffusion_dir / "krea2_raw_int8_convrot.safetensors",
             kind="file",
-            purpose="Krea 2 RAW INT8 ConvRot for current ComfyUI/INT8 sidecar benchmarking",
+            purpose="Krea 2 RAW INT8 ConvRot for native PyTorch W8A8 loading",
         ),
         QualityAssetSpec(
             id="krea2_raw_int8",

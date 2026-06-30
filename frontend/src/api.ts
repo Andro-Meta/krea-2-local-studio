@@ -18,10 +18,10 @@ export interface GenerationRequest {
   negative_prompt?: string
   mode?: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   model_profile?: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
-  diffusion_engine?: 'native_pytorch' | 'gguf_external' | 'int8_convrot_external'
+  diffusion_engine?: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external'
   checkpoint?: 'turbo' | 'raw'
   checkpoint_path?: string
-  quantization?: 'bf16' | 'fp8' | 'fp16'
+  quantization?: 'bf16' | 'fp8' | 'fp16' | 'int8'
   steps?: number
   cfg?: number
   mu?: number | null
@@ -119,13 +119,21 @@ export interface GenerationRequest {
   moodboard_uuids?: string[]
   moodboard_strength?: number
   moodboard_images?: string[]
-  seed_variance_preset?: 'off' | 'subtle' | 'balanced' | 'creative' | 'bold' | 'custom'
+  seed_variance_preset?: 'off' | 'subtle' | 'balanced' | 'creative' | 'bold' | 'wild' | 'custom'
   seed_variance_strength?: number
-  seed_variance_protection?: 'none' | 'first_quarter' | 'first_half'
-  seed_variance_direction?: 'none' | 'forward' | 'reverse' | 'center' | 'edges'
-  seed_variance_fade_curve?: 'linear' | 'ease_in' | 'ease_out' | 'smoothstep'
+  seed_variance_algorithm?: 'legacy' | 'rbg'
+  seed_variance_model_type?: 'krea2' | 'z_image' | 'qwen_image' | 'flux' | 'sdxl' | 'other'
+  seed_variance_randomize_percent?: number
+  seed_variance_shift_strength?: number
+  seed_variance_protection?: 'none' | 'first_quarter' | 'first_half' | 'last_quarter' | 'last_half'
+  seed_variance_direction?: 'none' | 'forward' | 'reverse' | 'center' | 'edges' | 'chaos' | 'order' | 'abstract' | 'realistic' | 'vibrant' | 'moody' | 'dreamy' | 'dynamic_pose' | 'composition' | 'diversity' | 'facevar' | 'visceral_expression_grit' | 'semantic_drift' | 'structural_lock' | 'cinematic_framing' | 'identity_stretch' | 'texture_lift'
+  seed_variance_fade_curve?: 'instant' | 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out' | 'smoothstep' | 'burst'
   seed_variance_injection_start?: number
   seed_variance_injection_end?: number
+  seed_variance_schedule?: 'constant' | 'decreasing' | 'step_cutoff'
+  seed_variance_cutoff_step?: number
+  seed_variance_total_steps?: number
+  seed_variance_cutoff_strength?: number
 }
 
 export interface GenerationJob {
@@ -158,7 +166,7 @@ export interface BatchPlan {
 }
 
 export interface EngineCapabilities {
-  engine_id: 'native_pytorch' | 'gguf_external' | 'int8_convrot_external' | string
+  engine_id: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external' | string
   label: string
   default: boolean
   experimental: boolean
@@ -390,6 +398,8 @@ export interface AppSettings {
   civitai_token: string
   krea2_turbo_path: string
   krea2_raw_path: string
+  krea2_turbo_int8_path: string
+  krea2_raw_int8_path: string
   output_dir: string
   prompt_expander_backend: 'local' | 'openrouter' | 'ideogram-json'
   local_llm_backend: 'transformers' | 'gguf_server'
@@ -397,7 +407,7 @@ export interface AppSettings {
   gguf_helper_base_url: string
   gguf_helper_model: string
   gguf_helper_timeout_sec: number
-  diffusion_engine: 'native_pytorch' | 'gguf_external' | 'int8_convrot_external'
+  diffusion_engine: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external'
   gguf_sd_cli_path: string
   gguf_turbo_path: string
   gguf_raw_path: string
@@ -405,11 +415,6 @@ export interface AppSettings {
   gguf_vae_path: string
   gguf_lora_dir: string
   gguf_timeout_sec: number
-  comfy_base_url: string
-  comfy_int8_model: string
-  comfy_clip_name: string
-  comfy_vae_name: string
-  comfy_timeout_sec: number
   openrouter_model: string
   openrouter_free_only: boolean
   krea_share_auto_funnel: boolean
@@ -448,6 +453,8 @@ export interface XperimentSetupResult {
   vae_path: string
   lora: { name: string; filename: string; strength: number; block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom' }
   loras?: Array<{ name: string; filename: string; strength: number; block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom' }>
+  diffusion_engine?: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external'
+  quantization?: 'bf16' | 'fp8' | 'fp16' | 'int8'
   sampler: { sampler: string; scheduler: string; steps: number; cfg: number }
   use_prompt_expander?: boolean
   prompt_expander_backend?: 'local' | 'openrouter' | 'ideogram-json'
@@ -468,6 +475,7 @@ export interface GgufLowVramSetupResult {
   realtime_candidate_path: string
   llm_path: string
   vae_path: string
+  sampler: { sampler: string; scheduler: string; steps: number; cfg: number; mu: number }
   realtime: { preview_size: number; preview_steps: number; final_steps: number }
   warnings: string[]
 }
@@ -673,6 +681,13 @@ export const apiFetch = {
   setupGgufLowVram: () =>
     api.post<GgufLowVramSetupResult>('/api/gguf/setup-low-vram', {}, { timeout: 7200000 }).then(r => r.data),
 
+  setupNativeInt8: () =>
+    api.post<{ ok: boolean; assets: Array<{ id: string; path: string; skipped: boolean; item: QualityAsset }>; diffusion_engine: 'native_int8_convrot'; turbo_path: string; quantization: 'int8'; sampler: { sampler: string; scheduler: string; steps: number; cfg: number; mu: number }; warnings: string[] }>(
+      '/api/int8/setup-native',
+      {},
+      { timeout: 7200000 },
+    ).then(r => r.data),
+
   settings: () => api.get<AppSettings>('/api/settings').then(r => r.data),
   updateSettings: (data: Partial<AppSettings> & { hf_token?: string; ideogram_api_key?: string; openrouter_api_key?: string }) =>
     api.put('/api/settings', data).then(r => r.data),
@@ -683,9 +698,7 @@ export const apiFetch = {
   ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; configured: boolean }> }>('/api/gguf/status').then(r => r.data),
   testGgufRuntime: () => api.post<{ ok: boolean; command: string[]; output: string }>('/api/gguf/test-runtime').then(r => r.data),
 
-  int8Status: () => api.get<{ ok: boolean; base_url: string; error?: string; system?: Record<string, any> }>('/api/int8/status').then(r => r.data),
-  testInt8Workflow: () => api.post<{ ok: boolean; workflow: Record<string, any>; node_count: number }>('/api/int8/test-workflow').then(r => r.data),
-
+  int8Status: () => api.get<{ ok: boolean; torch: string; cuda?: string | null; torch_int_mm: boolean; comfy_kitchen: boolean; triton: boolean; diffusion_engine: string; assets: Record<string, QualityAsset & { configured_path: string; inspection?: Record<string, any>; inspection_error?: string }> }>('/api/int8/status').then(r => r.data),
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
   installTritonWindows: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-triton-windows', {}, { timeout: 600000 }).then(r => r.data),
   installSageAttention: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-sageattention', {}, { timeout: 600000 }).then(r => r.data),

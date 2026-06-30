@@ -39,9 +39,9 @@ export interface GenerateParams {
   negative_prompt: string
   mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   model_profile: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
-  diffusion_engine: 'native_pytorch' | 'gguf_external' | 'int8_convrot_external'
+  diffusion_engine: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external'
   checkpoint: 'turbo' | 'raw'
-  quantization: 'bf16' | 'fp8' | 'fp16'
+  quantization: 'bf16' | 'fp8' | 'fp16' | 'int8'
   steps: number
   cfg: number
   mu: number | null
@@ -115,13 +115,21 @@ export interface GenerateParams {
   moodboard_uuids: string[]
   moodboard_strength: number
   moodboard_images: string[]
-  seed_variance_preset: 'off' | 'subtle' | 'balanced' | 'creative' | 'bold' | 'custom'
+  seed_variance_preset: 'off' | 'subtle' | 'balanced' | 'creative' | 'bold' | 'wild' | 'custom'
   seed_variance_strength: number
-  seed_variance_protection: 'none' | 'first_quarter' | 'first_half'
-  seed_variance_direction: 'none' | 'forward' | 'reverse' | 'center' | 'edges'
-  seed_variance_fade_curve: 'linear' | 'ease_in' | 'ease_out' | 'smoothstep'
+  seed_variance_algorithm: 'legacy' | 'rbg'
+  seed_variance_model_type: 'krea2' | 'z_image' | 'qwen_image' | 'flux' | 'sdxl' | 'other'
+  seed_variance_randomize_percent: number
+  seed_variance_shift_strength: number
+  seed_variance_protection: 'none' | 'first_quarter' | 'first_half' | 'last_quarter' | 'last_half'
+  seed_variance_direction: 'none' | 'forward' | 'reverse' | 'center' | 'edges' | 'chaos' | 'order' | 'abstract' | 'realistic' | 'vibrant' | 'moody' | 'dreamy' | 'dynamic_pose' | 'composition' | 'diversity' | 'facevar' | 'visceral_expression_grit' | 'semantic_drift' | 'structural_lock' | 'cinematic_framing' | 'identity_stretch' | 'texture_lift'
+  seed_variance_fade_curve: 'instant' | 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out' | 'smoothstep' | 'burst'
   seed_variance_injection_start: number
   seed_variance_injection_end: number
+  seed_variance_schedule: 'constant' | 'decreasing' | 'step_cutoff'
+  seed_variance_cutoff_step: number
+  seed_variance_total_steps: number
+  seed_variance_cutoff_strength: number
 }
 
 export interface LightboxItem {
@@ -267,11 +275,19 @@ const defaultParams: GenerateParams = {
   moodboard_images: [],
   seed_variance_preset: 'off',
   seed_variance_strength: 0.0,
+  seed_variance_algorithm: 'legacy',
+  seed_variance_model_type: 'krea2',
+  seed_variance_randomize_percent: 0,
+  seed_variance_shift_strength: 100,
   seed_variance_protection: 'first_half',
   seed_variance_direction: 'none',
   seed_variance_fade_curve: 'linear',
   seed_variance_injection_start: 0,
   seed_variance_injection_end: 1,
+  seed_variance_schedule: 'constant',
+  seed_variance_cutoff_step: 8,
+  seed_variance_total_steps: 20,
+  seed_variance_cutoff_strength: 0,
 }
 
 const defaultRealtime: RealtimeState = {

@@ -62,6 +62,59 @@ class SeedVarianceV2Tests(unittest.TestCase):
 
         self.assertTrue(torch.allclose(old, new))
 
+    def test_rbg_sparse_mode_changes_only_a_small_fraction(self) -> None:
+        from seed_variance import apply_seed_variance
+
+        base = torch.zeros((1, 20, 100), dtype=torch.float32)
+        varied = apply_seed_variance(
+            base,
+            seed=11,
+            preset="creative",
+            protection="none",
+            algorithm="rbg",
+            model_type="krea2",
+            direction="facevar",
+            shift_strength=170,
+            randomize_percent=None,
+            fade_curve="instant",
+        )
+
+        changed = (varied != base).sum().item()
+        self.assertGreater(changed, 0)
+        self.assertLess(changed, base.numel() * 0.08)
+
+    def test_rbg_mode_supports_last_half_protection(self) -> None:
+        from seed_variance import apply_seed_variance
+
+        base = torch.zeros((1, 12, 16), dtype=torch.float32)
+        varied = apply_seed_variance(
+            base,
+            seed=12,
+            preset="bold",
+            protection="last_half",
+            algorithm="rbg",
+            direction="realistic",
+            fade_curve="instant",
+        )
+
+        self.assertGreater(varied[:, :6].abs().sum().item(), 0)
+        self.assertTrue(torch.equal(varied[:, 6:], base[:, 6:]))
+
+    def test_rbg_quality_default_matches_expression_recipe(self) -> None:
+        from seed_variance import rbg_quality_defaults
+
+        defaults = rbg_quality_defaults()
+
+        self.assertEqual(defaults["algorithm"], "rbg")
+        self.assertEqual(defaults["preset"], "creative")
+        self.assertEqual(defaults["model_type"], "krea2")
+        self.assertEqual(defaults["direction"], "visceral_expression_grit")
+        self.assertEqual(defaults["shift_strength"], 170)
+        self.assertEqual(defaults["schedule"], "step_cutoff")
+        self.assertEqual(defaults["cutoff_step"], 3)
+        self.assertEqual(defaults["total_steps"], 13)
+        self.assertAlmostEqual(defaults["cutoff_strength"], 0.53)
+
 
 if __name__ == "__main__":
     unittest.main()

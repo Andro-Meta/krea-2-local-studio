@@ -80,7 +80,30 @@ def generate_gguf_external(
         raise RuntimeError("GGUF sidecar finished but did not write an output image.")
     raw = output.read_bytes()
     image_b64 = base64.b64encode(raw).decode("utf-8")
-    metadata = [build_generation_metadata(req, base_seed=int(getattr(req, "seed", -1) or -1), image_index=0, filename=output.name, resolved_provider="gguf_external")]
+    metadata = [
+        build_generation_metadata(
+            req,
+            base_seed=int(getattr(req, "seed", -1) or -1),
+            image_index=0,
+            filename=output.name,
+            resolved_provider="gguf_external",
+            runtime={
+                "provider": "gguf_external",
+                "sd_cli_path": runtime.sd_cli_path,
+                "turbo_path": runtime.turbo_path,
+                "raw_path": runtime.raw_path,
+                "llm_path": runtime.llm_path,
+                "vae_path": runtime.vae_path,
+                "lora_dir": runtime.lora_dir,
+                "timeout_sec": runtime.timeout_sec,
+            },
+            model_runtime={
+                "loaded_checkpoint_path": runtime.raw_path if str(getattr(req, "checkpoint", "turbo")).lower() == "raw" else runtime.turbo_path,
+                "vae_source": runtime.vae_path,
+                "text_encoder_source": {"type": "gguf", "path": runtime.llm_path},
+            },
+        )
+    ]
     if progress_cb:
         progress_cb(3, 3)
     return [image_b64], int(getattr(req, "seed", -1) or -1), [output.name], [], metadata

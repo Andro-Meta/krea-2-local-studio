@@ -939,20 +939,10 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
                 None, lambda: generate_gguf_external(req, _gguf_runtime_settings(), progress_cb=progress_cb)
             )
-        elif getattr(req, "diffusion_engine", "native_pytorch") == "int8_convrot_external":
-            from comfy_int8_provider import generate_comfy_int8_external
-
-            pipeline.unload()
-            req.moodboard_images = []
-            req.use_rebalance = False
-            req.krea_enhancer_enabled = False
-            req.krea_enhancer_variant = "off"
-            job["edit_provider"] = "comfy_int8"
-            job["provider_warning"] = "Comfy INT8 engine active: txt2img-only sidecar path; Krea-native moodboards, regional prompts, rebalance, and enhancer are disabled."
-            results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                None, lambda: generate_comfy_int8_external(req, _comfy_int8_settings())
-            )
         else:
+            if getattr(req, "diffusion_engine", "native_pytorch") in {"native_int8_convrot", "int8_convrot_external"}:
+                req.diffusion_engine = "native_int8_convrot"
+                req.quantization = "int8"
             from edit_providers import resolve_edit_provider
             from flux_fill_provider import flux_fill_installed, generate_flux_fill
 
@@ -1817,12 +1807,16 @@ async def xperiment_setup_endpoint():
     ]
     if asset_installed(bypass_spec):
         loras.append({"name": "krea2filterbypass3", "filename": "krea2filterbypass3.safetensors", "strength": 4.0, "block_filter": "style_safe"})
+    configured_engine = settings.diffusion_engine or "native_pytorch"
+    configured_quant = "int8" if configured_engine == "native_int8_convrot" else "fp8"
     return {
         "ok": True,
         "assets": results,
         "vae_path": str(wan_vae),
         "lora": loras[0],
         "loras": loras,
+        "diffusion_engine": configured_engine,
+        "quantization": configured_quant,
         "sampler": {"sampler": "er_sde", "scheduler": "beta57", "steps": 6, "cfg": 0.0},
         "use_prompt_expander": False,
         "prompt_expander_backend": "local",
@@ -1833,7 +1827,7 @@ async def xperiment_setup_endpoint():
         "warnings": [
             "Exact ClownsharKSampler_Beta is a Comfy/RES4LYF node; native Krea Studio applies the closest safe native mapping: er_sde + beta57.",
             "krea2filterbypass3 is manual-only and not auto-downloaded.",
-            "GGUF Q3/Q4 tests were fast at 512px but did not preserve prompt accuracy, so native PyTorch remains the Xperiment default.",
+            "Xperiment keeps the diffusion engine selected in .env instead of forcing Original/Native PyTorch.",
         ],
     }
 
@@ -1893,6 +1887,7 @@ async def gguf_setup_low_vram_endpoint():
         "realtime_candidate_path": str(q3),
         "llm_path": str(qwen),
         "vae_path": str(vae),
+        "sampler": {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15},
         "realtime": {"preview_size": 512, "preview_steps": 4, "final_steps": 8},
         "warnings": ["Realtime GGUF remains disabled until the sidecar benchmark passes, but 512/4/8 are the target low-VRAM live settings."],
     }
@@ -1930,6 +1925,8 @@ async def get_settings():
         "civitai_token": "",
         "krea2_turbo_path": env.get("KREA2_TURBO_PATH", ""),
         "krea2_raw_path": env.get("KREA2_RAW_PATH", ""),
+        "krea2_turbo_int8_path": env.get("KREA2_TURBO_INT8_PATH", settings.krea2_turbo_int8_path),
+        "krea2_raw_int8_path": env.get("KREA2_RAW_INT8_PATH", settings.krea2_raw_int8_path),
         "output_dir": env.get("OUTPUT_DIR", str(MODELS_DIR.parent / "outputs")),
         "prompt_expander_backend": env.get("PROMPT_EXPANDER_BACKEND", settings.prompt_expander_backend),
         "local_llm_backend": env.get("LOCAL_LLM_BACKEND", settings.local_llm_backend),
@@ -1945,11 +1942,6 @@ async def get_settings():
         "gguf_vae_path": env.get("GGUF_VAE_PATH", settings.gguf_vae_path),
         "gguf_lora_dir": env.get("GGUF_LORA_DIR", settings.gguf_lora_dir),
         "gguf_timeout_sec": int(env.get("GGUF_TIMEOUT_SEC", str(settings.gguf_timeout_sec)) or 600),
-        "comfy_base_url": env.get("COMFY_BASE_URL", settings.comfy_base_url),
-        "comfy_int8_model": env.get("COMFY_INT8_MODEL", settings.comfy_int8_model),
-        "comfy_clip_name": env.get("COMFY_CLIP_NAME", settings.comfy_clip_name),
-        "comfy_vae_name": env.get("COMFY_VAE_NAME", settings.comfy_vae_name),
-        "comfy_timeout_sec": int(env.get("COMFY_TIMEOUT_SEC", str(settings.comfy_timeout_sec)) or 900),
         "openrouter_model": env.get("OPENROUTER_MODEL", settings.openrouter_model),
         "openrouter_free_only": env.get("OPENROUTER_FREE_ONLY", str(settings.openrouter_free_only)).lower() in {"1", "true", "yes"},
         "krea_share_auto_funnel": env.get("KREA_SHARE_AUTO_FUNNEL", str(settings.krea_share_auto_funnel)).lower() in {"1", "true", "yes", "on"},
@@ -1973,6 +1965,12 @@ async def update_settings(req: SettingsUpdate):
         env["KREA2_TURBO_PATH"] = req.krea2_turbo_path
     if req.krea2_raw_path is not None:
         env["KREA2_RAW_PATH"] = req.krea2_raw_path
+    if req.krea2_turbo_int8_path is not None:
+        env["KREA2_TURBO_INT8_PATH"] = req.krea2_turbo_int8_path
+        settings.krea2_turbo_int8_path = req.krea2_turbo_int8_path
+    if req.krea2_raw_int8_path is not None:
+        env["KREA2_RAW_INT8_PATH"] = req.krea2_raw_int8_path
+        settings.krea2_raw_int8_path = req.krea2_raw_int8_path
     if req.output_dir is not None:
         env["OUTPUT_DIR"] = req.output_dir
     if req.prompt_expander_backend is not None:
@@ -2017,21 +2015,6 @@ async def update_settings(req: SettingsUpdate):
     if req.gguf_timeout_sec is not None:
         env["GGUF_TIMEOUT_SEC"] = str(req.gguf_timeout_sec)
         settings.gguf_timeout_sec = int(req.gguf_timeout_sec)
-    if req.comfy_base_url is not None:
-        env["COMFY_BASE_URL"] = req.comfy_base_url
-        settings.comfy_base_url = req.comfy_base_url
-    if req.comfy_int8_model is not None:
-        env["COMFY_INT8_MODEL"] = req.comfy_int8_model
-        settings.comfy_int8_model = req.comfy_int8_model
-    if req.comfy_clip_name is not None:
-        env["COMFY_CLIP_NAME"] = req.comfy_clip_name
-        settings.comfy_clip_name = req.comfy_clip_name
-    if req.comfy_vae_name is not None:
-        env["COMFY_VAE_NAME"] = req.comfy_vae_name
-        settings.comfy_vae_name = req.comfy_vae_name
-    if req.comfy_timeout_sec is not None:
-        env["COMFY_TIMEOUT_SEC"] = str(req.comfy_timeout_sec)
-        settings.comfy_timeout_sec = int(req.comfy_timeout_sec)
     if req.ideogram_api_key is not None:
         settings.ideogram_api_key = req.ideogram_api_key.replace("\r", "").replace("\n", "")
     if req.openrouter_api_key is not None:
@@ -2140,18 +2123,6 @@ def _gguf_runtime_settings():
     )
 
 
-def _comfy_int8_settings():
-    from comfy_int8_provider import ComfyInt8Settings
-
-    return ComfyInt8Settings(
-        base_url=settings.comfy_base_url,
-        int8_model=settings.comfy_int8_model,
-        clip_name=settings.comfy_clip_name,
-        vae_name=settings.comfy_vae_name,
-        timeout_sec=settings.comfy_timeout_sec,
-    )
-
-
 @app.get("/api/gguf/status")
 async def gguf_status_endpoint():
     fields = {
@@ -2185,26 +2156,82 @@ async def gguf_test_runtime_endpoint():
 
 @app.get("/api/int8/status")
 async def int8_status_endpoint():
-    from comfy_int8_provider import comfy_int8_status
+    import importlib.util
+    import torch
+    from krea2.int8_convrot import inspect_int8_safetensors
+    from quality_assets import asset_by_id, asset_status
 
-    return comfy_int8_status(_comfy_int8_settings())
+    def _asset(asset_id: str, configured_path: str) -> dict:
+        spec = asset_by_id(asset_id)
+        item = asset_status(spec, has_hf_token=bool(settings.hf_token or os.environ.get("HF_TOKEN")))
+        path = Path(configured_path or item["local_path"])
+        item["configured_path"] = str(path)
+        item["installed"] = path.exists()
+        if path.exists():
+            try:
+                item["inspection"] = inspect_int8_safetensors(path)
+            except Exception as exc:  # noqa: BLE001
+                item["inspection_error"] = str(exc)
+        return item
+
+    return {
+        "ok": bool(hasattr(torch, "_int_mm")),
+        "torch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "torch_int_mm": bool(hasattr(torch, "_int_mm")),
+        "comfy_kitchen": importlib.util.find_spec("comfy_kitchen") is not None,
+        "triton": importlib.util.find_spec("triton") is not None,
+        "diffusion_engine": settings.diffusion_engine,
+        "assets": {
+            "turbo": _asset("krea2_turbo_int8_convrot", settings.krea2_turbo_int8_path),
+            "raw": _asset("krea2_raw_int8_convrot", settings.krea2_raw_int8_path),
+        },
+    }
 
 
-@app.post("/api/int8/test-workflow")
-async def int8_test_workflow_endpoint():
-    from comfy_int8_provider import build_comfy_int8_workflow
+@app.post("/api/int8/setup-native")
+async def int8_setup_native_endpoint():
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
+    from quality_assets import asset_by_id, asset_installed, asset_status, download_asset
 
-    req = GenerationRequest(
-        prompt="a small red fox in morning fog",
-        width=720,
-        height=1280,
-        steps=8,
-        cfg=1.0,
-        sampler="ddim",
-        scheduler="beta57",
-    )
-    workflow = build_comfy_int8_workflow(req, _comfy_int8_settings())
-    return {"ok": True, "workflow": workflow, "node_count": len(workflow)}
+    required_ids = ["krea2_turbo_int8_convrot"]
+    token = settings.hf_token or os.environ.get("HF_TOKEN") or None
+    loop = asyncio.get_event_loop()
+    results: list[dict] = []
+    for asset_id in required_ids:
+        spec = asset_by_id(asset_id)
+        skipped = asset_installed(spec)
+        path = spec.local_path
+        if not skipped:
+            try:
+                path = await loop.run_in_executor(None, lambda spec=spec: download_asset(spec, token=token))
+            except (GatedRepoError, HfHubHTTPError) as exc:
+                raise HTTPException(502, f"Could not download {asset_id}: {exc}") from exc
+            except Exception as exc:
+                logger.exception("Native INT8 asset download failed")
+                raise HTTPException(502, f"Could not download {asset_id}. Check connection and server logs.") from exc
+        results.append({"id": asset_id, "path": str(path), "skipped": skipped, "item": asset_status(spec, has_hf_token=bool(token))})
+
+    turbo = asset_by_id("krea2_turbo_int8_convrot").local_path
+    env = _read_env()
+    env["DIFFUSION_ENGINE"] = "native_int8_convrot"
+    env["KREA2_TURBO_INT8_PATH"] = str(turbo)
+    env["KREA2_AUTO_CHECKPOINT"] = str(turbo)
+    env["KREA2_AUTO_QUANT"] = "int8"
+    settings.diffusion_engine = "native_int8_convrot"
+    settings.krea2_turbo_int8_path = str(turbo)
+    settings.krea2_auto_checkpoint = str(turbo)
+    settings.krea2_auto_quant = "int8"
+    _write_env(env)
+    return {
+        "ok": True,
+        "assets": results,
+        "diffusion_engine": "native_int8_convrot",
+        "turbo_path": str(turbo),
+        "quantization": "int8",
+        "sampler": {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15},
+        "warnings": ["Native INT8 uses torch._int_mm fallback first; comfy_kitchen/Triton are optional future accelerators, not required."],
+    }
 
 
 @app.post("/api/gguf/benchmark-quick")

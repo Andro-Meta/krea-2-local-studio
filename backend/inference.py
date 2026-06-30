@@ -31,6 +31,7 @@ from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
 from krea2.block_swap import BlockSwapController, resolve_swap_plan
 from krea2.fp8_quant import load_bf16_as_fp8_scaled
+from krea2.int8_convrot import int8_layer_specs_from_safetensors, load_int8_convrot_state_dict, replace_int8_linears
 from krea2.text_prompt import DEFAULT_EXPRESSION_THINK
 from krea2.vae_source import resolve_vae_source
 from krea2.reference_image import cap_vision_megapixels, crop_image_to_mask
@@ -343,8 +344,23 @@ def preflight_model_load(
     """
     name = Path(checkpoint_path).name.lower()
     is_fp8 = quantization == "fp8"
+    is_int8 = quantization == "int8"
     file_is_prequant_fp8 = "fp8" in name
-    is_bf16 = not is_fp8
+    is_bf16 = not is_fp8 and not is_int8
+    if is_int8:
+        vram_need = max(8.0, 13.0 - max(0, int(blocks_to_swap)) * 0.4)
+        ram_need_free, ram_need_total = 10.0, 16.0
+        ram_total, ram_free = get_ram_gb()
+        gpu_name, vram_total, vram_free = get_gpu_info()
+        if vram_total is not None and vram_total + 0.5 < vram_need:
+            raise RuntimeError(f"{gpu_name or 'GPU'} has {vram_total:.1f}GB VRAM; native INT8 needs ~{vram_need:.0f}GB.")
+        if vram_free is not None and vram_free + 0.5 < vram_need:
+            raise RuntimeError(f"Only {vram_free:.1f}GB VRAM free; native INT8 needs ~{vram_need:.0f}GB free before loading.")
+        if ram_free is not None and ram_free < ram_need_free:
+            raise RuntimeError(f"Only {ram_free:.1f}GB system RAM free; native INT8 load needs ~{ram_need_free:.0f}GB free.")
+        if ram_total is not None and ram_total < ram_need_total:
+            raise RuntimeError(f"System has {ram_total:.1f}GB RAM; native INT8 load needs at least ~{ram_need_total:.0f}GB total.")
+        return
     if not is_fp8 and not ("raw" in name or "bf16" in name):
         return
 
@@ -835,6 +851,21 @@ class Krea2Pipeline:
                         # device (weights are already there); cheap no-op for them.
                         mmdit = mmdit.to(device=self._device).eval()
                         logger.info(f"DiT loaded (dynamic fp8, {len(dyn_scales)} layers quantized). {mem_snapshot()}")
+                    elif quantization == "int8":
+                        # Pre-quantized INT8 ConvRot (Comfy-style safetensors):
+                        # only the quantized Linear modules are replaced; Krea2's
+                        # sensitive first/last/text/time modules stay high precision.
+                        specs = int8_layer_specs_from_safetensors(checkpoint_path)
+                        replaced = replace_int8_linears(mmdit, specs, compute_dtype=self._dtype)
+                        if replaced == 0:
+                            raise RuntimeError("No INT8 Linear layers were found in this checkpoint.")
+                        sd_int8 = load_int8_convrot_state_dict(checkpoint_path)
+                        missing, unexpected = mmdit.load_state_dict(sd_int8, strict=True, assign=True)
+                        del sd_int8
+                        if missing or unexpected:
+                            raise RuntimeError(f"INT8 checkpoint load mismatch: missing={missing}, unexpected={unexpected}")
+                        mmdit = mmdit.to(device=self._device, dtype=self._dtype).eval()
+                        logger.info(f"DiT loaded (native INT8 ConvRot, {replaced} layers patched). {mem_snapshot()}")
                     else:
                         mmdit = mmdit.to_empty(device="cpu")
                         missing, unexpected = load_model(mmdit, checkpoint_path, strict=True, device="cpu")
@@ -1250,6 +1281,18 @@ class Krea2Pipeline:
             fade_curve=str(getattr(req, "seed_variance_fade_curve", "linear")),
             injection_start=float(getattr(req, "seed_variance_injection_start", 0.0)),
             injection_end=float(getattr(req, "seed_variance_injection_end", 1.0)),
+            algorithm=str(getattr(req, "seed_variance_algorithm", "legacy")),
+            model_type=str(getattr(req, "seed_variance_model_type", "krea2")),
+            randomize_percent=(
+                float(getattr(req, "seed_variance_randomize_percent", 0.0))
+                if float(getattr(req, "seed_variance_randomize_percent", 0.0) or 0.0) > 0
+                else None
+            ),
+            shift_strength=float(getattr(req, "seed_variance_shift_strength", 100)),
+            schedule=str(getattr(req, "seed_variance_schedule", "constant")),
+            cutoff_step=int(getattr(req, "seed_variance_cutoff_step", 8)),
+            total_steps=int(getattr(req, "seed_variance_total_steps", 20)),
+            cutoff_strength=float(getattr(req, "seed_variance_cutoff_strength", 0.0)),
         )
 
         # Resolve mu (the ModelSamplingFlux shift). 0 or None = auto-resolve:
@@ -1461,6 +1504,21 @@ class Krea2Pipeline:
         metadata = [
             build_generation_metadata(
                 req, base_seed=seed, image_index=i, filename="",
+                resolved_provider="krea_native",
+                runtime={
+                    "provider": "krea_native",
+                    "device": self._device,
+                    "dtype": str(self._dtype).replace("torch.", ""),
+                    "blocks_to_swap": self._blocks_to_swap,
+                    "tiled_decode": tiled_decode,
+                    "resource_plan": gen_plan,
+                },
+                model_runtime={
+                    "loaded_checkpoint_path": self._loaded_checkpoint or "",
+                    "loaded_quantization": self._loaded_quant or "",
+                    "vae_source": getattr(self.ae, "vae_source", ""),
+                    "text_encoder_source": self._text_encoder_source or {},
+                },
                 extra={"quality": quality_reports[i]} if i < len(quality_reports) else None,
             )
             for i in range(len(images))

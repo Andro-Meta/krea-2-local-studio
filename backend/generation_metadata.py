@@ -46,8 +46,12 @@ def build_generation_metadata(
     resolved_provider: str = "",
     original_prompt: str | None = None,
     extra: dict | None = None,
+    runtime: dict | None = None,
+    model_runtime: dict | None = None,
 ) -> dict:
     moodboard_images = _safe_list(getattr(req, "moodboard_images", []))
+    init_image_b64 = str(getattr(req, "init_image_b64", "") or "")
+    mask_b64 = str(getattr(req, "mask_b64", "") or "")
     ref_images = [
         value for value in (
             getattr(req, "ref_image1_b64", None),
@@ -71,8 +75,25 @@ def build_generation_metadata(
         for item in _safe_list(getattr(req, "loras", []))
         if isinstance(item, dict)
     ]
+    mode = str(getattr(req, "mode", "txt2img"))
+    diffusion_engine = str(getattr(req, "diffusion_engine", "native_pytorch") or "native_pytorch")
+    quantization = str(getattr(req, "quantization", ""))
+    checkpoint = str(getattr(req, "checkpoint", ""))
+    checkpoint_path = str(getattr(req, "checkpoint_path", ""))
+    source_kind = "text_to_image" if mode == "txt2img" else "image_to_image"
+    runtime_payload = {
+        "provider": resolved_provider or diffusion_engine,
+        **(runtime or {}),
+    }
+    model_payload = {
+        "profile": str(getattr(req, "model_profile", "")),
+        "checkpoint": checkpoint,
+        "checkpoint_path": checkpoint_path,
+        "quantization": quantization,
+        **(model_runtime or {}),
+    }
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "app": "Krea 2 Studio",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "filename": filename,
@@ -82,11 +103,30 @@ def build_generation_metadata(
         "seed": int(base_seed) + int(image_index),
         "base_seed": int(base_seed),
         "image_index": int(image_index),
-        "mode": str(getattr(req, "mode", "txt2img")),
-        "model_profile": str(getattr(req, "model_profile", "")),
-        "checkpoint": str(getattr(req, "checkpoint", "")),
-        "checkpoint_path": str(getattr(req, "checkpoint_path", "")),
-        "quantization": str(getattr(req, "quantization", "")),
+        "mode": mode,
+        "diffusion_engine": diffusion_engine,
+        "model_profile": model_payload["profile"],
+        "checkpoint": checkpoint,
+        "checkpoint_path": checkpoint_path,
+        "quantization": quantization,
+        "engine": {
+            "id": diffusion_engine,
+            "requested": diffusion_engine,
+            "resolved_provider": resolved_provider,
+            "quantization": quantization,
+        },
+        "model": model_payload,
+        "source": {
+            "kind": source_kind,
+            "mode": mode,
+            "init_image_count": 1 if init_image_b64 else 0,
+            "init_image_hash": hashlib.sha256(init_image_b64.encode("utf-8")).hexdigest() if init_image_b64 else "",
+            "mask_hash": hashlib.sha256(mask_b64.encode("utf-8")).hexdigest() if mask_b64 else "",
+            "moodboard_image_count": len(moodboard_images),
+            "legacy_ref_image_count": len(ref_images),
+            "style_reference_count": len(style_references),
+        },
+        "runtime": runtime_payload,
         "steps": int(getattr(req, "steps", 0)),
         "cfg": float(getattr(req, "cfg", 0.0)),
         "width": int(getattr(req, "width", 0)),
@@ -146,13 +186,21 @@ def build_generation_metadata(
             ][:8],
         },
         "seed_variance": {
+            "algorithm": str(getattr(req, "seed_variance_algorithm", "legacy")),
             "preset": str(getattr(req, "seed_variance_preset", "off")),
             "strength": float(getattr(req, "seed_variance_strength", 0.0)),
+            "model_type": str(getattr(req, "seed_variance_model_type", "krea2")),
+            "randomize_percent": float(getattr(req, "seed_variance_randomize_percent", 0.0)),
+            "shift_strength": int(getattr(req, "seed_variance_shift_strength", 100)),
             "protection": str(getattr(req, "seed_variance_protection", "first_half")),
             "direction": str(getattr(req, "seed_variance_direction", "none")),
             "fade_curve": str(getattr(req, "seed_variance_fade_curve", "linear")),
             "injection_start": float(getattr(req, "seed_variance_injection_start", 0.0)),
             "injection_end": float(getattr(req, "seed_variance_injection_end", 1.0)),
+            "schedule": str(getattr(req, "seed_variance_schedule", "constant")),
+            "cutoff_step": int(getattr(req, "seed_variance_cutoff_step", 8)),
+            "total_steps": int(getattr(req, "seed_variance_total_steps", 20)),
+            "cutoff_strength": float(getattr(req, "seed_variance_cutoff_strength", 0.0)),
         },
         "rebalance": {
             "enabled": bool(getattr(req, "use_rebalance", False)),
