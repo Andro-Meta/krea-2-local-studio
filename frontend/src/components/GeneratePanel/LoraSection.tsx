@@ -96,6 +96,7 @@ export default function LoraSection() {
     const active = activeLora(lora.name)
     const isDownloading = downloading[lora.name]
     const disabled = lora.installed && lora.compatible === false
+    const canDownload = lora.download_enabled !== false
     return (
       <Box
         key={lora.name}
@@ -138,20 +139,20 @@ export default function LoraSection() {
                 variant="outlined"
                 sx={{ height: 20, fontSize: 11, opacity: 0.8 }}
               />
-              {!lora.installed && <Chip label="Not downloaded" size="small" variant="outlined" sx={{ height: 20, fontSize: 11, opacity: 0.65 }} />}
+              {!lora.installed && <Chip label={canDownload ? 'Not downloaded' : 'Manual import required'} size="small" variant="outlined" sx={{ height: 20, fontSize: 11, opacity: 0.65 }} />}
             </Stack>
             {lora.trigger_words.length > 0 && (
               <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.35 }}>
                 Trigger: {lora.trigger_words.join(', ')}
               </Typography>
             )}
-            {lora.match_info && !lora.is_official && (
+            {lora.match_info && (!lora.is_official || !lora.installed) && (
               <Typography variant="caption" sx={{ color: lora.compatible === false ? 'warning.main' : 'text.disabled', display: 'block', mt: 0.35 }}>
                 {lora.match_info}
               </Typography>
             )}
           </Box>
-          {!lora.installed && (
+          {!lora.installed && canDownload && (
             <Tooltip title={`Download ${lora.display_name}`} arrow>
               <span>
                 <IconButton

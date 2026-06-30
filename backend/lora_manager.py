@@ -38,6 +38,16 @@ OFFICIAL_LORA_HF_IDS: dict[str, str] = {
     "krea2_turbo_lora_rank_64_bf16": "Comfy-Org/Krea-2",
 }
 
+MANUAL_LORAS: dict[str, dict] = {
+    "krea2filterbypass3": {
+        "display_name": "Krea2 Filter Bypass 3",
+        "filename": "krea2filterbypass3.safetensors",
+        "trigger_words": [],
+        "strength": 1.0,
+        "match_info": "Manual-only LoRA. Put krea2filterbypass3.safetensors in models/loras or import it from URL.",
+    },
+}
+
 
 def list_loras() -> list[dict]:
     results = []
@@ -53,9 +63,27 @@ def list_loras() -> list[dict]:
             "installed": path.exists(),
             "compatible": True,
             "match_info": "official Krea-2 LoRA",
+            "download_enabled": True,
+        })
+    for name, info in MANUAL_LORAS.items():
+        filename = str(info.get("filename") or f"{name}.safetensors")
+        path = LORAS_DIR / filename
+        installed = path.exists()
+        verdict = inspect_lora(path) if installed else {"compatible": True, "reason": str(info.get("match_info", "Manual-only LoRA"))}
+        results.append({
+            "filename": filename,
+            "name": name,
+            "display_name": info.get("display_name", name.replace("_", " ").title()),
+            "trigger_words": list(info.get("trigger_words", [])),
+            "strength": info.get("strength", 1.0),
+            "is_official": False,
+            "installed": installed,
+            "compatible": verdict["compatible"],
+            "match_info": verdict["reason"],
+            "download_enabled": False,
         })
     for f in sorted(LORAS_DIR.glob("*.safetensors")):
-        if f.stem not in OFFICIAL_LORAS:
+        if f.stem not in OFFICIAL_LORAS and f.stem not in MANUAL_LORAS:
             verdict = inspect_lora(f)
             results.append({
                 "filename": f.name,
@@ -67,6 +95,7 @@ def list_loras() -> list[dict]:
                 "installed": True,
                 "compatible": verdict["compatible"],
                 "match_info": verdict["reason"],
+                "download_enabled": False,
             })
     return results
 
@@ -170,6 +199,8 @@ def _ensure_lora_wrapper(module) -> None:
         for adapter in _m._lora_adapters:
             if isinstance(adapter, dict) and adapter.get("kind") == "lokr":
                 out = out + adapter["scale"] * _apply_lokr_linear(x, adapter["w1"], adapter["w2"])
+            elif isinstance(adapter, dict) and adapter.get("kind") == "diff":
+                out = out + adapter["scale"] * F.linear(x, adapter["diff"])
             else:
                 A, B, scale = adapter
                 out = out + scale * F.linear(F.linear(x, A), B)
@@ -193,6 +224,7 @@ _B_SUFFIXES = (".lora_B.weight", ".lora_up.weight")     # the [out, rank] factor
 _ALPHA_SUFFIX = ".alpha"
 _LOKR_W1_SUFFIX = ".lokr_w1"
 _LOKR_W2_SUFFIX = ".lokr_w2"
+_DIFF_SUFFIX = ".diff"
 
 # Minimum fraction of a LoRA's layers that must map (with correct shapes) to the
 # Krea-2 model for us to be confident it is a real Krea-2 LoRA. A genuine Krea-2
@@ -312,6 +344,11 @@ def _load_lokr_pairs(sd) -> list[tuple]:
     return pairs
 
 
+def _load_diff_pairs(sd) -> list[tuple]:
+    """Group direct weight-delta tensors into (base, diff, scale_factor) tuples."""
+    return [(key[: -len(_DIFF_SUFFIX)], sd[key], 1.0) for key in sd if key.endswith(_DIFF_SUFFIX)]
+
+
 def inspect_lora(path, model=None) -> dict:
     """Strictly check whether a safetensors file is a real Krea-2 LoRA.
 
@@ -326,7 +363,8 @@ def inspect_lora(path, model=None) -> dict:
             has_ab = any(k.endswith(".lora_A.weight") for k in keys)
             has_updown = any(k.endswith(".lora_down.weight") for k in keys)
             has_lokr = any(k.endswith(_LOKR_W1_SUFFIX) for k in keys)
-            fmt = "diffusers" if has_ab else ("kohya" if has_updown else ("lokr" if has_lokr else "unknown"))
+            has_diff = any(k.endswith(_DIFF_SUFFIX) for k in keys)
+            fmt = "diffusers" if has_ab else ("kohya" if has_updown else ("lokr" if has_lokr else ("diff" if has_diff else "unknown")))
             a_suf = ".lora_A.weight" if has_ab else ".lora_down.weight"
             b_suf = ".lora_B.weight" if has_ab else ".lora_up.weight"
             keyset = set(keys)
@@ -347,6 +385,20 @@ def inspect_lora(path, model=None) -> dict:
                         continue
                     out_f, in_f = sh
                     if len(w1) == 2 and len(w2) == 2 and out_f == w1[0] * w2[0] and in_f == w1[1] * w2[1]:
+                        matched += 1
+                    else:
+                        bad_shape += 1
+            elif has_diff:
+                for k in keys:
+                    if not k.endswith(_DIFF_SUFFIX):
+                        continue
+                    base = k[: -len(_DIFF_SUFFIX)]
+                    total += 1
+                    diff = tuple(f.get_slice(k).get_shape())
+                    sh = shapes.get(_lora_base_to_module(base))
+                    if sh is None:
+                        continue
+                    if diff == sh:
                         matched += 1
                     else:
                         bad_shape += 1
@@ -480,6 +532,22 @@ def _attach_single_lora(
         w2 = w2.to(device=device, dtype=dtype)
         _ensure_lora_wrapper(mod)
         mod._lora_adapters.append({"kind": "lokr", "w1": w1, "w2": w2, "scale": strength * scale_factor})
+        attached += 1
+    for base, diff, scale_factor in _load_diff_pairs(sd):
+        module_name = _lora_base_to_module(base)
+        if not _block_filter_allows(module_name, block_filter, custom_blocks):
+            skipped += 1
+            continue
+        mod = module_by_name.get(module_name)
+        if mod is None or not isinstance(mod, torch.nn.Linear):
+            skipped += 1
+            continue
+        if tuple(diff.shape) != tuple(mod.weight.shape):
+            skipped += 1
+            continue
+        diff = diff.to(device=device, dtype=dtype)
+        _ensure_lora_wrapper(mod)
+        mod._lora_adapters.append({"kind": "diff", "diff": diff, "scale": strength * scale_factor})
         attached += 1
     if attached == 0:
         raise RuntimeError("no LoRA layers matched the model")

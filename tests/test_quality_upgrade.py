@@ -78,6 +78,47 @@ class QualityUpgradeTests(unittest.TestCase):
             self.assertTrue(reports[0]["applied"], reports)
             self.assertTrue(torch.allclose(model.blocks[0].attn.wq(x), expected))
 
+    def test_direct_diff_adapter_inspection_and_application(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError:
+            self.skipTest("torch is required for direct diff adapter tests")
+        from safetensors.torch import save_file
+        import lora_manager
+
+        class TinyFusion(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.projector = torch.nn.Linear(4, 1, bias=False)
+
+        class TinyKrea(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.txtfusion = TinyFusion()
+
+        with tempfile.TemporaryDirectory() as td:
+            lora_path = Path(td) / "tiny_diff.safetensors"
+            diff = torch.tensor([[1.0, -1.0, 0.5, 2.0]])
+            save_file({"diffusion_model.txtfusion.projector.diff": diff}, str(lora_path))
+
+            model = TinyKrea()
+            model.txtfusion.projector.weight.data.zero_()
+            verdict = lora_manager.inspect_lora(lora_path, model=model)
+            self.assertTrue(verdict["compatible"], verdict)
+            self.assertEqual(verdict["format"], "diff")
+
+            with patch.object(lora_manager, "LORAS_DIR", Path(td)):
+                reports = lora_manager.apply_loras(
+                    model,
+                    [{"name": "tiny_diff", "filename": "tiny_diff.safetensors", "strength": 0.25}],
+                    device="cpu",
+                )
+
+            x = torch.tensor([[2.0, 3.0, 4.0, 5.0]])
+            expected = torch.nn.functional.linear(x, diff * 0.25)
+            self.assertTrue(reports[0]["applied"], reports)
+            self.assertTrue(torch.allclose(model.txtfusion.projector(x), expected))
+
     def test_realtime_preview_request_accepts_shared_moodboards(self) -> None:
         from schemas import RealtimePreviewRequest
 
@@ -317,6 +358,17 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(kwargs["repo_id"], "Comfy-Org/Krea-2")
         self.assertEqual(kwargs["filename"], "krea2_darkbrush.safetensors")
         self.assertEqual(kwargs["subfolder"], "loras")
+
+    def test_manual_only_filter_bypass_lora_is_visible_when_missing(self) -> None:
+        import lora_manager
+
+        with tempfile.TemporaryDirectory() as td, patch.object(lora_manager, "LORAS_DIR", Path(td)):
+            items = lora_manager.list_loras()
+
+        item = next(lora for lora in items if lora["name"] == "krea2filterbypass3")
+        self.assertFalse(item["installed"])
+        self.assertFalse(item["download_enabled"])
+        self.assertIn("manual", item["match_info"].lower())
 
     def test_flux_fill_call_uses_documented_defaults(self) -> None:
         import flux_fill_provider

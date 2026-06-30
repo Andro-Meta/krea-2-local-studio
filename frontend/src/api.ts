@@ -317,6 +317,7 @@ export interface LoraInfo {
   installed: boolean
   compatible?: boolean
   match_info?: string
+  download_enabled?: boolean
 }
 
 export interface SystemReport {
