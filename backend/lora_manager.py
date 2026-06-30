@@ -125,6 +125,8 @@ def _lora_base_to_module(base: str) -> str:
     s = base
     if s.startswith("transformer."):
         s = s[len("transformer."):]
+    if s.startswith("diffusion_model."):
+        s = s[len("diffusion_model."):]
     s = s.replace("transformer_blocks.", "blocks.")
     s = s.replace("text_fusion.", "txtfusion.")
     s = (s.replace(".attn.to_q", ".attn.wq")
@@ -136,6 +138,19 @@ def _lora_base_to_module(base: str) -> str:
           .replace(".ff.up", ".mlp.up")
           .replace(".ff.down", ".mlp.down"))
     return _FIXED_NAME_MAP.get(s, s)
+
+
+def _apply_lokr_linear(x, w1, w2):
+    """Apply kron(w1, w2) as a linear delta without materializing it."""
+    import torch
+
+    o1, i1 = w1.shape
+    o2, i2 = w2.shape
+    if x.shape[-1] != i1 * i2:
+        raise RuntimeError(f"LoKr input mismatch: got {x.shape[-1]}, expected {i1 * i2}")
+    x2 = x.reshape(*x.shape[:-1], i1, i2)
+    y = torch.einsum("...ij,oi,pj->...op", x2, w1, w2)
+    return y.reshape(*x.shape[:-1], o1 * o2)
 
 
 def _ensure_lora_wrapper(module) -> None:
@@ -152,8 +167,12 @@ def _ensure_lora_wrapper(module) -> None:
 
     def lora_forward(x, _base=base_forward, _m=module):
         out = _base(x)
-        for A, B, scale in _m._lora_adapters:
-            out = out + scale * F.linear(F.linear(x, A), B)
+        for adapter in _m._lora_adapters:
+            if isinstance(adapter, dict) and adapter.get("kind") == "lokr":
+                out = out + adapter["scale"] * _apply_lokr_linear(x, adapter["w1"], adapter["w2"])
+            else:
+                A, B, scale = adapter
+                out = out + scale * F.linear(F.linear(x, A), B)
         return out
 
     module.forward = lora_forward
@@ -172,6 +191,8 @@ def clear_loras(model) -> None:
 _A_SUFFIXES = (".lora_A.weight", ".lora_down.weight")   # the [rank, in] factor
 _B_SUFFIXES = (".lora_B.weight", ".lora_up.weight")     # the [out, rank] factor
 _ALPHA_SUFFIX = ".alpha"
+_LOKR_W1_SUFFIX = ".lokr_w1"
+_LOKR_W2_SUFFIX = ".lokr_w2"
 
 # Minimum fraction of a LoRA's layers that must map (with correct shapes) to the
 # Krea-2 model for us to be confident it is a real Krea-2 LoRA. A genuine Krea-2
@@ -275,6 +296,22 @@ def _load_lora_pairs(sd) -> list[tuple]:
     return pairs
 
 
+def _load_lokr_pairs(sd) -> list[tuple]:
+    """Group LyCORIS LoKr tensors into (base, w1, w2, scale_factor) tuples."""
+    pairs = []
+    for key in sd:
+        if not key.endswith(_LOKR_W1_SUFFIX):
+            continue
+        base = key[: -len(_LOKR_W1_SUFFIX)]
+        w2_key = base + _LOKR_W2_SUFFIX
+        if w2_key not in sd:
+            continue
+        # Some community Krea LoKr files store unusable bf16 alpha values.
+        # The UI strength is the reliable scale, so LoKr alpha is intentionally ignored.
+        pairs.append((base, sd[key], sd[w2_key], 1.0))
+    return pairs
+
+
 def inspect_lora(path, model=None) -> dict:
     """Strictly check whether a safetensors file is a real Krea-2 LoRA.
 
@@ -288,28 +325,49 @@ def inspect_lora(path, model=None) -> dict:
             keys = list(f.keys())
             has_ab = any(k.endswith(".lora_A.weight") for k in keys)
             has_updown = any(k.endswith(".lora_down.weight") for k in keys)
-            fmt = "diffusers" if has_ab else ("kohya" if has_updown else "unknown")
+            has_lokr = any(k.endswith(_LOKR_W1_SUFFIX) for k in keys)
+            fmt = "diffusers" if has_ab else ("kohya" if has_updown else ("lokr" if has_lokr else "unknown"))
             a_suf = ".lora_A.weight" if has_ab else ".lora_down.weight"
             b_suf = ".lora_B.weight" if has_ab else ".lora_up.weight"
             keyset = set(keys)
             total = matched = bad_shape = 0
-            for k in keys:
-                if not k.endswith(a_suf):
-                    continue
-                base = k[: -len(a_suf)]
-                if (base + b_suf) not in keyset:
-                    continue
-                total += 1
-                A = tuple(f.get_slice(k).get_shape())
-                B = tuple(f.get_slice(base + b_suf).get_shape())
-                sh = shapes.get(_lora_base_to_module(base))
-                if sh is None:
-                    continue
-                out_f, in_f = sh
-                if len(A) == 2 and len(B) == 2 and A[1] == in_f and B[0] == out_f and A[0] == B[1]:
-                    matched += 1
-                else:
-                    bad_shape += 1
+            if has_lokr:
+                for k in keys:
+                    if not k.endswith(_LOKR_W1_SUFFIX):
+                        continue
+                    base = k[: -len(_LOKR_W1_SUFFIX)]
+                    w2_key = base + _LOKR_W2_SUFFIX
+                    if w2_key not in keyset:
+                        continue
+                    total += 1
+                    w1 = tuple(f.get_slice(k).get_shape())
+                    w2 = tuple(f.get_slice(w2_key).get_shape())
+                    sh = shapes.get(_lora_base_to_module(base))
+                    if sh is None:
+                        continue
+                    out_f, in_f = sh
+                    if len(w1) == 2 and len(w2) == 2 and out_f == w1[0] * w2[0] and in_f == w1[1] * w2[1]:
+                        matched += 1
+                    else:
+                        bad_shape += 1
+            else:
+                for k in keys:
+                    if not k.endswith(a_suf):
+                        continue
+                    base = k[: -len(a_suf)]
+                    if (base + b_suf) not in keyset:
+                        continue
+                    total += 1
+                    A = tuple(f.get_slice(k).get_shape())
+                    B = tuple(f.get_slice(base + b_suf).get_shape())
+                    sh = shapes.get(_lora_base_to_module(base))
+                    if sh is None:
+                        continue
+                    out_f, in_f = sh
+                    if len(A) == 2 and len(B) == 2 and A[1] == in_f and B[0] == out_f and A[0] == B[1]:
+                        matched += 1
+                    else:
+                        bad_shape += 1
     except Exception:  # noqa: BLE001
         logger.exception("LoRA inspection failed")
         return {"format": "unknown", "total": 0, "matched": 0,
@@ -404,6 +462,24 @@ def _attach_single_lora(
         B = B.to(device=device, dtype=dtype)             # (out, rank)
         _ensure_lora_wrapper(mod)
         mod._lora_adapters.append((A, B, strength * scale_factor))
+        attached += 1
+    for base, w1, w2, scale_factor in _load_lokr_pairs(sd):
+        module_name = _lora_base_to_module(base)
+        if not _block_filter_allows(module_name, block_filter, custom_blocks):
+            skipped += 1
+            continue
+        mod = module_by_name.get(module_name)
+        if mod is None or not isinstance(mod, torch.nn.Linear):
+            skipped += 1
+            continue
+        out_f, in_f = mod.weight.shape
+        if len(w1.shape) != 2 or len(w2.shape) != 2 or out_f != w1.shape[0] * w2.shape[0] or in_f != w1.shape[1] * w2.shape[1]:
+            skipped += 1
+            continue
+        w1 = w1.to(device=device, dtype=dtype)
+        w2 = w2.to(device=device, dtype=dtype)
+        _ensure_lora_wrapper(mod)
+        mod._lora_adapters.append({"kind": "lokr", "w1": w1, "w2": w2, "scale": strength * scale_factor})
         attached += 1
     if attached == 0:
         raise RuntimeError("no LoRA layers matched the model")

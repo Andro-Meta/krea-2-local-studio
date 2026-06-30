@@ -27,6 +27,54 @@ class QualityUpgradeTests(unittest.TestCase):
 
         self.assertEqual(prompt, "a red fox")
 
+    def test_lokr_lora_inspection_and_application(self) -> None:
+        import torch
+        from safetensors.torch import save_file
+        import lora_manager
+
+        class Attention(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.wq = torch.nn.Linear(4, 4, bias=False)
+
+        class Block(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.attn = Attention()
+
+        class TinyKrea(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.blocks = torch.nn.ModuleList([Block()])
+
+        with tempfile.TemporaryDirectory() as td:
+            lora_path = Path(td) / "tiny_lokr.safetensors"
+            w1 = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+            w2 = torch.tensor([[0.5, 1.0], [1.5, 2.0]])
+            save_file({
+                "diffusion_model.blocks.0.attn.wq.lokr_w1": w1,
+                "diffusion_model.blocks.0.attn.wq.lokr_w2": w2,
+                "diffusion_model.blocks.0.attn.wq.alpha": torch.tensor(1.0),
+            }, str(lora_path))
+
+            model = TinyKrea()
+            model.blocks[0].attn.wq.weight.data.zero_()
+            verdict = lora_manager.inspect_lora(lora_path, model=model)
+            self.assertTrue(verdict["compatible"], verdict)
+            self.assertEqual(verdict["format"], "lokr")
+
+            with patch.object(lora_manager, "LORAS_DIR", Path(td)):
+                reports = lora_manager.apply_loras(
+                    model,
+                    [{"name": "tiny_lokr", "filename": "tiny_lokr.safetensors", "strength": 0.5}],
+                    device="cpu",
+                )
+
+            x = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+            expected = torch.nn.functional.linear(x, torch.kron(w1, w2) * 0.5)
+            self.assertTrue(reports[0]["applied"], reports)
+            self.assertTrue(torch.allclose(model.blocks[0].attn.wq(x), expected))
+
     def test_realtime_preview_request_accepts_shared_moodboards(self) -> None:
         from schemas import RealtimePreviewRequest
 
