@@ -1,10 +1,23 @@
-import React, { useState } from 'react'
-import { Alert, Box, Button, Checkbox, CircularProgress, Collapse, FormControlLabel, IconButton, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
+import React, { useEffect, useState } from 'react'
+import { Alert, Box, Button, Checkbox, CircularProgress, Collapse, FormControlLabel, IconButton, MenuItem, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
 import TipsAndUpdatesIcon from '@mui/icons-material/TipsAndUpdates'
 import { useStore } from '../../store'
 import { apiFetch, type PromptPlan } from '../../api'
 import CreatePromptFromImage from '../CreatePromptFromImage'
+
+const ABLITERATED_QWEN = 'huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated'
+
+function wandChoiceFromModel(modelId: string) {
+  if (!modelId) return 'default'
+  return /Huihui-Qwen3-VL-4B-Instruct-abliterated|qwen3_vl_4b_abliterated/i.test(modelId) ? 'abliterated' : 'custom'
+}
+
+function modelFromWandChoice(choice: string, current: string) {
+  if (choice === 'default') return ''
+  if (choice === 'abliterated') return ABLITERATED_QWEN
+  return current && wandChoiceFromModel(current) === 'custom' ? current : 'custom/repo-or-path'
+}
 
 export default function PromptSection() {
   const { params, setParam, setLoras } = useStore()
@@ -13,15 +26,29 @@ export default function PromptSection() {
   const [xperimenting, setXperimenting] = useState(false)
   const [plan, setPlan] = useState<PromptPlan | null>(null)
   const [notice, setNotice] = useState<{ message: string; severity: 'success' | 'warning' | 'error' } | null>(null)
+  const [wandModel, setWandModel] = useState('')
+
+  useEffect(() => {
+    apiFetch.settings()
+      .then(settings => setWandModel(settings.local_qwen_model_id ?? ''))
+      .catch(() => undefined)
+  }, [])
 
   const handleExpand = async () => {
     if (!params.prompt || expanding) return
     setExpanding(true)
     try {
+      await apiFetch.updateSettings({
+        prompt_expander_backend: 'local',
+        local_llm_backend: 'transformers',
+        local_qwen_model_id: wandModel,
+      })
       const { expanded, changed, error, backend } = await apiFetch.expandPrompt(params.prompt)
       if (changed && expanded) {
         setParam('prompt', expanded)
-        const label = backend === 'openrouter' ? 'OpenRouter' : backend === 'ideogram-json' ? 'Ideogram JSON' : 'Local Qwen3-VL'
+        const label = wandChoiceFromModel(wandModel) === 'abliterated'
+          ? 'Abliterated Qwen3-VL'
+          : backend === 'openrouter' ? 'OpenRouter' : backend === 'ideogram-json' ? 'Ideogram JSON' : 'Local Qwen3-VL'
         setNotice({ severity: 'success', message: `Prompt expanded with ${label}.` })
       } else if (error) {
         setNotice({ severity: 'warning', message: error })
@@ -60,6 +87,7 @@ export default function PromptSection() {
     setXperimenting(true)
     try {
       const result = await apiFetch.setupXperiment()
+      setWandModel(result.local_qwen_model_id ?? ABLITERATED_QWEN)
       apiFetch.loras().then(setLoras).catch(() => undefined)
       const xperimentLoras = (result.loras?.length ? result.loras : [result.lora]).map(lora => ({
         name: lora.name,
@@ -126,7 +154,7 @@ export default function PromptSection() {
           </Button>
         </Stack>
       </Paper>
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+      <Stack spacing={1}>
         <TextField
           label="Prompt"
           multiline
@@ -137,32 +165,58 @@ export default function PromptSection() {
           onChange={e => setParam('prompt', e.target.value)}
           placeholder="Describe the image you want to create…"
         />
-        <Tooltip
-          title={
-            <span>
-              <b>Krea 2 prompting (official):</b><br />
-              • Use natural language; describe the scene as to a person.<br />
-              • Long, detailed prompts work best; Turbo handles up to 2k.<br />
-              • Put words to render in quotes, e.g. a sign that says "OPEN".<br />
-              • The wand applies Krea's official expansion prompt.
-            </span>
-          }
-        >
-          <IconButton sx={{ mt: 0.5 }} size="small"><TipsAndUpdatesIcon fontSize="small" /></IconButton>
-        </Tooltip>
-        <Tooltip title="Expand prompt with AI (Krea official expansion)">
-          <span>
-            <IconButton onClick={handleExpand} disabled={expanding || !params.prompt} sx={{ mt: 0.5 }}>
-              {expanding ? <CircularProgress size={20} /> : <AutoFixHighIcon />}
-            </IconButton>
-          </span>
-        </Tooltip>
-      </Box>
-      <CreatePromptFromImage
-        value={params.prompt}
-        onChange={prompt => setParam('prompt', prompt)}
-        compact
-      />
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
+          <CreatePromptFromImage
+            value={params.prompt}
+            onChange={prompt => setParam('prompt', prompt)}
+            compact
+          />
+          <TextField
+            select
+            label="Wand model"
+            value={wandChoiceFromModel(wandModel)}
+            onChange={e => setWandModel(modelFromWandChoice(e.target.value, wandModel))}
+            size="small"
+            sx={{ minWidth: { xs: '100%', sm: 260 } }}
+            helperText="Controls the Magic wand prompt expander."
+          >
+            <MenuItem value="default">Default Qwen3-VL</MenuItem>
+            <MenuItem value="abliterated">Abliterated Qwen3-VL</MenuItem>
+            <MenuItem value="custom">Custom repo/path</MenuItem>
+          </TextField>
+          {wandChoiceFromModel(wandModel) === 'custom' && (
+            <TextField
+              label="Custom wand model"
+              value={wandModel}
+              onChange={e => setWandModel(e.target.value)}
+              size="small"
+              sx={{ minWidth: { xs: '100%', sm: 260 } }}
+            />
+          )}
+          <Button
+            variant="outlined"
+            onClick={handleExpand}
+            disabled={expanding || !params.prompt}
+            startIcon={expanding ? <CircularProgress size={16} color="inherit" /> : <AutoFixHighIcon />}
+            sx={{ alignSelf: { xs: 'stretch', sm: 'flex-start' }, minHeight: 40 }}
+          >
+            Magic wand
+          </Button>
+          <Tooltip
+            title={
+              <span>
+                <b>Krea 2 prompting tips:</b><br />
+                Use natural language; describe the scene as to a person.<br />
+                Long, detailed prompts work best. Put requested text in quotes.
+              </span>
+            }
+          >
+            <Button variant="text" size="small" startIcon={<TipsAndUpdatesIcon fontSize="small" />}>
+              Prompt tips
+            </Button>
+          </Tooltip>
+        </Stack>
+      </Stack>
       <Paper variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>
         <Stack spacing={1}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
