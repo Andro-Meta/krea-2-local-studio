@@ -181,11 +181,12 @@ export default function LoraSection() {
             </Stack>
             <Slider
               value={active.strength}
-              min={-2} max={2} step={0.05}
+              min={-4} max={4} step={0.05}
               marks={[
-                { value: -1, label: 'avoid' },
+                { value: -2, label: 'avoid' },
                 { value: 0, label: 'off' },
-                { value: 1, label: 'apply' },
+                { value: 2, label: 'apply' },
+                { value: 4, label: 'max' },
               ]}
               onChange={(_, v) => setStrength(lora.name, v as number)}
               size="small"

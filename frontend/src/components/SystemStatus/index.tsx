@@ -46,6 +46,7 @@ export default function SystemStatus() {
     openrouter_free_only: true,
     krea_attention_backend: 'sdpa' as 'sdpa' | 'sage',
     local_llm_backend: 'transformers' as 'transformers' | 'gguf_server',
+    local_qwen_model_id: '',
     gguf_helper_base_url: 'http://127.0.0.1:1234/v1',
     gguf_helper_model: 'BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M',
     gguf_helper_timeout_sec: 120,
@@ -135,6 +136,7 @@ export default function SystemStatus() {
         openrouter_free_only: s.openrouter_free_only,
         krea_attention_backend: s.krea_attention_backend ?? 'sdpa',
         local_llm_backend: s.local_llm_backend ?? 'transformers',
+        local_qwen_model_id: s.local_qwen_model_id ?? '',
         gguf_helper_base_url: s.gguf_helper_base_url ?? 'http://127.0.0.1:1234/v1',
         gguf_helper_model: s.gguf_helper_model ?? 'BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M',
         gguf_helper_timeout_sec: s.gguf_helper_timeout_sec ?? 120,
@@ -267,6 +269,7 @@ export default function SystemStatus() {
       await apiFetch.updateSettings({
         prompt_expander_backend: settingsDraft.prompt_expander_backend,
         local_llm_backend: settingsDraft.local_llm_backend,
+        local_qwen_model_id: settingsDraft.local_qwen_model_id,
         gguf_helper_base_url: settingsDraft.gguf_helper_base_url,
         gguf_helper_model: settingsDraft.gguf_helper_model,
         gguf_helper_timeout_sec: settingsDraft.gguf_helper_timeout_sec,
@@ -303,6 +306,7 @@ export default function SystemStatus() {
     try {
       await apiFetch.updateSettings({
         local_llm_backend: settingsDraft.local_llm_backend,
+        local_qwen_model_id: settingsDraft.local_qwen_model_id,
         gguf_helper_base_url: settingsDraft.gguf_helper_base_url,
         gguf_helper_model: settingsDraft.gguf_helper_model,
         gguf_helper_timeout_sec: settingsDraft.gguf_helper_timeout_sec,
@@ -1111,6 +1115,17 @@ export default function SystemStatus() {
                 />
               ))}
             </Stack>
+            {settingsDraft.local_llm_backend === 'transformers' && (
+              <TextField
+                label="Local Qwen model repo/path"
+                value={settingsDraft.local_qwen_model_id}
+                onChange={e => setSettingsDraft(d => ({ ...d, local_qwen_model_id: e.target.value }))}
+                size="small"
+                fullWidth
+                placeholder="Blank = installed Qwen/Qwen3-VL-4B-Instruct"
+                helperText="Xperiment sets this to huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated for magic-wand prompt expansion. The Comfy FP8 file cannot be loaded directly by Transformers."
+              />
+            )}
             {settingsDraft.local_llm_backend === 'gguf_server' && (
               <Stack spacing={1}>
                 <Alert severity="info" sx={{ py: 0 }}>

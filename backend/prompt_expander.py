@@ -76,20 +76,25 @@ class PromptExpansionResult:
     backend: str = "local"
 
 
-@lru_cache(maxsize=1)
-def _load_local_qwen():
+@lru_cache(maxsize=2)
+def _load_local_qwen(model_id: str = ""):
     import torch
     from transformers import AutoTokenizer, Qwen3VLForConditionalGeneration, Qwen3VLProcessor
     from support_models import support_model_path
+    from settings import settings
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_path = str(support_model_path(LOCAL_QWEN_MODEL_ID))
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    processor = Qwen3VLProcessor.from_pretrained(model_path)
+    model_path = str(model_id or getattr(settings, "local_qwen_model_id", "") or support_model_path(LOCAL_QWEN_MODEL_ID))
+    processor_source = model_path
+    if "Huihui-Qwen3-VL-4B-Instruct-abliterated" in model_path:
+        processor_source = "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated"
+    tokenizer = AutoTokenizer.from_pretrained(processor_source)
+    processor = Qwen3VLProcessor.from_pretrained(processor_source)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         model_path,
         dtype=torch.bfloat16 if device == "cuda" else torch.float32,
         attn_implementation="sdpa",
+        low_cpu_mem_usage=True,
     ).eval().to(device)
     return tokenizer, processor, model
 
@@ -124,7 +129,8 @@ def _generation_kwargs(inputs) -> dict:
 
 def expand_prompt_local(prompt: str) -> PromptExpansionResult:
     try:
-        tokenizer, _processor, model = _load_local_qwen()
+        from settings import settings
+        tokenizer, _processor, model = _load_local_qwen(str(getattr(settings, "local_qwen_model_id", "") or ""))
         messages = [
             {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -158,7 +164,8 @@ def expand_prompt_local(prompt: str) -> PromptExpansionResult:
 
 
 def describe_image_local(image_b64: str) -> dict[str, str]:
-    tokenizer, processor, model = _load_local_qwen()
+    from settings import settings
+    tokenizer, processor, model = _load_local_qwen(str(getattr(settings, "local_qwen_model_id", "") or ""))
     if processor is None:
         raise RuntimeError("Local Qwen3-VL processor is unavailable.")
     image = Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")

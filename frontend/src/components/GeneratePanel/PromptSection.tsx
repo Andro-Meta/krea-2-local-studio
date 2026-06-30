@@ -61,6 +61,14 @@ export default function PromptSection() {
     try {
       const result = await apiFetch.setupXperiment()
       apiFetch.loras().then(setLoras).catch(() => undefined)
+      const xperimentLoras = (result.loras?.length ? result.loras : [result.lora]).map(lora => ({
+        name: lora.name,
+        filename: lora.filename,
+        strength: lora.strength,
+        enabled: true,
+        block_filter: lora.block_filter ?? (lora.name === 'Krea2-realism-V1' ? 'late' : 'style_safe'),
+      }))
+      const xperimentLoraNames = new Set(xperimentLoras.map(lora => lora.name))
       setParam('diffusion_engine', 'native_pytorch')
       setParam('model_profile', 'krea_turbo')
       setParam('checkpoint', 'turbo')
@@ -73,8 +81,8 @@ export default function PromptSection() {
       setParam('use_prompt_expander', result.use_prompt_expander ?? false)
       setParam('negative_prompt', '')
       setParam('loras', [
-        ...params.loras.filter(lora => lora.name !== result.lora.name),
-        { name: result.lora.name, filename: result.lora.filename, strength: result.lora.strength, enabled: true, block_filter: result.lora.block_filter ?? 'late' },
+        ...params.loras.filter(lora => !xperimentLoraNames.has(lora.name)),
+        ...xperimentLoras,
       ])
       const skipped = result.assets.filter(asset => asset.skipped).length
       const notes = [result.benchmark_note, ...result.warnings].filter(Boolean).join(' ')

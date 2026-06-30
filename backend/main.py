@@ -1797,16 +1797,32 @@ async def xperiment_setup_endpoint():
     wan_vae = asset_by_id("wan_2_1_vae").local_path
     env = _read_env()
     env["KREA2_VAE_PATH"] = str(wan_vae)
+    env["PROMPT_EXPANDER_BACKEND"] = "local"
+    env["LOCAL_LLM_BACKEND"] = "transformers"
+    env["LOCAL_QWEN_MODEL_ID"] = "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated"
     settings.krea2_vae_path = str(wan_vae)
+    settings.prompt_expander_backend = "local"
+    settings.local_llm_backend = "transformers"
+    settings.local_qwen_model_id = "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated"
     _write_env(env)
-    bypass = asset_status(asset_by_id("krea2_filter_bypass"), has_hf_token=bool(token))
+    bypass_spec = asset_by_id("krea2_filter_bypass")
+    bypass = asset_status(bypass_spec, has_hf_token=bool(token))
+    loras = [
+        {"name": "Krea2-realism-V1", "filename": "Krea2-realism-V1.safetensors", "strength": 0.55, "block_filter": "late"},
+    ]
+    if asset_installed(bypass_spec):
+        loras.append({"name": "krea2filterbypass3", "filename": "krea2filterbypass3.safetensors", "strength": 4.0, "block_filter": "style_safe"})
     return {
         "ok": True,
         "assets": results,
         "vae_path": str(wan_vae),
-        "lora": {"name": "Krea2-realism-V1", "filename": "Krea2-realism-V1.safetensors", "strength": 0.55, "block_filter": "late"},
+        "lora": loras[0],
+        "loras": loras,
         "sampler": {"sampler": "er_sde", "scheduler": "beta57", "steps": 6, "cfg": 0.0},
         "use_prompt_expander": False,
+        "prompt_expander_backend": "local",
+        "local_llm_backend": "transformers",
+        "local_qwen_model_id": "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated",
         "benchmark_note": "Verified on RTX 4090: 1024px, er_sde/beta57, 6 steps, CFG 0, Realism LoKr late@0.55 completed in ~10s with good prompt adherence.",
         "manual_only": [bypass],
         "warnings": [
@@ -1912,6 +1928,7 @@ async def get_settings():
         "output_dir": env.get("OUTPUT_DIR", str(MODELS_DIR.parent / "outputs")),
         "prompt_expander_backend": env.get("PROMPT_EXPANDER_BACKEND", settings.prompt_expander_backend),
         "local_llm_backend": env.get("LOCAL_LLM_BACKEND", settings.local_llm_backend),
+        "local_qwen_model_id": env.get("LOCAL_QWEN_MODEL_ID", settings.local_qwen_model_id),
         "gguf_helper_base_url": env.get("GGUF_HELPER_BASE_URL", settings.gguf_helper_base_url),
         "gguf_helper_model": env.get("GGUF_HELPER_MODEL", settings.gguf_helper_model),
         "gguf_helper_timeout_sec": int(env.get("GGUF_HELPER_TIMEOUT_SEC", str(settings.gguf_helper_timeout_sec)) or 120),
@@ -1959,6 +1976,9 @@ async def update_settings(req: SettingsUpdate):
     if req.local_llm_backend is not None:
         env["LOCAL_LLM_BACKEND"] = req.local_llm_backend
         settings.local_llm_backend = req.local_llm_backend
+    if req.local_qwen_model_id is not None:
+        env["LOCAL_QWEN_MODEL_ID"] = req.local_qwen_model_id
+        settings.local_qwen_model_id = req.local_qwen_model_id
     if req.gguf_helper_base_url is not None:
         env["GGUF_HELPER_BASE_URL"] = req.gguf_helper_base_url
         settings.gguf_helper_base_url = req.gguf_helper_base_url

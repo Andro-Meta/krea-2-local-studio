@@ -427,6 +427,7 @@ class SettingsUpdate(BaseModel):
     output_dir: Optional[str] = None
     prompt_expander_backend: Optional[str] = None
     local_llm_backend: Optional[Literal["transformers", "gguf_server"]] = None
+    local_qwen_model_id: Optional[str] = None
     gguf_helper_base_url: Optional[str] = None
     gguf_helper_model: Optional[str] = None
     gguf_helper_timeout_sec: Optional[int] = None

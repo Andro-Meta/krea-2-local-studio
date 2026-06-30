@@ -393,6 +393,7 @@ export interface AppSettings {
   output_dir: string
   prompt_expander_backend: 'local' | 'openrouter' | 'ideogram-json'
   local_llm_backend: 'transformers' | 'gguf_server'
+  local_qwen_model_id: string
   gguf_helper_base_url: string
   gguf_helper_model: string
   gguf_helper_timeout_sec: number
@@ -446,8 +447,12 @@ export interface XperimentSetupResult {
   assets: Array<{ id: string; path: string; skipped: boolean; item: QualityAsset }>
   vae_path: string
   lora: { name: string; filename: string; strength: number; block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom' }
+  loras?: Array<{ name: string; filename: string; strength: number; block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom' }>
   sampler: { sampler: string; scheduler: string; steps: number; cfg: number }
   use_prompt_expander?: boolean
+  prompt_expander_backend?: 'local' | 'openrouter' | 'ideogram-json'
+  local_llm_backend?: 'transformers' | 'gguf_server'
+  local_qwen_model_id?: string
   benchmark_note?: string
   manual_only: QualityAsset[]
   warnings: string[]

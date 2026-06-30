@@ -445,7 +445,15 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(data["sampler"], {"sampler": "er_sde", "scheduler": "beta57", "steps": 6, "cfg": 0.0})
         self.assertEqual(data["lora"]["strength"], 0.55)
         self.assertEqual(data["lora"]["block_filter"], "late")
+        self.assertEqual(data["loras"][0]["name"], "Krea2-realism-V1")
+        self.assertEqual(data["loras"][0]["strength"], 0.55)
+        self.assertEqual(data["loras"][0]["block_filter"], "late")
+        self.assertEqual(data["loras"][1]["name"], "krea2filterbypass3")
+        self.assertEqual(data["loras"][1]["strength"], 4.0)
         self.assertFalse(data["use_prompt_expander"])
+        self.assertEqual(data["prompt_expander_backend"], "local")
+        self.assertEqual(data["local_llm_backend"], "transformers")
+        self.assertEqual(data["local_qwen_model_id"], "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated")
         self.assertIn("1024px", data["benchmark_note"])
 
     def test_gguf_low_vram_setup_skips_installed_assets_and_sets_paths(self) -> None:
