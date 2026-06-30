@@ -77,12 +77,20 @@ export default function PromptSection() {
         { name: result.lora.name, filename: result.lora.filename, strength: result.lora.strength, enabled: true, block_filter: 'style_safe' },
       ])
       const skipped = result.assets.filter(asset => asset.skipped).length
+      const notes = result.warnings.length ? ` Notes: ${result.warnings.join(' ')}` : ''
       setNotice({
-        severity: result.warnings.length ? 'warning' : 'success',
-        message: `Xperiment Settings applied. ${skipped}/${result.assets.length} assets were already installed. ${result.warnings.join(' ')}`,
+        severity: 'success',
+        message: `Xperiment Settings applied. ${skipped}/${result.assets.length} assets were already installed.${notes}`,
       })
     } catch (err: any) {
-      setNotice({ severity: 'error', message: err?.response?.data?.detail ?? err.message ?? 'Xperiment setup failed.' })
+      const status = err?.response?.status
+      const detail = err?.response?.data?.detail
+      setNotice({
+        severity: 'error',
+        message: status === 405
+          ? 'Xperiment setup route is stale. Restart run.bat so the backend and browser bundle both use the latest code.'
+          : detail ?? err.message ?? 'Xperiment setup failed.',
+      })
     } finally {
       setXperimenting(false)
     }
@@ -99,6 +107,7 @@ export default function PromptSection() {
             </Typography>
           </Box>
           <Button
+            type="button"
             variant="outlined"
             size="small"
             onClick={handleXperiment}

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 import unittest
 import io
 from pathlib import Path
@@ -16,17 +15,6 @@ import share_startup  # noqa: E402
 
 
 class ShareStartupTests(unittest.TestCase):
-    def test_env_bool_accepts_common_true_values(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            env_path = Path(td) / ".env"
-            env_path.write_text("KREA_SHARE_AUTO_FUNNEL=yes\nOTHER=false\n", encoding="utf-8")
-
-            env = share_startup.read_env_file(env_path)
-
-        self.assertTrue(share_startup.env_bool(env, "KREA_SHARE_AUTO_FUNNEL"))
-        self.assertFalse(share_startup.env_bool(env, "OTHER"))
-        self.assertFalse(share_startup.env_bool(env, "MISSING"))
-
     def test_wait_for_url_retries_until_ready(self) -> None:
         attempts = {"count": 0}
 

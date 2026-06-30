@@ -80,14 +80,14 @@ if not "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" if /I not "%KREA_SHARE_AUTO_FUNNE
 start "" /b %KREA_PYTHON% scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
 echo Local sharing server: http://localhost:%KREA_SERVER_PORT%/krea
 if not exist "logs" mkdir logs
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"`) do set "KREA_LOG_STAMP=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
 %KREA_PYTHON% -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
 echo Waiting for app startup... this can take 20-60 seconds.
 set "PYTHONUNBUFFERED=1"
-%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info
+%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info --no-access-log
 exit /b %ERRORLEVEL%
 
 :local
@@ -181,14 +181,14 @@ start "" /b %KREA_PYTHON% scripts\share_startup.py --ready-url http://127.0.0.1:
 
 :: -- Start server -------------------------------------------------------------
 if not exist "logs" mkdir logs
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"`) do set "KREA_LOG_STAMP=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-local-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea local server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
 %KREA_PYTHON% -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
 echo Waiting for app startup... this can take 20-60 seconds.
 set "PYTHONUNBUFFERED=1"
-%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info
+%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info --no-access-log
 
 echo.
 echo Server stopped.

@@ -15,31 +15,24 @@ def _pump(src: TextIO, *targets: TextIO) -> None:
             target.flush()
 
 
-def run_with_log(command: list[str], *, log_path: Path, stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr) -> int:
+def run_with_log(command: list[str], *, log_path: Path, stdout: TextIO = sys.stdout) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8", errors="replace") as log:
         proc = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             bufsize=1,
         )
         assert proc.stdout is not None
-        assert proc.stderr is not None
-        threads = [
-            threading.Thread(target=_pump, args=(proc.stdout, stdout, log), daemon=True),
-            threading.Thread(target=_pump, args=(proc.stderr, stderr, log), daemon=True),
-        ]
-        for thread in threads:
-            thread.start()
+        thread = threading.Thread(target=_pump, args=(proc.stdout, stdout, log), daemon=True)
+        thread.start()
         code = proc.wait()
-        for thread in threads:
-            thread.join(timeout=5)
+        thread.join(timeout=5)
         proc.stdout.close()
-        proc.stderr.close()
         return int(code)
 
 
