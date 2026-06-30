@@ -18,9 +18,9 @@ if str(BACKEND) not in sys.path:
 
 class QualityUpgradeTests(unittest.TestCase):
     def test_negative_lora_strength_does_not_inject_positive_trigger_words(self) -> None:
-        from lora_manager import build_trigger_prompt
+        import lora_manager
 
-        prompt = build_trigger_prompt(
+        prompt = lora_manager.build_trigger_prompt(
             "a red fox",
             [{"name": "krea2_darkbrush", "enabled": True, "strength": -0.7}],
         )
