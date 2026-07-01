@@ -210,6 +210,15 @@ class PlanGenerationTests(unittest.TestCase):
         self.assertFalse(plan["tiled_decode"])
         self.assertFalse(plan["clear_cache_first"])
 
+    def test_int8_is_estimated_as_low_vram_quantization(self) -> None:
+        from resource_manager import recommend_runtime
+
+        rec = recommend_runtime(free_vram_gb=24.0, width=1024, height=1024, quantization="int8")
+
+        self.assertTrue(rec["fits"])
+        self.assertEqual(rec["blocks_to_swap"], 0)
+        self.assertLess(rec["estimated_vram_gb"], 20)
+
 
 class CachePolicyTests(unittest.TestCase):
     def test_large_render_triggers_cache_clear(self) -> None:

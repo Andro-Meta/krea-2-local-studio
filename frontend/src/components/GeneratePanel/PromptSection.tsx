@@ -20,7 +20,7 @@ function modelFromWandChoice(choice: string, current: string) {
 }
 
 export default function PromptSection() {
-  const { params, setParam, setLoras } = useStore()
+  const { params, setParam, setParams, setLoras } = useStore()
   const [expanding, setExpanding] = useState(false)
   const [planning, setPlanning] = useState(false)
   const [xperimenting, setXperimenting] = useState(false)
@@ -99,21 +99,24 @@ export default function PromptSection() {
       const xperimentLoraNames = new Set(xperimentLoras.map(lora => lora.name))
       const configuredEngine = result.diffusion_engine ?? params.diffusion_engine
       const configuredQuantization = result.quantization ?? (configuredEngine === 'native_int8_convrot' ? 'int8' : 'fp8')
-      setParam('diffusion_engine', configuredEngine)
-      setParam('model_profile', 'krea_turbo')
-      setParam('checkpoint', 'turbo')
-      setParam('quantization', configuredQuantization)
-      setParam('steps', result.sampler.steps)
-      setParam('cfg', result.sampler.cfg)
-      setParam('mu', 1.15)
-      setParam('sampler', result.sampler.sampler as typeof params.sampler)
-      setParam('scheduler', result.sampler.scheduler as typeof params.scheduler)
-      setParam('use_prompt_expander', result.use_prompt_expander ?? false)
-      setParam('negative_prompt', '')
-      setParam('loras', [
-        ...params.loras.filter(lora => !xperimentLoraNames.has(lora.name)),
-        ...xperimentLoras,
-      ])
+      const keepRaw = params.checkpoint === 'raw' || params.model_profile === 'krea_raw'
+      setParams({
+        diffusion_engine: configuredEngine,
+        model_profile: keepRaw ? 'krea_raw' : 'krea_turbo',
+        checkpoint: keepRaw ? 'raw' : 'turbo',
+        quantization: configuredEngine === 'native_int8_convrot' ? 'int8' : keepRaw ? params.quantization : configuredQuantization,
+        steps: result.sampler.steps,
+        cfg: result.sampler.cfg,
+        mu: keepRaw ? null : 1.15,
+        sampler: result.sampler.sampler as typeof params.sampler,
+        scheduler: result.sampler.scheduler as typeof params.scheduler,
+        use_prompt_expander: result.use_prompt_expander ?? false,
+        negative_prompt: '',
+        loras: [
+          ...params.loras.filter(lora => !xperimentLoraNames.has(lora.name)),
+          ...xperimentLoras,
+        ],
+      })
       const skipped = result.assets.filter(asset => asset.skipped).length
       const notes = [result.benchmark_note, ...result.warnings].filter(Boolean).join(' ')
       setNotice({

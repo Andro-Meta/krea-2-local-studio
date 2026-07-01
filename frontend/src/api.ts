@@ -522,6 +522,9 @@ export const apiFetch = {
   loadModel: (path: string, quant: string, blocksToSwap = 0, fp8FastMatmul = false, torchCompile = false) =>
     api.post('/api/load-model', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap, fp8_fast_matmul: fp8FastMatmul, torch_compile: torchCompile }).then(r => r.data),
 
+  preflightLoadModel: (path: string, quant: string, blocksToSwap = 0, fp8FastMatmul = false, torchCompile = false) =>
+    api.post<{ ok: boolean; detail: string; system?: SystemReport }>('/api/load-model/preflight', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap, fp8_fast_matmul: fp8FastMatmul, torch_compile: torchCompile }).then(r => r.data),
+
   samplerCatalog: (profile = 'krea_turbo') =>
     api.get<{
       profile: string
@@ -539,6 +542,7 @@ export const apiFetch = {
   unloadModel: () => api.post('/api/unload-model').then(r => r.data),
 
   releaseTransientMemory: () => api.post('/api/memory/release-transient').then(r => r.data),
+  safeCleanMemory: () => api.post<{ released: boolean; safe_clean: boolean; helper_unloaded?: boolean; cleared_conditioning_entries?: number; before?: Record<string, any>; after?: Record<string, any>; memory?: Record<string, any> }>('/api/memory/safe-clean').then(r => r.data),
   unloadModelMemory: () => api.post('/api/memory/unload-model').then(r => r.data),
   memoryProcesses: () => api.get<{ items: KreaServerProcess[] }>('/api/memory/processes').then(r => r.data),
   stopMemoryProcess: (pid: number) => api.post('/api/memory/stop-process', { pid }).then(r => r.data),

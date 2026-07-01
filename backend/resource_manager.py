@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 
 # Approx resident weight VRAM for the Krea 2 DiT by precision.
-WEIGHT_VRAM_GB = {"fp8": 12.0, "bf16": 24.0, "fp16": 24.0}
+WEIGHT_VRAM_GB = {"fp8": 12.0, "int8": 13.0, "bf16": 24.0, "fp16": 24.0}
 DEFAULT_HEADROOM_GB = 3.0
 TOTAL_BLOCKS = 28
 

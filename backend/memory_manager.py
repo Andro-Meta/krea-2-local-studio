@@ -30,9 +30,24 @@ def clear_cuda_cache() -> None:
         pass
 
 
-def release_transient_pipeline_memory(pipeline: Any, *, clear_conditioning_cache: bool = True) -> dict[str, Any]:
+def release_transient_pipeline_memory(pipeline: Any, *, clear_conditioning_cache: bool = True, unload_helpers: bool = True) -> dict[str, Any]:
+    before = mem_snapshot()
+    helper_unloaded = False
+    if unload_helpers:
+        try:
+            from prompt_expander import unload_local_qwen
+
+            unload_local_qwen()
+            helper_unloaded = True
+        except Exception:
+            helper_unloaded = False
     if hasattr(pipeline, "release_transient_memory"):
-        return pipeline.release_transient_memory(clear_conditioning_cache=clear_conditioning_cache)
+        result = pipeline.release_transient_memory(clear_conditioning_cache=clear_conditioning_cache)
+        result["safe_clean"] = True
+        result["helper_unloaded"] = helper_unloaded
+        result["before"] = before
+        result["after"] = result.get("memory", mem_snapshot())
+        return result
     encoder = getattr(pipeline, "encoder", None)
     if encoder is not None and hasattr(encoder, "cpu"):
         encoder.cpu()
@@ -43,8 +58,12 @@ def release_transient_pipeline_memory(pipeline: Any, *, clear_conditioning_cache
     clear_cuda_cache()
     return {
         "released": True,
+        "safe_clean": True,
+        "helper_unloaded": helper_unloaded,
         "encoder_offloaded": encoder is not None,
         "cleared_conditioning_entries": cache_entries if clear_conditioning_cache else 0,
+        "before": before,
+        "after": mem_snapshot(),
         "memory": mem_snapshot(),
     }
 

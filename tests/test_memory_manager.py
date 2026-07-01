@@ -42,12 +42,16 @@ class MemoryManagerTests(unittest.TestCase):
         import memory_manager
 
         pipeline = FakePipeline()
-        with patch.object(memory_manager, "clear_cuda_cache", return_value=None) as clear:
+        with patch.object(memory_manager, "clear_cuda_cache", return_value=None) as clear, \
+             patch("prompt_expander.unload_local_qwen") as unload_helper:
             result = memory_manager.release_transient_pipeline_memory(pipeline)
 
         self.assertTrue(result["released"])
+        self.assertTrue(result["safe_clean"])
+        self.assertTrue(result["helper_unloaded"])
         self.assertTrue(pipeline.encoder.cpu_called)
         self.assertEqual(pipeline._conditioning_cache, {})
+        unload_helper.assert_called_once()
         clear.assert_called_once()
 
     def test_unload_pipeline_clears_model_references(self) -> None:
@@ -168,6 +172,8 @@ class MemoryManagerTests(unittest.TestCase):
             self.assertTrue(main._requires_admin("/api/memory/unload-model", "POST"))
             self.assertTrue(main._requires_admin("/api/memory/stop-process", "POST"))
             self.assertTrue(main._requires_admin("/api/memory/processes", "GET"))
+            self.assertTrue(main._requires_admin("/api/memory/safe-clean", "POST"))
+            self.assertTrue(main._requires_admin("/api/load-model/preflight", "POST"))
         finally:
             if inserted_torch_stub:
                 sys.modules.pop("torch", None)

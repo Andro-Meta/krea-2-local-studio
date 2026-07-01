@@ -29,7 +29,7 @@ _BACKEND = Path(__file__).parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from crash_reporter import clear_generation_breadcrumb, enable_fault_logging, stale_generation_breadcrumbs, write_generation_breadcrumb
+from crash_reporter import clear_generation_breadcrumb, disable_fault_logging, enable_fault_logging, stale_generation_breadcrumbs, write_generation_breadcrumb
 from gallery import delete_image, get_gallery, get_image_record_by_filename, init_db, save_image, set_favorite
 from generation_queue import GenerationQueue
 from inference import pipeline
@@ -214,7 +214,7 @@ def _requires_admin(path: str, method: str) -> bool:
         return True
     if path.startswith("/api/memory/"):
         return True
-    if path in {"/api/settings", "/api/load-model", "/api/unload-model", "/api/support-models/download"}:
+    if path in {"/api/settings", "/api/load-model", "/api/load-model/preflight", "/api/unload-model", "/api/support-models/download"}:
         return True
     if path.startswith("/api/loras/") and method != "GET":
         return True
@@ -577,6 +577,11 @@ async def startup():
         asyncio.create_task(_auto_load_model(cp, settings.krea2_auto_quant, settings.krea2_blocks_to_swap))
 
 
+@app.on_event("shutdown")
+async def shutdown():
+    disable_fault_logging()
+
+
 async def _auto_load_model(checkpoint_path: str, quantization: str, blocks_to_swap: int = 0):
     loop = asyncio.get_event_loop()
     logger.info(f"Auto-loading {checkpoint_path} [{quantization}] (block_swap={blocks_to_swap})...")
@@ -936,6 +941,12 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             stage="generation_start",
             extra={"username": username, "role": role},
         )
+        try:
+            from prompt_expander import unload_local_qwen
+
+            unload_local_qwen()
+        except Exception:
+            logger.debug("Could not unload local Qwen helper before generation", exc_info=True)
         if getattr(req, "diffusion_engine", "native_pytorch") == "gguf_external":
             from gguf_diffusion_provider import generate_gguf_external
 
@@ -1157,6 +1168,19 @@ async def load_model(req: LoadModelRequest):
     return {"status": "loaded", "checkpoint": req.checkpoint_path}
 
 
+@app.post("/api/load-model/preflight")
+async def load_model_preflight(req: LoadModelRequest):
+    try:
+        from inference import preflight_model_load
+
+        preflight_model_load(req.checkpoint_path, req.quantization, blocks_to_swap=req.blocks_to_swap)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        return {"ok": False, "detail": _load_model_error_detail(exc), "system": get_system_report()}
+    return {"ok": True, "detail": "This model load passes the current RAM/VRAM preflight.", "system": get_system_report()}
+
+
 @app.post("/api/unload-model")
 async def unload_model():
     if generation_queue is not None and generation_queue.has_active_or_pending():
@@ -1168,6 +1192,11 @@ async def unload_model():
 @app.post("/api/memory/release-transient")
 async def memory_release_transient():
     return release_transient_pipeline_memory(pipeline)
+
+
+@app.post("/api/memory/safe-clean")
+async def memory_safe_clean():
+    return release_transient_pipeline_memory(pipeline, clear_conditioning_cache=True, unload_helpers=True)
 
 
 @app.post("/api/memory/unload-model")

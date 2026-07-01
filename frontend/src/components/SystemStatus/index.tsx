@@ -79,7 +79,7 @@ export default function SystemStatus() {
   const [moderationBusy, setModerationBusy] = useState(false)
   const [moderationInstallBusy, setModerationInstallBusy] = useState(false)
   const [memoryBusy, setMemoryBusy] = useState<string | null>(null)
-  const [memoryMessage, setMemoryMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null)
+  const [memoryMessage, setMemoryMessage] = useState<{ severity: 'success' | 'error' | 'info' | 'warning'; text: string } | null>(null)
   const [kreaProcesses, setKreaProcesses] = useState<KreaServerProcess[]>([])
   const [accelerators, setAccelerators] = useState<AcceleratorStatus | null>(null)
   const [acceleratorBusy, setAcceleratorBusy] = useState<string | null>(null)
@@ -488,6 +488,24 @@ export default function SystemStatus() {
     } finally { setLoadingModel(false) }
   }
 
+  const preflightLoadModel = async () => {
+    if (!cpPath) return
+    setLoadingModel(true); setLoadError('')
+    try {
+      const result = await apiFetch.preflightLoadModel(cpPath, quant, blocksToSwap, fp8FastMatmul, torchCompile)
+      if (result.ok) {
+        setLoadError('')
+        setMemoryMessage({ severity: 'success', text: result.detail })
+      } else {
+        setLoadError(result.detail)
+        setMemoryMessage({ severity: 'warning', text: result.detail })
+      }
+      await refresh()
+    } catch (e: any) {
+      setLoadError(e?.response?.data?.detail ?? e.message ?? 'Model preflight failed.')
+    } finally { setLoadingModel(false) }
+  }
+
   const unload = async () => {
     setMemoryBusy('unload')
     setMemoryMessage(null)
@@ -511,6 +529,24 @@ export default function SystemStatus() {
       setMemoryMessage({ severity: 'success', text: 'Transient encoder/cache memory released.' })
     } catch (e: any) {
       setMemoryMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not release memory.' })
+    } finally {
+      setMemoryBusy(null)
+    }
+  }
+
+  const safeCleanMemory = async () => {
+    setMemoryBusy('safe-clean')
+    setMemoryMessage(null)
+    try {
+      const result = await apiFetch.safeCleanMemory()
+      await refresh()
+      const cleared = result.cleared_conditioning_entries ?? 0
+      setMemoryMessage({
+        severity: 'success',
+        text: `Safe RAM clean complete. Helper cache ${result.helper_unloaded ? 'cleared' : 'not loaded'}; conditioning entries cleared: ${cleared}.`,
+      })
+    } catch (e: any) {
+      setMemoryMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not run safe RAM clean.' })
     } finally {
       setMemoryBusy(null)
     }
@@ -942,14 +978,22 @@ export default function SystemStatus() {
                 </Button>
               </Stack>
               {loadError && <Alert severity="error" sx={{ py: 0 }}>{loadError}</Alert>}
-              <Button
-                variant="contained" size="small" onClick={loadModel}
-                disabled={!isAdmin || loadingModel || !cpPath}
-                startIcon={loadingModel ? <CircularProgress size={14} color="inherit" /> : undefined}
-                sx={{ alignSelf: 'flex-start' }}
-              >
-                Load Model
-              </Button>
+              <Stack direction="row" spacing={1} flexWrap="wrap">
+                <Button
+                  variant="outlined" size="small" onClick={preflightLoadModel}
+                  disabled={!isAdmin || loadingModel || !cpPath}
+                  startIcon={loadingModel ? <CircularProgress size={14} color="inherit" /> : undefined}
+                >
+                  Can I load this?
+                </Button>
+                <Button
+                  variant="contained" size="small" onClick={loadModel}
+                  disabled={!isAdmin || loadingModel || !cpPath}
+                  startIcon={loadingModel ? <CircularProgress size={14} color="inherit" /> : undefined}
+                >
+                  Load Model
+                </Button>
+              </Stack>
             </Stack>
           )}
         </Paper>
@@ -969,6 +1013,15 @@ export default function SystemStatus() {
                 startIcon={memoryBusy === 'release' ? <CircularProgress size={14} color="inherit" /> : undefined}
               >
                 Free transient memory
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={safeCleanMemory}
+                disabled={!isAdmin || !!memoryBusy}
+                startIcon={memoryBusy === 'safe-clean' ? <CircularProgress size={14} color="inherit" /> : undefined}
+              >
+                Safe RAM clean
               </Button>
               <Button
                 variant="outlined"
