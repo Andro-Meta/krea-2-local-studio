@@ -29,21 +29,16 @@ class AppSettings(BaseSettings):
     gguf_helper_base_url: str = "http://127.0.0.1:1234/v1"
     gguf_helper_model: str = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M"
     gguf_helper_timeout_sec: int = 120
-    diffusion_engine: str = "native_pytorch"  # native_pytorch | native_int8_convrot | gguf_external
-    gguf_sd_cli_path: str = ""
+    diffusion_engine: str = "native_pytorch"  # native_pytorch | native_gguf | native_int8_convrot
     gguf_turbo_path: str = ""
     gguf_raw_path: str = ""
-    gguf_llm_path: str = ""
-    gguf_vae_path: str = ""
-    gguf_lora_dir: str = ""
-    gguf_timeout_sec: int = 600
     ideogram_api_key: str = ""
     openrouter_api_key: str = ""
     openrouter_model: str = "google/gemma-4-31b-it:free"
     openrouter_free_only: bool = True
     krea_share_auto_funnel: bool = False
     krea2_auto_checkpoint: str = ""   # path to auto-load on startup
-    krea2_auto_quant: str = "bf16"    # bf16 or fp8
+    krea2_auto_quant: str = "bf16"    # bf16, fp16, fp8, gguf, or int8
     krea2_blocks_to_swap: int = 0     # low-VRAM: stream last N DiT blocks from RAM (0 = off)
     krea2_vae_path: str = ""          # optional override VAE (HDR/real/clear); empty = stock Qwen VAE
     krea2_fp8_fast_matmul: bool = False  # opt-in: fp8 _scaled_mm on Ada/Blackwell (faster, slight quality trade)

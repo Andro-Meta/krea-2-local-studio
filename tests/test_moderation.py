@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -74,7 +75,8 @@ class ModerationTests(unittest.TestCase):
 
         from moderation import moderate_image
 
-        decision = moderate_image(Image.new("RGB", (8, 8)), role="child", provider=None)
+        with patch("moderation.TransformersNSFWImageProvider", side_effect=RuntimeError("missing classifier")):
+            decision = moderate_image(Image.new("RGB", (8, 8)), role="child", provider=None)
 
         self.assertEqual(decision.action, "block")
         self.assertIn("provider unavailable", decision.reason)

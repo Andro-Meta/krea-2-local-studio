@@ -376,7 +376,11 @@ export default function RedrawStudio() {
     : task.id === 'preserve'
       ? (preserveMode === 'masked' ? 'inpaint' : 'img2img')
       : task.pipeline
-  const activeQuantization = params.diffusion_engine === 'native_int8_convrot' ? 'int8' : preset.quantization
+  const activeQuantization = params.diffusion_engine === 'native_int8_convrot'
+    ? 'int8'
+    : params.quantization === 'gguf'
+      ? 'gguf'
+      : preset.quantization
 
   useEffect(() => {
     setParams({

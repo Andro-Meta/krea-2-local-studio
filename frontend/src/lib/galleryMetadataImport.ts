@@ -86,9 +86,14 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
 ): Partial<GenerateParams> & { mode: TMode } {
   const rebalanceEnabled = booleanValue(metadata.rebalance?.enabled) ?? false
   const enhancerEnabled = booleanValue(metadata.krea_enhancer?.enabled) ?? false
-  const restoredQuantization = oneOf(metadata.quantization ?? metadata.model?.quantization ?? metadata.engine?.quantization, ['bf16', 'fp8', 'fp16', 'int8'] as const)
-  const restoredEngine = oneOf(metadata.diffusion_engine ?? metadata.engine?.id, ['native_pytorch', 'native_int8_convrot', 'gguf_external', 'int8_convrot_external'] as const)
+  const restoredQuantization = oneOf(metadata.quantization ?? metadata.model?.quantization ?? metadata.engine?.quantization, ['bf16', 'fp8', 'gguf', 'fp16', 'int8'] as const)
+  const rawRestoredEngine = oneOf(metadata.diffusion_engine ?? metadata.engine?.id, ['native_pytorch', 'native_gguf', 'native_int8_convrot', 'gguf_external', 'int8_convrot_external'] as const)
     ?? (restoredQuantization === 'int8' ? 'native_int8_convrot' : undefined)
+  const restoredEngine = rawRestoredEngine === 'gguf_external'
+    ? 'native_gguf'
+    : rawRestoredEngine === 'int8_convrot_external'
+      ? 'native_int8_convrot'
+      : rawRestoredEngine
   const patch: Partial<GenerateParams> & { mode: TMode } = {
     mode: targetMode,
     prompt: String(metadata.prompt || ''),

@@ -49,9 +49,9 @@ class GalleryMetadataTests(unittest.TestCase):
         req = GenerationRequest(
             prompt="a silver robot",
             mode="redraw",
-            diffusion_engine="gguf_external",
+            diffusion_engine="native_gguf",
             checkpoint="turbo",
-            quantization="fp8",
+            quantization="gguf",
             sampler="euler",
             scheduler="simple",
             width=1024,
@@ -61,15 +61,15 @@ class GalleryMetadataTests(unittest.TestCase):
         metadata = build_generation_metadata(
             req,
             base_seed=7,
-            resolved_provider="gguf_external",
-            runtime={"provider": "gguf_external", "sd_cli_path": "tools/sd-cli.exe"},
+            resolved_provider="krea_native",
+            runtime={"provider": "krea_native"},
         )
 
         self.assertEqual(metadata["schema_version"], 2)
-        self.assertEqual(metadata["diffusion_engine"], "gguf_external")
-        self.assertEqual(metadata["engine"]["id"], "gguf_external")
-        self.assertEqual(metadata["engine"]["resolved_provider"], "gguf_external")
-        self.assertEqual(metadata["runtime"]["provider"], "gguf_external")
+        self.assertEqual(metadata["diffusion_engine"], "native_gguf")
+        self.assertEqual(metadata["engine"]["id"], "native_gguf")
+        self.assertEqual(metadata["engine"]["resolved_provider"], "krea_native")
+        self.assertEqual(metadata["runtime"]["provider"], "krea_native")
         self.assertEqual(metadata["source"]["mode"], "redraw")
 
     def test_gallery_scopes_rows_by_owner(self) -> None:

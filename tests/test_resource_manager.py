@@ -19,6 +19,14 @@ class RecommendRuntimeTests(unittest.TestCase):
         self.assertEqual(rec["blocks_to_swap"], 0)
         self.assertFalse(rec["tiled_decode"])
 
+    def test_native_gguf_uses_low_vram_residency_estimate(self) -> None:
+        from resource_manager import recommend_runtime
+
+        rec = recommend_runtime(free_vram_gb=24.0, width=1024, height=1024, quantization="gguf")
+
+        self.assertTrue(rec["fits"])
+        self.assertEqual(rec["blocks_to_swap"], 0)
+
     def test_bf16_2k_on_tight_vram_recommends_block_swap(self) -> None:
         from resource_manager import recommend_runtime
 

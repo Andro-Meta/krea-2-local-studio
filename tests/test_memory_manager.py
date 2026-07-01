@@ -43,15 +43,18 @@ class MemoryManagerTests(unittest.TestCase):
 
         pipeline = FakePipeline()
         with patch.object(memory_manager, "clear_cuda_cache", return_value=None) as clear, \
-             patch("prompt_expander.unload_local_qwen") as unload_helper:
+             patch("prompt_expander.unload_local_qwen") as unload_helper, \
+             patch("pid_decoder_provider.release_pid_runtime", return_value={"released": True}) as release_pid:
             result = memory_manager.release_transient_pipeline_memory(pipeline)
 
         self.assertTrue(result["released"])
         self.assertTrue(result["safe_clean"])
         self.assertTrue(result["helper_unloaded"])
+        self.assertTrue(result["pid_unloaded"])
         self.assertTrue(pipeline.encoder.cpu_called)
         self.assertEqual(pipeline._conditioning_cache, {})
         unload_helper.assert_called_once()
+        release_pid.assert_called_once()
         clear.assert_called_once()
 
     def test_prepare_for_generation_clears_helpers_but_keeps_conditioning_cache_by_default(self) -> None:

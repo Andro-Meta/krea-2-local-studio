@@ -37,7 +37,7 @@ export default function App() {
         const engine = settings.diffusion_engine ?? 'native_pytorch'
         setParams({
           diffusion_engine: engine,
-          quantization: engine === 'native_int8_convrot' ? 'int8' : params.quantization === 'int8' ? 'fp8' : params.quantization,
+          quantization: engine === 'native_int8_convrot' ? 'int8' : engine === 'native_gguf' ? 'gguf' : params.quantization === 'int8' ? 'fp8' : params.quantization,
         })
       })
       .catch(() => undefined)
@@ -98,35 +98,11 @@ export default function App() {
       {createMode === 'txt2img' && <GeneratePanel />}
       {createMode === 'redraw' && (
         <>
-          {params.diffusion_engine === 'gguf_external' || params.diffusion_engine === 'int8_convrot_external' ? (
-            <Box sx={{ p: 2 }}>
-              <Alert
-                severity="warning"
-                action={<Button color="inherit" size="small" onClick={() => setParam('diffusion_engine', 'native_pytorch')}>Use Native</Button>}
-              >
-                Redraw, img2img, inpaint, and outpaint require a native Krea engine. GGUF/external engines are txt2img-only until benchmarks pass.
-              </Alert>
-            </Box>
-          ) : (
-            <>
-              <RedrawStudio />
-              <GeneratePanel />
-            </>
-          )}
+          <RedrawStudio />
+          <GeneratePanel />
         </>
       )}
-      {createMode === 'realtime' && (
-        params.diffusion_engine === 'gguf_external' || params.diffusion_engine === 'int8_convrot_external' ? (
-          <Box sx={{ p: 2 }}>
-            <Alert
-              severity="warning"
-              action={<Button color="inherit" size="small" onClick={() => setParam('diffusion_engine', 'native_pytorch')}>Use Native</Button>}
-            >
-              Realtime Studio currently requires native Krea Turbo. GGUF realtime stays disabled until low-VRAM benchmarks pass.
-            </Alert>
-          </Box>
-        ) : <RealtimeStudio />
-      )}
+      {createMode === 'realtime' && <RealtimeStudio />}
     </Box>
   )
 

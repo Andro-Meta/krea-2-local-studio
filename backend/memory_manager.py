@@ -41,10 +41,19 @@ def release_transient_pipeline_memory(pipeline: Any, *, clear_conditioning_cache
             helper_unloaded = True
         except Exception:
             helper_unloaded = False
+    pid_unloaded = False
+    if unload_helpers:
+        try:
+            from pid_decoder_provider import release_pid_runtime
+
+            pid_unloaded = bool(release_pid_runtime().get("released"))
+        except Exception:
+            pid_unloaded = False
     if hasattr(pipeline, "release_transient_memory"):
         result = pipeline.release_transient_memory(clear_conditioning_cache=clear_conditioning_cache)
         result["safe_clean"] = True
         result["helper_unloaded"] = helper_unloaded
+        result["pid_unloaded"] = pid_unloaded
         result["before"] = before
         result["after"] = result.get("memory", mem_snapshot())
         return result
@@ -60,6 +69,7 @@ def release_transient_pipeline_memory(pipeline: Any, *, clear_conditioning_cache
         "released": True,
         "safe_clean": True,
         "helper_unloaded": helper_unloaded,
+        "pid_unloaded": pid_unloaded,
         "encoder_offloaded": encoder is not None,
         "cleared_conditioning_entries": cache_entries if clear_conditioning_cache else 0,
         "before": before,

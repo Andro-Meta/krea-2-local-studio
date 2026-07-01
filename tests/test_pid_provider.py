@@ -31,7 +31,7 @@ class PiDProviderTests(unittest.TestCase):
 
         self.assertFalse(status["available"])
         self.assertIn("SageAttention", " ".join(status["blocked_reasons"]))
-        self.assertIn("PiD Comfy decoder", " ".join(status["blocked_reasons"]))
+        self.assertIn("Native PiD runtime checkpoint", " ".join(status["blocked_reasons"]))
 
     def test_status_allows_installed_assets_with_enough_vram(self) -> None:
         from pid_decoder_provider import PiDSettings, pid_status
@@ -42,8 +42,6 @@ class PiDProviderTests(unittest.TestCase):
         ):
             status = pid_status(
                 PiDSettings(
-                    decoder_path="decoder.safetensors",
-                    text_encoder_path="gemma.safetensors",
                     official_checkpoint_path="model_ema_bf16.pth",
                     official_vae_path="QwenImage_VAE_2d.pth",
                 ),
@@ -64,6 +62,68 @@ class PiDProviderTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "Official PiD runtime checkpoint|PiD runtime"),
         ):
             upscale_pid(Image.new("RGB", (16, 16), "black"), PiDSettings(decoder_path="x", text_encoder_path="y"))
+
+    def test_pid_upscale_rejects_non_4x_scale_before_loading(self) -> None:
+        from PIL import Image
+
+        from pid_decoder_provider import PiDSettings, upscale_pid
+
+        with self.assertRaisesRegex(ValueError, "4x"):
+            upscale_pid(Image.new("RGB", (16, 16), "black"), PiDSettings(), scale=2)
+
+    def test_pid_upscale_uses_native_runtime(self) -> None:
+        from PIL import Image
+
+        import pid_decoder_provider
+        from pid_decoder_provider import PiDSettings, upscale_pid
+
+        class FakeRuntime:
+            instances = []
+
+            def __init__(self, settings):
+                self.settings = settings
+                self.calls = []
+                FakeRuntime.instances.append(self)
+
+            def upscale(self, img, *, prompt, scale):
+                self.calls.append((img.size, prompt, scale))
+                return Image.new("RGB", (32, 32), "white")
+
+        settings = PiDSettings(
+            decoder_path="decoder.safetensors",
+            text_encoder_path="gemma.safetensors",
+            official_checkpoint_path="model_ema_bf16.pth",
+            official_vae_path="QwenImage_VAE_2d.pth",
+        )
+        with (
+            patch("pid_decoder_provider.Path.is_file", return_value=True),
+            patch("pid_decoder_provider.accelerator_status", return_value={"sageattention": {"selected": False}}),
+            patch.object(pid_decoder_provider, "_pid_runtime_available", return_value=True),
+            patch.object(pid_decoder_provider, "NativePiDRuntime", FakeRuntime),
+        ):
+            out = upscale_pid(Image.new("RGB", (16, 16), "black"), settings, prompt="test prompt", scale=4)
+
+        self.assertEqual(out.size, (32, 32))
+        self.assertEqual(FakeRuntime.instances[0].calls, [((16, 16), "test prompt", 4)])
+
+    def test_release_pid_runtime_releases_cached_runtime(self) -> None:
+        import pid_decoder_provider
+        from pid_decoder_provider import release_pid_runtime
+
+        class FakeRuntime:
+            def __init__(self):
+                self.released = False
+
+            def release(self):
+                self.released = True
+
+        runtime = FakeRuntime()
+        pid_decoder_provider._PID_RUNTIME = runtime
+        result = release_pid_runtime()
+
+        self.assertTrue(result["released"])
+        self.assertTrue(runtime.released)
+        self.assertIsNone(pid_decoder_provider._PID_RUNTIME)
 
     def test_api_status_shape(self) -> None:
         from fastapi.testclient import TestClient

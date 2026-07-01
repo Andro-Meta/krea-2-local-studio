@@ -460,14 +460,35 @@ class QualityUpgradeTests(unittest.TestCase):
 
         with (
             patch("main.pipeline.is_loaded", return_value=True),
+            patch("main.pipeline.unload") as unload,
+            patch("main.clear_cuda_cache") as clear_cache,
             patch("pid_decoder_provider.upscale_pid", return_value=Image.new("RGB", (16, 16), "white")) as provider,
             TestClient(main.app) as client,
         ):
-            response = client.post("/api/upscale", json={"image_b64": payload, "method": "pid_upscale", "prompt": "test"})
+            response = client.post("/api/upscale", json={"image_b64": payload, "method": "pid_upscale", "upscale_by": 4, "prompt": "test"})
 
         self.assertEqual(response.status_code, 200)
+        unload.assert_called_once()
+        clear_cache.assert_called_once()
         provider.assert_called_once()
         self.assertIn("image_b64", response.json())
+
+    def test_pid_upscale_rejects_non_4x_scale(self) -> None:
+        from fastapi.testclient import TestClient
+        from PIL import Image
+        import base64
+        import io
+        import main
+
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), "black").save(buf, format="PNG")
+        payload = base64.b64encode(buf.getvalue()).decode()
+
+        with TestClient(main.app) as client:
+            response = client.post("/api/upscale", json={"image_b64": payload, "method": "pid_upscale", "upscale_by": 2, "prompt": "test"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("4x", response.json()["detail"])
 
     def test_flux_asset_status_guides_token_setup(self) -> None:
         import quality_assets
@@ -526,7 +547,6 @@ class QualityUpgradeTests(unittest.TestCase):
 
     def test_gguf_low_vram_setup_skips_installed_assets_and_sets_paths(self) -> None:
         from fastapi.testclient import TestClient
-        import gguf_runtime_installer
         import main
         import quality_assets
 
@@ -542,20 +562,21 @@ class QualityUpgradeTests(unittest.TestCase):
         with (
             patch.object(quality_assets, "asset_installed", side_effect=fake_installed),
             patch.object(quality_assets, "download_asset", side_effect=fake_download),
-            patch.object(gguf_runtime_installer, "install_stable_diffusion_cpp", return_value={"sd_cli_path": "E:\\Krea 2\\tools\\stable-diffusion.cpp\\sd-cli.exe", "skipped": "false"}),
+            patch.object(main, "_write_env", return_value=None),
+            patch.object(main.settings, "krea2_auto_checkpoint", ""),
+            patch.object(main.settings, "krea2_turbo_path", ""),
             TestClient(main.app) as client,
         ):
             response = client.post("/api/gguf/setup-low-vram")
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["diffusion_engine"], "gguf_external")
-        self.assertEqual(data["sd_cli_path"], "E:\\Krea 2\\tools\\stable-diffusion.cpp\\sd-cli.exe")
+        self.assertEqual(data["diffusion_engine"], "native_gguf")
+        self.assertEqual(data["quantization"], "gguf")
+        self.assertTrue(data["checkpoint_path"].endswith("Krea-2-Turbo-Q4_K_M.gguf"))
         self.assertTrue(data["vae_path"].endswith("wan_2.1_vae.safetensors"))
         self.assertEqual(data["sampler"], {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15})
-        self.assertEqual(data["realtime"]["preview_size"], 512)
-        self.assertIn("gguf_krea2_turbo_q3km", downloaded)
-        self.assertIn("gguf_qwen3vl_4b_q4km", downloaded)
+        self.assertEqual(downloaded, [])
 
 
 if __name__ == "__main__":

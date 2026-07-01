@@ -18,10 +18,10 @@ export interface GenerationRequest {
   negative_prompt?: string
   mode?: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   model_profile?: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
-  diffusion_engine?: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external'
+  diffusion_engine?: 'native_pytorch' | 'native_gguf' | 'native_int8_convrot'
   checkpoint?: 'turbo' | 'raw'
   checkpoint_path?: string
-  quantization?: 'bf16' | 'fp8' | 'fp16' | 'int8'
+  quantization?: 'bf16' | 'fp8' | 'gguf' | 'fp16' | 'int8'
   steps?: number
   cfg?: number
   mu?: number | null
@@ -166,7 +166,7 @@ export interface BatchPlan {
 }
 
 export interface EngineCapabilities {
-  engine_id: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external' | string
+  engine_id: 'native_pytorch' | 'native_gguf' | 'native_int8_convrot' | string
   label: string
   default: boolean
   experimental: boolean
@@ -407,14 +407,9 @@ export interface AppSettings {
   gguf_helper_base_url: string
   gguf_helper_model: string
   gguf_helper_timeout_sec: number
-  diffusion_engine: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external'
-  gguf_sd_cli_path: string
+  diffusion_engine: 'native_pytorch' | 'native_gguf' | 'native_int8_convrot'
   gguf_turbo_path: string
   gguf_raw_path: string
-  gguf_llm_path: string
-  gguf_vae_path: string
-  gguf_lora_dir: string
-  gguf_timeout_sec: number
   openrouter_model: string
   openrouter_free_only: boolean
   krea_share_auto_funnel: boolean
@@ -453,8 +448,8 @@ export interface XperimentSetupResult {
   vae_path: string
   lora: { name: string; filename: string; strength: number; block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom' }
   loras?: Array<{ name: string; filename: string; strength: number; block_filter?: 'all' | 'early' | 'middle' | 'late' | 'style_safe' | 'custom' }>
-  diffusion_engine?: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external'
-  quantization?: 'bf16' | 'fp8' | 'fp16' | 'int8'
+  diffusion_engine?: 'native_pytorch' | 'native_gguf' | 'native_int8_convrot'
+  quantization?: 'bf16' | 'fp8' | 'gguf' | 'fp16' | 'int8'
   sampler: { sampler: string; scheduler: string; steps: number; cfg: number }
   use_prompt_expander?: boolean
   prompt_expander_backend?: 'local' | 'openrouter' | 'ideogram-json'
@@ -468,15 +463,12 @@ export interface XperimentSetupResult {
 export interface GgufLowVramSetupResult {
   ok: boolean
   assets: Array<{ id: string; path: string; skipped: boolean; item: QualityAsset }>
-  runtime: { sd_cli_path: string; skipped: string }
-  diffusion_engine: 'gguf_external'
-  sd_cli_path: string
+  diffusion_engine: 'native_gguf'
   turbo_path: string
-  realtime_candidate_path: string
-  llm_path: string
+  checkpoint_path: string
+  quantization: 'gguf'
   vae_path: string
   sampler: { sampler: string; scheduler: string; steps: number; cfg: number; mu: number }
-  realtime: { preview_size: number; preview_steps: number; final_steps: number }
   warnings: string[]
 }
 
@@ -700,8 +692,6 @@ export const apiFetch = {
     api.post<{ ok: boolean; backend: string; expanded: string }>('/api/gguf/helper-test', {}, { timeout: 180000 }).then(r => r.data),
 
   ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; configured: boolean }> }>('/api/gguf/status').then(r => r.data),
-  testGgufRuntime: () => api.post<{ ok: boolean; command: string[]; output: string }>('/api/gguf/test-runtime').then(r => r.data),
-
   int8Status: () => api.get<{ ok: boolean; torch: string; cuda?: string | null; torch_int_mm: boolean; comfy_kitchen: boolean; triton: boolean; diffusion_engine: string; assets: Record<string, QualityAsset & { configured_path: string; inspection?: Record<string, any>; inspection_error?: string }> }>('/api/int8/status').then(r => r.data),
   pidStatus: () => api.get<{ available: boolean; enabled: boolean; estimated_vram_gb: number; blocked_reasons: string[]; assets: Record<string, { path: string; installed: boolean }>; accelerators: Record<string, any> }>('/api/pid/status').then(r => r.data),
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),

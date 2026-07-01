@@ -37,6 +37,7 @@ const PROFILES = [
 
 const QUANTS = [
   { id: 'fp8',  label: 'fp8',  desc: '~8–13 GB VRAM · quantized (dynamic-fp8 lets RAW/bf16 run on 24GB)' },
+  { id: 'gguf', label: 'GGUF native', desc: 'Load a Krea GGUF checkpoint into native PyTorch conditioning via scaled-fp8 runtime' },
   { id: 'int8', label: 'INT8', desc: '~8–13 GB VRAM · native ConvRot W8A8 using torch._int_mm · install asset from System first' },
   { id: 'bf16', label: 'bf16', desc: '~24 GB VRAM + ~48 GB RAM · full precision' },
   { id: 'fp16', label: 'fp16', desc: '~24 GB VRAM · full precision + fp16 accumulation (fast, high-VRAM)' },
@@ -55,48 +56,17 @@ export default function ModelSection() {
       steps: 8,
       cfg: 0.0,
       mu: 1.15,            // pinned shift; Turbo is frozen to 1024 — never scale by resolution
-      quantization: diffusionEngine === 'native_int8_convrot' ? 'int8' : 'fp8',
+      quantization: diffusionEngine === 'native_int8_convrot' ? 'int8' : diffusionEngine === 'native_gguf' ? 'gguf' : 'fp8',
       sampler: 'euler',
       scheduler: 'simple',
       conditioning_mode: 'auto',
       negative_prompt: '', // Turbo is distilled: keep CFG at 0 and negatives empty
     })
   }
-  const applyGgufDefaults = () => {
-    setParams({
-      diffusion_engine: 'gguf_external',
-      model_profile: '',
-      mode: 'txt2img',
-      checkpoint: 'turbo',
-      quantization: 'fp8',
-      steps: 8,
-      cfg: 0.0,
-      mu: 1.15,
-      sampler: 'euler',
-      scheduler: 'simple',
-      resolution_tier: '1k',
-      aspect_ratio: '1:1',
-      width: 1024,
-      height: 1024,
-      num_images: 1,
-      loras: [],
-      style_references: [],
-      regional_prompts: [],
-      moodboard_images: [],
-      selected_moodboard_ids: [],
-      moodboard_uuids: [],
-      use_rebalance: false,
-      krea_enhancer_enabled: false,
-      krea_enhancer_variant: 'off',
-      cfg_zero_star: false,
-      conditioning_mode: 'auto',
-      negative_prompt: '',
-    })
-  }
   const applyEngineDefaults = (engineId: typeof params.diffusion_engine) => {
-    if (engineId === 'gguf_external') {
-      applyGgufDefaults()
-    } else if (engineId === 'native_int8_convrot' || engineId === 'int8_convrot_external') {
+    if (engineId === 'native_gguf') {
+      applyTurboDefaults('native_gguf')
+    } else if (engineId === 'native_int8_convrot') {
       applyTurboDefaults('native_int8_convrot')
     } else {
       applyTurboDefaults('native_pytorch')
@@ -104,17 +74,17 @@ export default function ModelSection() {
   }
   const applyProfile = (profileId: typeof params.model_profile) => {
     if (profileId === 'krea_turbo') {
-      applyTurboDefaults(params.diffusion_engine === 'native_int8_convrot' ? 'native_int8_convrot' : 'native_pytorch')
+      applyTurboDefaults(params.diffusion_engine === 'native_int8_convrot' ? 'native_int8_convrot' : params.diffusion_engine === 'native_gguf' ? 'native_gguf' : 'native_pytorch')
     }
     if (profileId === 'krea_raw') {
       setParams({
-        diffusion_engine: params.diffusion_engine === 'native_int8_convrot' ? 'native_int8_convrot' : 'native_pytorch',
+        diffusion_engine: params.diffusion_engine === 'native_int8_convrot' ? 'native_int8_convrot' : params.diffusion_engine === 'native_gguf' ? 'native_gguf' : 'native_pytorch',
         model_profile: profileId,
         checkpoint: 'raw',
         steps: 52,           // RAW needs ~40–60; <40 looks washed out
         cfg: 3.5,
         mu: null,            // documented default sampling
-        quantization: params.diffusion_engine === 'native_int8_convrot' ? 'int8' : 'fp8', // dynamic-fp8 runs RAW on 24GB; switch to bf16/fp16 if you have the VRAM/RAM
+        quantization: params.diffusion_engine === 'native_int8_convrot' ? 'int8' : params.diffusion_engine === 'native_gguf' ? 'gguf' : 'fp8', // dynamic-fp8/GGUF bridge runs RAW-class residency on 24GB; switch to bf16/fp16 if you have the VRAM/RAM
         sampler: 'euler',
         scheduler: 'simple',
         conditioning_mode: 'auto',
@@ -187,7 +157,7 @@ export default function ModelSection() {
                 label={q.label}
                 variant={params.quantization === q.id ? 'filled' : 'outlined'}
                 color={params.quantization === q.id ? 'secondary' : 'default'}
-                onClick={() => setParam('quantization', q.id as 'bf16' | 'fp8' | 'fp16' | 'int8')}
+                onClick={() => setParam('quantization', q.id as 'bf16' | 'fp8' | 'gguf' | 'fp16' | 'int8')}
                 clickable
                 size="small"
               />

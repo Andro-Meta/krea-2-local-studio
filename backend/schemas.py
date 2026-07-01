@@ -36,10 +36,10 @@ class GenerationRequest(BaseModel):
     negative_prompt: str = ""
     mode: str = "txt2img"           # txt2img | redraw | img2img | inpaint | outpaint
     model_profile: str = ""         # krea_turbo | krea_raw | future gated profiles
-    diffusion_engine: Literal["native_pytorch", "native_int8_convrot", "gguf_external", "int8_convrot_external"] = "native_pytorch"
+    diffusion_engine: Literal["native_pytorch", "native_gguf", "native_int8_convrot", "gguf_external", "int8_convrot_external"] = "native_pytorch"
     checkpoint: str = "turbo"       # turbo | raw | custom
     checkpoint_path: str = ""       # custom path override
-    quantization: str = "fp8"       # bf16 | fp16 | fp8 | int8
+    quantization: str = "fp8"       # bf16 | fp16 | fp8 | gguf | int8
     steps: int = 8
     cfg: float = 0.0
     mu: Optional[float] = None  # None → inference resolves (turbo=1.15, RAW=adaptive)
@@ -447,14 +447,9 @@ class SettingsUpdate(BaseModel):
     gguf_helper_base_url: Optional[str] = None
     gguf_helper_model: Optional[str] = None
     gguf_helper_timeout_sec: Optional[int] = None
-    diffusion_engine: Optional[Literal["native_pytorch", "native_int8_convrot", "gguf_external", "int8_convrot_external"]] = None
-    gguf_sd_cli_path: Optional[str] = None
+    diffusion_engine: Optional[Literal["native_pytorch", "native_gguf", "native_int8_convrot"]] = None
     gguf_turbo_path: Optional[str] = None
     gguf_raw_path: Optional[str] = None
-    gguf_llm_path: Optional[str] = None
-    gguf_vae_path: Optional[str] = None
-    gguf_lora_dir: Optional[str] = None
-    gguf_timeout_sec: Optional[int] = None
     ideogram_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     openrouter_model: Optional[str] = None

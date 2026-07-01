@@ -98,13 +98,13 @@ export default function PromptSection() {
       }))
       const xperimentLoraNames = new Set(xperimentLoras.map(lora => lora.name))
       const configuredEngine = result.diffusion_engine ?? params.diffusion_engine
-      const configuredQuantization = result.quantization ?? (configuredEngine === 'native_int8_convrot' ? 'int8' : 'fp8')
+      const configuredQuantization = result.quantization ?? (configuredEngine === 'native_int8_convrot' ? 'int8' : configuredEngine === 'native_gguf' ? 'gguf' : 'fp8')
       const keepRaw = params.checkpoint === 'raw' || params.model_profile === 'krea_raw'
       setParams({
         diffusion_engine: configuredEngine,
         model_profile: keepRaw ? 'krea_raw' : 'krea_turbo',
         checkpoint: keepRaw ? 'raw' : 'turbo',
-        quantization: configuredEngine === 'native_int8_convrot' ? 'int8' : keepRaw ? params.quantization : configuredQuantization,
+        quantization: configuredEngine === 'native_int8_convrot' ? 'int8' : configuredEngine === 'native_gguf' ? 'gguf' : keepRaw ? params.quantization : configuredQuantization,
         steps: result.sampler.steps,
         cfg: result.sampler.cfg,
         mu: keepRaw ? null : 1.15,

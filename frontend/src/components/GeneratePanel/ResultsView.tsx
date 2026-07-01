@@ -29,7 +29,7 @@ const UPSCALE_METHODS = [
     opts: { upscale_by: 2, steps: 8, cfg: 1, denoise: 0.24, tile_size: 1280, tile_padding: 128, mask_blur: 16, seam_mode: 'half_tile_intersections', tile_mode: 'chess', sampler: 'euler', scheduler: 'simple', tiled_decode: true },
   },
   { key: 'realesrgan', label: 'RealESRGAN 4×', sub: 'fast, no diffusion' },
-  { key: 'pid_upscale', label: 'PiD 4× pixel decode (experimental)', sub: 'heavy VRAM · requires PiD assets/runtime · SageAttention off', opts: { upscale_by: 4 } },
+  { key: 'pid_upscale', label: 'PiD 4× native (experimental)', sub: 'loads native PiD runtime · unloads Krea first · needs ~15GB VRAM', opts: { upscale_by: 4 } },
   { key: 'tiled_vae', label: 'Tiled VAE 2×', sub: 'lossless re-decode' },
   { key: 'model_refine', label: 'Detail refine 1×', sub: 'sharpen, no resize' },
 ]

@@ -31,6 +31,7 @@ from generation_metadata import build_generation_metadata
 from krea_enhancer import krea_enhancer_context
 from krea2.block_swap import BlockSwapController, resolve_swap_plan
 from krea2.fp8_quant import load_bf16_as_fp8_scaled
+from krea2.gguf_quant import load_gguf_as_fp8_scaled
 from krea2.int8_convrot import int8_layer_specs_from_safetensors, load_int8_convrot_state_dict, replace_int8_linears
 from krea2.text_prompt import DEFAULT_EXPRESSION_THINK
 from krea2.vae_source import resolve_vae_source
@@ -335,8 +336,8 @@ def preflight_model_load(
 ) -> None:
     """Fail early when the current machine cannot fit the requested load.
 
-    fp8 loads (including dynamic fp8 of a bf16 file) resolve to the ~13GB VRAM
-    tier regardless of "raw"/"bf16" in the filename. Block swapping streams the
+    fp8/gguf loads resolve to the ~13GB VRAM tier regardless of "raw"/"bf16"
+    in the filename. Block swapping streams the
     last N DiT blocks from RAM, lowering the resident VRAM requirement; we relax
     the VRAM gate accordingly while keeping the RAM gate that the load itself
     needs. A dynamic-fp8 load of a bf16 file is gated on RAM by the file size,
@@ -344,9 +345,10 @@ def preflight_model_load(
     """
     name = Path(checkpoint_path).name.lower()
     is_fp8 = quantization == "fp8"
+    is_gguf = quantization == "gguf"
     is_int8 = quantization == "int8"
     file_is_prequant_fp8 = "fp8" in name
-    is_bf16 = not is_fp8 and not is_int8
+    is_bf16 = not is_fp8 and not is_gguf and not is_int8
     if is_int8:
         vram_need = max(8.0, 13.0 - max(0, int(blocks_to_swap)) * 0.4)
         ram_need_free, ram_need_total = 10.0, 16.0
@@ -361,7 +363,7 @@ def preflight_model_load(
         if ram_total is not None and ram_total < ram_need_total:
             raise RuntimeError(f"System has {ram_total:.1f}GB RAM; native INT8 load needs at least ~{ram_need_total:.0f}GB total.")
         return
-    if not is_fp8 and not ("raw" in name or "bf16" in name):
+    if not is_fp8 and not is_gguf and not ("raw" in name or "bf16" in name):
         return
 
     try:
@@ -834,6 +836,22 @@ class Krea2Pipeline:
                         _patch_fp8_linears(mmdit, fp8_scales, fast_matmul=fp8_fast_matmul)
                         mmdit = mmdit.to(device=self._device).eval()
                         logger.info(f"DiT loaded (fp8-scaled, {len(fp8_scales)} layers patched). {mem_snapshot()}")
+                    elif quantization == "gguf":
+                        # Native GGUF bridge: accept Krea GGUF diffusion files,
+                        # dequantize tensor-by-tensor, then immediately store
+                        # large linears in our proven scaled-fp8 PyTorch runtime.
+                        # This keeps Krea's native Qwen conditioning/sampler/VAE
+                        # path instead of relying on stable-diffusion.cpp.
+                        sd_gguf, gguf_scales = load_gguf_as_fp8_scaled(
+                            checkpoint_path,
+                            device=self._device,
+                            compute_dtype=self._dtype,
+                        )
+                        mmdit.load_state_dict(sd_gguf, strict=True, assign=True)
+                        del sd_gguf
+                        _patch_fp8_linears(mmdit, gguf_scales, fast_matmul=fp8_fast_matmul)
+                        mmdit = mmdit.to(device=self._device).eval()
+                        logger.info(f"DiT loaded (native GGUF -> scaled fp8, {len(gguf_scales)} layers quantized). {mem_snapshot()}")
                     elif quantization == "fp8":
                         # bf16 source + fp8 requested → dynamic scaled fp8.
                         # Stream-quantize tensor-by-tensor straight onto the target

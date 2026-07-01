@@ -110,6 +110,7 @@ from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, r
 from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_lora_filename
 from system_check import get_system_report
 from memory_manager import (
+    clear_cuda_cache,
     detect_krea_server_processes,
     prepare_for_generation,
     safe_clean_memory,
@@ -945,56 +946,41 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
         prep = prepare_for_generation(pipeline, clear_conditioning_cache=False)
         logger.info("Pre-generation memory cleanup: %s", prep)
         if getattr(req, "diffusion_engine", "native_pytorch") == "gguf_external":
-            from gguf_diffusion_provider import generate_gguf_external
+            req.diffusion_engine = "native_gguf"
+            req.quantization = "gguf"
+        if getattr(req, "diffusion_engine", "native_pytorch") in {"native_int8_convrot", "int8_convrot_external"}:
+            req.diffusion_engine = "native_int8_convrot"
+            req.quantization = "int8"
+        from edit_providers import resolve_edit_provider
+        from flux_fill_provider import flux_fill_installed, generate_flux_fill
 
+        flux_installed = flux_fill_installed()
+        requested_method = getattr(req, "inpaint_method", "native")
+        provider_name = "flux_fill" if requested_method == "flux_fill" else req.edit_provider
+        if requested_method in {"native", "lanpaint_experimental"}:
+            provider_name = "krea_native"
+        provider = resolve_edit_provider(provider_name, req.mode, flux_fill_installed=flux_installed)
+        job["edit_provider"] = provider.name
+        job["provider_warning"] = (
+            provider.reason
+            if req.edit_provider in {"auto", "flux_fill"} and provider.name != "flux_fill" and req.mode in {"inpaint", "outpaint"}
+            else None
+        )
+        if provider.name == "flux_fill":
             pipeline.unload()
-            req.loras = []
-            req.style_references = []
-            req.regional_prompts = []
-            req.moodboard_images = []
-            req.use_rebalance = False
-            req.krea_enhancer_enabled = False
-            req.krea_enhancer_variant = "off"
-            job["edit_provider"] = "gguf_external"
-            job["provider_warning"] = "GGUF external engine active: Krea-native LoRAs, style refs, moodboards, regional prompts, rebalance, and enhancer are disabled."
-            write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="gguf_external_start")
+            if req.steps < 50:
+                req.steps = 50
+            if req.cfg < 30:
+                req.cfg = 30
+            write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="flux_fill_start", extra={"provider": provider.name})
             results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                None, lambda: generate_gguf_external(req, _gguf_runtime_settings(), progress_cb=progress_cb)
+                None, lambda: generate_flux_fill(req, progress_cb=progress_cb)
             )
         else:
-            if getattr(req, "diffusion_engine", "native_pytorch") in {"native_int8_convrot", "int8_convrot_external"}:
-                req.diffusion_engine = "native_int8_convrot"
-                req.quantization = "int8"
-            from edit_providers import resolve_edit_provider
-            from flux_fill_provider import flux_fill_installed, generate_flux_fill
-
-            flux_installed = flux_fill_installed()
-            requested_method = getattr(req, "inpaint_method", "native")
-            provider_name = "flux_fill" if requested_method == "flux_fill" else req.edit_provider
-            if requested_method in {"native", "lanpaint_experimental"}:
-                provider_name = "krea_native"
-            provider = resolve_edit_provider(provider_name, req.mode, flux_fill_installed=flux_installed)
-            job["edit_provider"] = provider.name
-            job["provider_warning"] = (
-                provider.reason
-                if req.edit_provider in {"auto", "flux_fill"} and provider.name != "flux_fill" and req.mode in {"inpaint", "outpaint"}
-                else None
+            write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="native_generation_start", extra={"provider": provider.name})
+            results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
+                None, lambda: pipeline.generate(req, progress_cb=progress_cb)
             )
-            if provider.name == "flux_fill":
-                pipeline.unload()
-                if req.steps < 50:
-                    req.steps = 50
-                if req.cfg < 30:
-                    req.cfg = 30
-                write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="flux_fill_start", extra={"provider": provider.name})
-                results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                    None, lambda: generate_flux_fill(req, progress_cb=progress_cb)
-                )
-            else:
-                write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="native_generation_start", extra={"provider": provider.name})
-                results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                    None, lambda: pipeline.generate(req, progress_cb=progress_cb)
-                )
         missing_outputs = [fname for fname in (filenames or []) if fname and not (OUTPUTS_DIR / fname).exists()]
         write_generation_breadcrumb(
             LOGS_DIR,
@@ -1624,6 +1610,13 @@ async def upscale(req: UpscaleRequest):
     elif req.method == "pid_upscale":
         from pid_decoder_provider import upscale_pid
 
+        if int(round(float(req.upscale_by or 4))) != 4:
+            raise HTTPException(400, "PiD upscale is only supported at 4x. Use Wan 2.1, model refine, or Ultimate SD Upscale for 2x.")
+        # PiD is a separate high-VRAM decoder. Evict the Krea pipeline first so
+        # the native PiD runtime can own the GPU; pre-generation cleanup unloads
+        # PiD before Krea is loaded again.
+        pipeline.unload()
+        clear_cuda_cache()
         result = await loop.run_in_executor(
             None, lambda: upscale_pid(img, _pid_settings(), prompt=req.prompt, scale=req.upscale_by)
         )
@@ -1879,7 +1872,7 @@ async def xperiment_setup_endpoint():
     if asset_installed(bypass_spec):
         loras.append({"name": "krea2filterbypass3", "filename": "krea2filterbypass3.safetensors", "strength": 4.0, "block_filter": "style_safe"})
     configured_engine = settings.diffusion_engine or "native_pytorch"
-    configured_quant = "int8" if configured_engine == "native_int8_convrot" else "fp8"
+    configured_quant = "int8" if configured_engine == "native_int8_convrot" else "gguf" if configured_engine == "native_gguf" else "fp8"
     return {
         "ok": True,
         "assets": results,
@@ -1906,16 +1899,11 @@ async def xperiment_setup_endpoint():
 @app.post("/api/gguf/setup-low-vram")
 async def gguf_setup_low_vram_endpoint():
     from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
-    from gguf_runtime_installer import install_stable_diffusion_cpp
     from quality_assets import asset_by_id, asset_installed, asset_status, download_asset
 
-    required_ids = ["gguf_krea2_turbo_q4km", "gguf_krea2_turbo_q3km", "gguf_qwen3vl_4b_q4km", "wan_2_1_vae"]
+    required_ids = ["gguf_krea2_turbo_q4km", "wan_2_1_vae"]
     token = settings.hf_token or os.environ.get("HF_TOKEN") or None
     loop = asyncio.get_event_loop()
-    runtime = await loop.run_in_executor(
-        None,
-        lambda: install_stable_diffusion_cpp(Path(settings.models_dir).parent / "tools" / "stable-diffusion.cpp"),
-    )
     results: list[dict] = []
     for asset_id in required_ids:
         spec = asset_by_id(asset_id)
@@ -1932,35 +1920,29 @@ async def gguf_setup_low_vram_endpoint():
         results.append({"id": asset_id, "path": str(path), "skipped": skipped, "item": asset_status(spec, has_hf_token=bool(token))})
 
     q4 = asset_by_id("gguf_krea2_turbo_q4km").local_path
-    q3 = asset_by_id("gguf_krea2_turbo_q3km").local_path
-    qwen = asset_by_id("gguf_qwen3vl_4b_q4km").local_path
     vae = asset_by_id("wan_2_1_vae").local_path
     env = _read_env()
-    env["DIFFUSION_ENGINE"] = "gguf_external"
-    env["GGUF_SD_CLI_PATH"] = runtime["sd_cli_path"]
+    env["DIFFUSION_ENGINE"] = "native_gguf"
     env["GGUF_TURBO_PATH"] = str(q4)
-    env["GGUF_LLM_PATH"] = str(qwen)
-    env["GGUF_VAE_PATH"] = str(vae)
-    env["GGUF_REALTIME_PROFILE"] = "turbo_q3_or_q4_512"
-    settings.diffusion_engine = "gguf_external"
-    settings.gguf_sd_cli_path = runtime["sd_cli_path"]
+    env["KREA2_AUTO_CHECKPOINT"] = str(q4)
+    env["KREA2_AUTO_QUANT"] = "gguf"
+    env["KREA2_VAE_PATH"] = str(vae)
+    settings.diffusion_engine = "native_gguf"
     settings.gguf_turbo_path = str(q4)
-    settings.gguf_llm_path = str(qwen)
-    settings.gguf_vae_path = str(vae)
+    settings.krea2_auto_checkpoint = str(q4)
+    settings.krea2_auto_quant = "gguf"
+    settings.krea2_vae_path = str(vae)
     _write_env(env)
     return {
         "ok": True,
         "assets": results,
-        "runtime": runtime,
-        "diffusion_engine": "gguf_external",
-        "sd_cli_path": runtime["sd_cli_path"],
+        "diffusion_engine": "native_gguf",
         "turbo_path": str(q4),
-        "realtime_candidate_path": str(q3),
-        "llm_path": str(qwen),
+        "checkpoint_path": str(q4),
+        "quantization": "gguf",
         "vae_path": str(vae),
         "sampler": {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15},
-        "realtime": {"preview_size": 512, "preview_steps": 4, "final_steps": 8},
-        "warnings": ["Realtime GGUF remains disabled until the sidecar benchmark passes, but 512/4/8 are the target low-VRAM live settings."],
+        "warnings": ["Native GGUF is configured as the low-VRAM diffusion path. The old stable-diffusion.cpp sidecar is no longer used."],
     }
 
 
@@ -1991,6 +1973,11 @@ def _write_env(env: dict[str, str]) -> None:
 @app.get("/api/settings")
 async def get_settings():
     env = _read_env()
+    configured_engine = env.get("DIFFUSION_ENGINE", settings.diffusion_engine)
+    if configured_engine == "gguf_external":
+        configured_engine = "native_gguf"
+    elif configured_engine == "int8_convrot_external":
+        configured_engine = "native_int8_convrot"
     return {
         "hf_token": "",
         "civitai_token": "",
@@ -2006,14 +1993,9 @@ async def get_settings():
         "gguf_helper_base_url": env.get("GGUF_HELPER_BASE_URL", settings.gguf_helper_base_url),
         "gguf_helper_model": env.get("GGUF_HELPER_MODEL", settings.gguf_helper_model),
         "gguf_helper_timeout_sec": int(env.get("GGUF_HELPER_TIMEOUT_SEC", str(settings.gguf_helper_timeout_sec)) or 120),
-        "diffusion_engine": env.get("DIFFUSION_ENGINE", settings.diffusion_engine),
-        "gguf_sd_cli_path": env.get("GGUF_SD_CLI_PATH", settings.gguf_sd_cli_path),
+        "diffusion_engine": configured_engine,
         "gguf_turbo_path": env.get("GGUF_TURBO_PATH", settings.gguf_turbo_path),
         "gguf_raw_path": env.get("GGUF_RAW_PATH", settings.gguf_raw_path),
-        "gguf_llm_path": env.get("GGUF_LLM_PATH", settings.gguf_llm_path),
-        "gguf_vae_path": env.get("GGUF_VAE_PATH", settings.gguf_vae_path),
-        "gguf_lora_dir": env.get("GGUF_LORA_DIR", settings.gguf_lora_dir),
-        "gguf_timeout_sec": int(env.get("GGUF_TIMEOUT_SEC", str(settings.gguf_timeout_sec)) or 600),
         "openrouter_model": env.get("OPENROUTER_MODEL", settings.openrouter_model),
         "openrouter_free_only": env.get("OPENROUTER_FREE_ONLY", str(settings.openrouter_free_only)).lower() in {"1", "true", "yes"},
         "krea_share_auto_funnel": env.get("KREA_SHARE_AUTO_FUNNEL", str(settings.krea_share_auto_funnel)).lower() in {"1", "true", "yes", "on"},
@@ -2067,29 +2049,15 @@ async def update_settings(req: SettingsUpdate):
         env["GGUF_HELPER_TIMEOUT_SEC"] = str(req.gguf_helper_timeout_sec)
         settings.gguf_helper_timeout_sec = int(req.gguf_helper_timeout_sec)
     if req.diffusion_engine is not None:
-        env["DIFFUSION_ENGINE"] = req.diffusion_engine
-        settings.diffusion_engine = req.diffusion_engine
-    if req.gguf_sd_cli_path is not None:
-        env["GGUF_SD_CLI_PATH"] = req.gguf_sd_cli_path
-        settings.gguf_sd_cli_path = req.gguf_sd_cli_path
+        engine = "native_gguf" if req.diffusion_engine == "gguf_external" else "native_int8_convrot" if req.diffusion_engine == "int8_convrot_external" else req.diffusion_engine
+        env["DIFFUSION_ENGINE"] = engine
+        settings.diffusion_engine = engine
     if req.gguf_turbo_path is not None:
         env["GGUF_TURBO_PATH"] = req.gguf_turbo_path
         settings.gguf_turbo_path = req.gguf_turbo_path
     if req.gguf_raw_path is not None:
         env["GGUF_RAW_PATH"] = req.gguf_raw_path
         settings.gguf_raw_path = req.gguf_raw_path
-    if req.gguf_llm_path is not None:
-        env["GGUF_LLM_PATH"] = req.gguf_llm_path
-        settings.gguf_llm_path = req.gguf_llm_path
-    if req.gguf_vae_path is not None:
-        env["GGUF_VAE_PATH"] = req.gguf_vae_path
-        settings.gguf_vae_path = req.gguf_vae_path
-    if req.gguf_lora_dir is not None:
-        env["GGUF_LORA_DIR"] = req.gguf_lora_dir
-        settings.gguf_lora_dir = req.gguf_lora_dir
-    if req.gguf_timeout_sec is not None:
-        env["GGUF_TIMEOUT_SEC"] = str(req.gguf_timeout_sec)
-        settings.gguf_timeout_sec = int(req.gguf_timeout_sec)
     if req.ideogram_api_key is not None:
         settings.ideogram_api_key = req.ideogram_api_key.replace("\r", "").replace("\n", "")
     if req.openrouter_api_key is not None:
@@ -2184,20 +2152,6 @@ async def gguf_helper_test_endpoint():
     return {"ok": True, "backend": result.backend, "expanded": result.expanded}
 
 
-def _gguf_runtime_settings():
-    from gguf_diffusion_provider import GgufRuntimeSettings
-
-    return GgufRuntimeSettings(
-        sd_cli_path=settings.gguf_sd_cli_path,
-        turbo_path=settings.gguf_turbo_path,
-        raw_path=settings.gguf_raw_path,
-        llm_path=settings.gguf_llm_path,
-        vae_path=settings.gguf_vae_path,
-        lora_dir=settings.gguf_lora_dir,
-        timeout_sec=settings.gguf_timeout_sec,
-    )
-
-
 def _pid_settings():
     from pid_decoder_provider import PiDSettings
     from quality_assets import asset_by_id
@@ -2213,15 +2167,14 @@ def _pid_settings():
 @app.get("/api/gguf/status")
 async def gguf_status_endpoint():
     fields = {
-        "sd_cli_path": settings.gguf_sd_cli_path,
         "turbo_path": settings.gguf_turbo_path,
         "raw_path": settings.gguf_raw_path,
-        "llm_path": settings.gguf_llm_path,
-        "vae_path": settings.gguf_vae_path,
-        "lora_dir": settings.gguf_lora_dir,
+        "auto_checkpoint": settings.krea2_auto_checkpoint,
+        "vae_path": settings.krea2_vae_path,
     }
     return {
         "diffusion_engine": settings.diffusion_engine,
+        "quantization": settings.krea2_auto_quant,
         "paths": {
             key: {"path": value, "configured": bool(value)}
             for key, value in fields.items()
@@ -2236,18 +2189,6 @@ async def pid_status_endpoint():
 
     _name, _total, free = get_gpu_info()
     return pid_status(_pid_settings(), free_vram_gb=free)
-
-
-@app.post("/api/gguf/test-runtime")
-async def gguf_test_runtime_endpoint():
-    from gguf_diffusion_provider import build_gguf_command
-
-    req = GenerationRequest(prompt="a small red fox in morning fog", width=512, height=512, steps=4, cfg=0.0)
-    try:
-        cmd, output = build_gguf_command(req, _gguf_runtime_settings())
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return {"ok": True, "command": cmd, "output": str(output)}
 
 
 @app.get("/api/int8/status")
@@ -2327,45 +2268,6 @@ async def int8_setup_native_endpoint():
         "quantization": "int8",
         "sampler": {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15},
         "warnings": ["Native INT8 uses torch._int_mm fallback first; comfy_kitchen/Triton are optional future accelerators, not required."],
-    }
-
-
-@app.post("/api/gguf/benchmark-quick")
-async def gguf_benchmark_quick_endpoint():
-    from types import SimpleNamespace
-    from gguf_diffusion_provider import generate_gguf_external
-
-    req = SimpleNamespace(
-        prompt="a red fox in morning fog, cinematic lighting",
-        negative_prompt="blurry",
-        checkpoint="turbo",
-        width=512,
-        height=512,
-        steps=4,
-        cfg=0.0,
-        seed=123,
-        mode="txt2img",
-    )
-    started = time.time()
-    try:
-        _images, seed, filenames, _lora_reports, metadata = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: generate_gguf_external(req, _gguf_runtime_settings())
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    elapsed = time.time() - started
-    return {
-        "ok": True,
-        "elapsed_sec": round(elapsed, 2),
-        "preview_size": 512,
-        "preview_steps": 4,
-        "final_steps": 8,
-        "seed": seed,
-        "filenames": filenames,
-        "output": metadata[0]["filename"] if metadata else "",
-        "live_candidate": False,
-        "speed_candidate": elapsed <= 30.0,
-        "message": "GGUF 512/4 speed benchmark completed, but visual prompt-adherence sweep did not meet native quality. Keep GGUF experimental and txt2img-only.",
     }
 
 

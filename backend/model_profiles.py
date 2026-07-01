@@ -145,39 +145,16 @@ def engine_catalog() -> dict[str, Any]:
         "recommended_steps": 8,
         "unsupported_controls": [],
     }
-    gguf = {
-        "engine_id": "gguf_external",
-        "label": "GGUF external runtime",
+    native_gguf = {
+        **native,
+        "engine_id": "native_gguf",
+        "label": "Native GGUF",
         "default": False,
-        "experimental": True,
-        "profiles": ["gguf_turbo"],
-        "supports_lora": False,
-        "supports_style_references": False,
-        "supports_moodboards": False,
-        "supports_regional_prompts": False,
-        "supports_rebalance": False,
-        "supports_krea_enhancer": False,
-        "supports_flow_samplers": False,
-        "supports_standard_samplers": True,
-        "supports_cfg": True,
-        "supports_img2img": False,
-        "supports_inpaint": False,
-        "supports_realtime": False,
-        "supports_parallel_batch": False,
-        "supports_lora_ab_test": False,
-        "max_batch": 1,
-        "max_resolution": 1024,
+        "experimental": False,
+        "profiles": ["krea_turbo"],
+        "quantization": "gguf",
         "recommended_steps": 8,
-        "unsupported_controls": [
-            "loras",
-            "style_references",
-            "moodboards",
-            "regional_prompts",
-            "rebalance",
-            "krea_enhancer",
-            "cfg_zero_star",
-            "mu_shift",
-        ],
+        "unsupported_controls": [],
     }
     int8 = {
         **native,
@@ -205,7 +182,7 @@ def engine_catalog() -> dict[str, Any]:
         "recommended_steps": 8,
         "unsupported_controls": [],
     }
-    return {"engines": [native, gguf, int8], "default_engine": "native_pytorch"}
+    return {"engines": [native, native_gguf, int8], "default_engine": "native_pytorch"}
 
 
 def resolve_model_profile(profile_id: str | None, checkpoint: str = "turbo") -> ModelProfile:

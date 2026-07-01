@@ -39,9 +39,9 @@ export interface GenerateParams {
   negative_prompt: string
   mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
   model_profile: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
-  diffusion_engine: 'native_pytorch' | 'native_int8_convrot' | 'gguf_external' | 'int8_convrot_external'
+  diffusion_engine: 'native_pytorch' | 'native_gguf' | 'native_int8_convrot'
   checkpoint: 'turbo' | 'raw'
-  quantization: 'bf16' | 'fp8' | 'fp16' | 'int8'
+  quantization: 'bf16' | 'fp8' | 'gguf' | 'fp16' | 'int8'
   steps: number
   cfg: number
   mu: number | null

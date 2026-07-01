@@ -65,13 +65,13 @@ class ModelProfileTests(unittest.TestCase):
         engines = {item["engine_id"]: item for item in catalog["engines"]}
 
         self.assertIn("native_pytorch", engines)
-        self.assertIn("gguf_external", engines)
+        self.assertIn("native_gguf", engines)
         self.assertIn("native_int8_convrot", engines)
         self.assertTrue(engines["native_pytorch"]["supports_lora"])
         self.assertTrue(engines["native_pytorch"]["supports_moodboards"])
-        self.assertFalse(engines["gguf_external"]["supports_moodboards"])
-        self.assertFalse(engines["gguf_external"]["supports_krea_enhancer"])
-        self.assertEqual(engines["gguf_external"]["recommended_steps"], 8)
+        self.assertTrue(engines["native_gguf"]["supports_moodboards"])
+        self.assertTrue(engines["native_gguf"]["supports_img2img"])
+        self.assertEqual(engines["native_gguf"]["quantization"], "gguf")
         self.assertTrue(engines["native_int8_convrot"]["supports_moodboards"])
         self.assertTrue(engines["native_int8_convrot"]["supports_realtime"])
         self.assertEqual(engines["native_int8_convrot"]["quantization"], "int8")

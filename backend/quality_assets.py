@@ -97,7 +97,7 @@ def asset_specs() -> list[QualityAssetSpec]:
             filename="split_files/vae/wan_2.1_vae.safetensors",
             local_path=vae_dir / "wan_2.1_vae.safetensors",
             kind="file",
-            purpose="Wan 2.1 VAE used by stable-diffusion.cpp Krea2 and some Comfy workflows",
+            purpose="Wan 2.1 VAE used by native Krea2 workflows and community Comfy workflows",
         ),
         QualityAssetSpec(
             id="qwen3vl_abliterated_fp8",
@@ -163,7 +163,7 @@ def asset_specs() -> list[QualityAssetSpec]:
             filename="Krea-2-Turbo-Q4_K_M.gguf",
             local_path=gguf_dir / "Krea-2-Turbo-Q4_K_M.gguf",
             kind="file",
-            purpose="Recommended GGUF Krea2 Turbo baseline for external stable-diffusion.cpp runtime",
+            purpose="Recommended Krea2 Turbo GGUF checkpoint for the native low-VRAM loader",
         ),
         QualityAssetSpec(
             id="gguf_krea2_turbo_q3km",
@@ -179,7 +179,7 @@ def asset_specs() -> list[QualityAssetSpec]:
             filename="Qwen3VL-4B-Instruct-Q4_K_M.gguf",
             local_path=gguf_dir / "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
             kind="file",
-            purpose="Qwen3-VL 4B GGUF LLM text encoder for stable-diffusion.cpp Krea2 runtime",
+            purpose="Optional Qwen3-VL 4B GGUF LLM for local prompt-helper servers",
         ),
         QualityAssetSpec(
             id="flux_fill",
