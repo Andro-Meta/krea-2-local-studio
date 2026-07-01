@@ -124,6 +124,22 @@ def asset_specs() -> list[QualityAssetSpec]:
             purpose="PiD Qwen-Image 1024-to-4096 4-step pixel diffusion decoder",
         ),
         QualityAssetSpec(
+            id="pid_qwenimage_official_checkpoint",
+            repo_id="nvidia/PiD",
+            filename="checkpoints/PiD_res2kto4k_sr4x_official_qwenimage_distill_4step/model_ema_bf16.pth",
+            local_path=MODELS_DIR / "pid" / "checkpoints" / "PiD_res2kto4k_sr4x_official_qwenimage_distill_4step" / "model_ema_bf16.pth",
+            kind="file",
+            purpose="Official PiD Qwen-Image checkpoint required by the native PiD runtime",
+        ),
+        QualityAssetSpec(
+            id="pid_qwenimage_vae_2d",
+            repo_id="nvidia/PiD",
+            filename="checkpoints/QwenImage_VAE_2d.pth",
+            local_path=MODELS_DIR / "pid" / "checkpoints" / "QwenImage_VAE_2d.pth",
+            kind="file",
+            purpose="Official 2D Qwen-Image VAE tokenizer required by PiD from-clean runtime",
+        ),
+        QualityAssetSpec(
             id="krea2_realism_v1_lora",
             repo_id="RudySen/Krea2-realism-V1",
             filename="Krea2-realism-V1.safetensors",

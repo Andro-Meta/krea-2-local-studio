@@ -2205,6 +2205,8 @@ def _pid_settings():
     return PiDSettings(
         decoder_path=str(asset_by_id("pid_qwenimage_decoder").local_path),
         text_encoder_path=str(asset_by_id("pid_gemma_text_encoder").local_path),
+        official_checkpoint_path=str(asset_by_id("pid_qwenimage_official_checkpoint").local_path),
+        official_vae_path=str(asset_by_id("pid_qwenimage_vae_2d").local_path),
     )
 
 

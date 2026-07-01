@@ -20,6 +20,8 @@ class PiDProviderTests(unittest.TestCase):
         self.assertEqual(specs["pid_qwenimage_decoder"].repo_id, "Comfy-Org/PixelDiT")
         self.assertEqual(specs["pid_qwenimage_decoder"].filename, "diffusion_models/pid_qwenimage_1024_to_4096_4step_bf16.safetensors")
         self.assertEqual(specs["pid_gemma_text_encoder"].filename, "text_encoders/gemma_2_2b_it_elm_bf16.safetensors")
+        self.assertEqual(specs["pid_qwenimage_official_checkpoint"].repo_id, "nvidia/PiD")
+        self.assertEqual(specs["pid_qwenimage_vae_2d"].filename, "checkpoints/QwenImage_VAE_2d.pth")
 
     def test_status_blocks_sageattention_and_missing_assets(self) -> None:
         from pid_decoder_provider import PiDSettings, pid_status
@@ -29,7 +31,7 @@ class PiDProviderTests(unittest.TestCase):
 
         self.assertFalse(status["available"])
         self.assertIn("SageAttention", " ".join(status["blocked_reasons"]))
-        self.assertIn("PiD decoder", " ".join(status["blocked_reasons"]))
+        self.assertIn("PiD Comfy decoder", " ".join(status["blocked_reasons"]))
 
     def test_status_allows_installed_assets_with_enough_vram(self) -> None:
         from pid_decoder_provider import PiDSettings, pid_status
@@ -38,7 +40,15 @@ class PiDProviderTests(unittest.TestCase):
             patch("pid_decoder_provider.Path.is_file", return_value=True),
             patch("pid_decoder_provider.accelerator_status", return_value={"sageattention": {"selected": False, "installed": False}}),
         ):
-            status = pid_status(PiDSettings(decoder_path="decoder.safetensors", text_encoder_path="gemma.safetensors"), free_vram_gb=18.0)
+            status = pid_status(
+                PiDSettings(
+                    decoder_path="decoder.safetensors",
+                    text_encoder_path="gemma.safetensors",
+                    official_checkpoint_path="model_ema_bf16.pth",
+                    official_vae_path="QwenImage_VAE_2d.pth",
+                ),
+                free_vram_gb=18.0,
+            )
 
         self.assertTrue(status["available"])
         self.assertEqual(status["estimated_vram_gb"], 15.0)
@@ -51,7 +61,7 @@ class PiDProviderTests(unittest.TestCase):
         with (
             patch("pid_decoder_provider.Path.is_file", return_value=True),
             patch("pid_decoder_provider.accelerator_status", return_value={"sageattention": {"selected": False}}),
-            self.assertRaisesRegex(RuntimeError, "PiD runtime is not installed"),
+            self.assertRaisesRegex(RuntimeError, "Official PiD runtime checkpoint|PiD runtime"),
         ):
             upscale_pid(Image.new("RGB", (16, 16), "black"), PiDSettings(decoder_path="x", text_encoder_path="y"))
 
