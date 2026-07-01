@@ -551,6 +551,7 @@ class QualityUpgradeTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["diffusion_engine"], "gguf_external")
         self.assertEqual(data["sd_cli_path"], "E:\\Krea 2\\tools\\stable-diffusion.cpp\\sd-cli.exe")
+        self.assertTrue(data["vae_path"].endswith("wan_2.1_vae.safetensors"))
         self.assertEqual(data["sampler"], {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15})
         self.assertEqual(data["realtime"]["preview_size"], 512)
         self.assertIn("gguf_krea2_turbo_q3km", downloaded)

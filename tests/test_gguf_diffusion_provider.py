@@ -22,7 +22,7 @@ class GgufDiffusionProviderTests(unittest.TestCase):
             exe = root / "sd-cli.exe"
             turbo = root / "krea2_turbo_q4.gguf"
             llm = root / "qwen3vl_q4.gguf"
-            vae = root / "qwen_image_vae.safetensors"
+            vae = root / "wan_2.1_vae.safetensors"
             for path in (exe, turbo, llm, vae):
                 path.write_bytes(b"x")
             req = SimpleNamespace(
@@ -50,6 +50,7 @@ class GgufDiffusionProviderTests(unittest.TestCase):
         self.assertIn(str(llm), cmd)
         self.assertIn("--vae", cmd)
         self.assertIn(str(vae), cmd)
+        self.assertTrue(any(item.endswith("wan_2.1_vae.safetensors") for item in cmd))
         self.assertIn("--cfg-scale", cmd)
         self.assertEqual(output.suffix, ".png")
 
