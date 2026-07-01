@@ -101,6 +101,10 @@ if not settings.krea2_raw_int8_path:
         if _c.exists():
             settings.krea2_raw_int8_path = str(_c)
             break
+if not settings.krea2_vae_path:
+    _AUTO_WAN_VAE = _KREA2_DIR / "vae" / "wan_2.1_vae.safetensors"
+    if _AUTO_WAN_VAE.exists():
+        settings.krea2_vae_path = str(_AUTO_WAN_VAE)
 if not settings.krea2_auto_checkpoint and settings.krea2_turbo_path:
     settings.krea2_auto_checkpoint = settings.krea2_turbo_path
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from einops import rearrange
+from krea2.wan_vae import WanAutoencoder, is_wan_vae_state_dict
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,11 @@ class QwenAutoencoder(nn.Module):
                 from safetensors.torch import load_file
 
                 sd = load_file(str(p))
+                if is_wan_vae_state_dict(sd):
+                    self.ae = WanAutoencoder(sd)
+                    self.vae_source = f"override:wan2.1:{p.name}"
+                    logger.info("Loaded Wan/Qwen-compatible VAE override: %s", p)
+                    return
                 ref_keys = set(self.ae.state_dict().keys())
                 matched = sum(1 for k in sd if k in ref_keys)
                 if matched < max(1, len(ref_keys) // 2):
