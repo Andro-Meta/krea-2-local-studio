@@ -111,7 +111,8 @@ from security_utils import append_query_param, is_civitai_url, normalize_lora_im
 from system_check import get_system_report
 from memory_manager import (
     detect_krea_server_processes,
-    release_transient_pipeline_memory,
+    prepare_for_generation,
+    safe_clean_memory,
     stop_krea_server_process,
     unload_pipeline,
 )
@@ -941,12 +942,8 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             stage="generation_start",
             extra={"username": username, "role": role},
         )
-        try:
-            from prompt_expander import unload_local_qwen
-
-            unload_local_qwen()
-        except Exception:
-            logger.debug("Could not unload local Qwen helper before generation", exc_info=True)
+        prep = prepare_for_generation(pipeline, clear_conditioning_cache=False)
+        logger.info("Pre-generation memory cleanup: %s", prep)
         if getattr(req, "diffusion_engine", "native_pytorch") == "gguf_external":
             from gguf_diffusion_provider import generate_gguf_external
 
@@ -1191,12 +1188,12 @@ async def unload_model():
 
 @app.post("/api/memory/release-transient")
 async def memory_release_transient():
-    return release_transient_pipeline_memory(pipeline)
+    return safe_clean_memory(pipeline)
 
 
 @app.post("/api/memory/safe-clean")
 async def memory_safe_clean():
-    return release_transient_pipeline_memory(pipeline, clear_conditioning_cache=True, unload_helpers=True)
+    return safe_clean_memory(pipeline)
 
 
 @app.post("/api/memory/unload-model")

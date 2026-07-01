@@ -54,6 +54,19 @@ class MemoryManagerTests(unittest.TestCase):
         unload_helper.assert_called_once()
         clear.assert_called_once()
 
+    def test_prepare_for_generation_clears_helpers_but_keeps_conditioning_cache_by_default(self) -> None:
+        import memory_manager
+
+        pipeline = FakePipeline()
+        with patch.object(memory_manager, "clear_cuda_cache", return_value=None), \
+             patch("prompt_expander.unload_local_qwen") as unload_helper:
+            result = memory_manager.prepare_for_generation(pipeline)
+
+        self.assertTrue(result["safe_clean"])
+        self.assertTrue(result["helper_unloaded"])
+        self.assertEqual(len(pipeline._conditioning_cache), 1)
+        unload_helper.assert_called_once()
+
     def test_unload_pipeline_clears_model_references(self) -> None:
         import memory_manager
 

@@ -68,6 +68,19 @@ def release_transient_pipeline_memory(pipeline: Any, *, clear_conditioning_cache
     }
 
 
+def safe_clean_memory(pipeline: Any, *, clear_conditioning_cache: bool = True) -> dict[str, Any]:
+    return release_transient_pipeline_memory(
+        pipeline,
+        clear_conditioning_cache=clear_conditioning_cache,
+        unload_helpers=True,
+    )
+
+
+def prepare_for_generation(pipeline: Any, *, clear_conditioning_cache: bool = False) -> dict[str, Any]:
+    """Lightweight pre-generation cleanup: evict helpers, keep Krea model hot."""
+    return safe_clean_memory(pipeline, clear_conditioning_cache=clear_conditioning_cache)
+
+
 def unload_pipeline(pipeline: Any) -> dict[str, Any]:
     if hasattr(pipeline, "unload"):
         pipeline.unload()

@@ -520,20 +520,6 @@ export default function SystemStatus() {
     }
   }
 
-  const releaseTransientMemory = async () => {
-    setMemoryBusy('release')
-    setMemoryMessage(null)
-    try {
-      await apiFetch.releaseTransientMemory()
-      await refresh()
-      setMemoryMessage({ severity: 'success', text: 'Transient encoder/cache memory released.' })
-    } catch (e: any) {
-      setMemoryMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not release memory.' })
-    } finally {
-      setMemoryBusy(null)
-    }
-  }
-
   const safeCleanMemory = async () => {
     setMemoryBusy('safe-clean')
     setMemoryMessage(null)
@@ -1005,15 +991,6 @@ export default function SystemStatus() {
               Free transient encoder/cache memory or inspect duplicate Krea servers before loading the model.
             </Typography>
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={releaseTransientMemory}
-                disabled={!isAdmin || !!memoryBusy}
-                startIcon={memoryBusy === 'release' ? <CircularProgress size={14} color="inherit" /> : undefined}
-              >
-                Free transient memory
-              </Button>
               <Button
                 variant="outlined"
                 size="small"
