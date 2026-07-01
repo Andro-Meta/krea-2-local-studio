@@ -1,9 +1,8 @@
 """Resolve which VAE the pipeline should decode with.
 
-Stock Krea 2 uses the Qwen Image VAE. The community found alternative/merged VAEs
-(Qwen HDR VAE, "krea-2-real-vae", clear VAE) can sharpen decode for some content.
-This resolver lets a user opt into an override VAE safetensors; if the override
-is missing it falls back to the stock VAE, so default behavior is unchanged.
+Krea Studio prefers Wan 2.1 VAE when configured because the community uses it
+as the higher-detail Qwen/Krea decoder. If the configured path is missing it
+falls back to the stock Qwen Image VAE.
 
 Torch-free so the selection logic is unit-testable in lightweight CI.
 """

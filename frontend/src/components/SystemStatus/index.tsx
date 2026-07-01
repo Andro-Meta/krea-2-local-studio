@@ -936,14 +936,14 @@ export default function SystemStatus() {
               />
               <Stack direction="row" spacing={1} alignItems="flex-start">
                 <TextField
-                  label="VAE override (optional)"
+                  label="VAE path"
                   value={vaePath}
                   onChange={e => setVaePath(e.target.value)}
                   size="small"
                   fullWidth
                   disabled={!isAdmin}
-                  placeholder="models\krea2\vae\qwen_image_hdr_vae.safetensors"
-                  helperText="Swap the decoder VAE (e.g. HDR/clear). Empty = stock Qwen VAE. Applies on the next model load."
+                  placeholder="models\krea2\vae\wan_2.1_vae.safetensors"
+                  helperText="Default: Wan 2.1 VAE when present. Empty falls back to stock Qwen VAE. Applies on next model load."
                 />
                 <Button
                   variant="outlined" size="small" sx={{ mt: 0.5 }}
@@ -952,7 +952,7 @@ export default function SystemStatus() {
                     setVaeSaving(true)
                     try {
                       await apiFetch.updateSettings({ krea2_vae_path: vaePath })
-                      setSettingsMessage({ severity: 'success', text: 'VAE override saved. Reload the model to apply.' })
+                      setSettingsMessage({ severity: 'success', text: 'VAE path saved. Reload the model to apply.' })
                     } catch (e: any) {
                       setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? 'Could not save VAE path.' })
                     } finally {

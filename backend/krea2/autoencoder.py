@@ -23,10 +23,10 @@ class QwenAutoencoder(nn.Module):
         self.ae = AutoencoderKLQwenImage.from_pretrained(
             str(support_model_path("qwen_image_vae")), subfolder="vae"
         )
-        self.vae_source = "stock"
-        # Optional experimental override (Qwen HDR / "real" / clear VAE). Any
-        # failure falls back to the stock VAE already loaded above, so default
-        # behavior is never affected.
+        self.vae_source = "stock:qwen_image"
+        # Wan 2.1 is the preferred Krea/Qwen decoder when available. Other
+        # compatible VAE overrides are best-effort; any failure falls back to
+        # stock Qwen Image VAE.
         if vae_override_path:
             self._apply_override(vae_override_path)
         self.ae.requires_grad_(False)
@@ -72,8 +72,8 @@ class QwenAutoencoder(nn.Module):
                 sd = load_file(str(p))
                 if is_wan_vae_state_dict(sd):
                     self.ae = WanAutoencoder(sd)
-                    self.vae_source = f"override:wan2.1:{p.name}"
-                    logger.info("Loaded Wan/Qwen-compatible VAE override: %s", p)
+                    self.vae_source = f"wan2.1:{p.name}"
+                    logger.info("Loaded Wan 2.1/Qwen-compatible VAE: %s", p)
                     return
                 ref_keys = set(self.ae.state_dict().keys())
                 matched = sum(1 for k in sd if k in ref_keys)

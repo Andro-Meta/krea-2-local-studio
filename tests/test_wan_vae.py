@@ -66,7 +66,7 @@ class WanVaeTests(unittest.TestCase):
                 ae = QwenAutoencoder(str(path))
 
         self.assertIs(ae.ae, fake_wan)
-        self.assertIn("wan2.1", ae.vae_source)
+        self.assertTrue(ae.vae_source.startswith("wan2.1:"))
 
 
 if __name__ == "__main__":
