@@ -1621,6 +1621,12 @@ async def upscale(req: UpscaleRequest):
                 tile_size=req.tile_width or req.tile_size, tiled_decode=req.tiled_decode,
             )
         )
+    elif req.method == "pid_upscale":
+        from pid_decoder_provider import upscale_pid
+
+        result = await loop.run_in_executor(
+            None, lambda: upscale_pid(img, _pid_settings(), prompt=req.prompt, scale=req.upscale_by)
+        )
     else:
         raise HTTPException(400, f"Unknown upscale method: {req.method}")
 
@@ -1650,6 +1656,10 @@ async def upscale(req: UpscaleRequest):
         "width": result.width,
         "height": result.height,
     }
+    if req.method == "pid_upscale":
+        from pid_decoder_provider import pid_status
+
+        metadata["runtime"] = {"pid": pid_status(_pid_settings())}
     encoded, _ = encode_images([result], OUTPUTS_DIR, save_outputs=False, metadata=[metadata])
     return {"image_b64": encoded[0], "metadata": metadata}
 
@@ -2188,6 +2198,16 @@ def _gguf_runtime_settings():
     )
 
 
+def _pid_settings():
+    from pid_decoder_provider import PiDSettings
+    from quality_assets import asset_by_id
+
+    return PiDSettings(
+        decoder_path=str(asset_by_id("pid_qwenimage_decoder").local_path),
+        text_encoder_path=str(asset_by_id("pid_gemma_text_encoder").local_path),
+    )
+
+
 @app.get("/api/gguf/status")
 async def gguf_status_endpoint():
     fields = {
@@ -2205,6 +2225,15 @@ async def gguf_status_endpoint():
             for key, value in fields.items()
         },
     }
+
+
+@app.get("/api/pid/status")
+async def pid_status_endpoint():
+    from pid_decoder_provider import pid_status
+    from system_check import get_gpu_info
+
+    _name, _total, free = get_gpu_info()
+    return pid_status(_pid_settings(), free_vram_gb=free)
 
 
 @app.post("/api/gguf/test-runtime")

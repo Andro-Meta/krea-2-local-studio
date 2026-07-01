@@ -442,8 +442,31 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(specs["qwen3vl_abliterated_fp8"].repo_id, "ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy")
         self.assertEqual(specs["gguf_krea2_turbo_q4km"].filename, "Krea-2-Turbo-Q4_K_M.gguf")
         self.assertEqual(specs["gguf_qwen3vl_4b_q4km"].filename, "Qwen3VL-4B-Instruct-Q4_K_M.gguf")
+        self.assertEqual(specs["pid_qwenimage_decoder"].filename, "diffusion_models/pid_qwenimage_1024_to_4096_4step_bf16.safetensors")
         self.assertFalse(specs["krea2_filter_bypass"].download_enabled)
         self.assertEqual(specs["flux_fill"].repo_id, "black-forest-labs/FLUX.1-Fill-dev")
+
+    def test_pid_upscale_dispatches_to_provider(self) -> None:
+        from fastapi.testclient import TestClient
+        from PIL import Image
+        import base64
+        import io
+        import main
+
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), "black").save(buf, format="PNG")
+        payload = base64.b64encode(buf.getvalue()).decode()
+
+        with (
+            patch("main.pipeline.is_loaded", return_value=True),
+            patch("pid_decoder_provider.upscale_pid", return_value=Image.new("RGB", (16, 16), "white")) as provider,
+            TestClient(main.app) as client,
+        ):
+            response = client.post("/api/upscale", json={"image_b64": payload, "method": "pid_upscale", "prompt": "test"})
+
+        self.assertEqual(response.status_code, 200)
+        provider.assert_called_once()
+        self.assertIn("image_b64", response.json())
 
     def test_flux_asset_status_guides_token_setup(self) -> None:
         import quality_assets

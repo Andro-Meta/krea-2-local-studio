@@ -703,6 +703,7 @@ export const apiFetch = {
   testGgufRuntime: () => api.post<{ ok: boolean; command: string[]; output: string }>('/api/gguf/test-runtime').then(r => r.data),
 
   int8Status: () => api.get<{ ok: boolean; torch: string; cuda?: string | null; torch_int_mm: boolean; comfy_kitchen: boolean; triton: boolean; diffusion_engine: string; assets: Record<string, QualityAsset & { configured_path: string; inspection?: Record<string, any>; inspection_error?: string }> }>('/api/int8/status').then(r => r.data),
+  pidStatus: () => api.get<{ available: boolean; enabled: boolean; estimated_vram_gb: number; blocked_reasons: string[]; assets: Record<string, { path: string; installed: boolean }>; accelerators: Record<string, any> }>('/api/pid/status').then(r => r.data),
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
   installTritonWindows: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-triton-windows', {}, { timeout: 600000 }).then(r => r.data),
   installSageAttention: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-sageattention', {}, { timeout: 600000 }).then(r => r.data),

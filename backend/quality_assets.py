@@ -108,6 +108,22 @@ def asset_specs() -> list[QualityAssetSpec]:
             purpose="Abliterated Qwen3-VL FP8 text encoder from the referenced Krea2 Turbo workflow (experimental, higher safety risk)",
         ),
         QualityAssetSpec(
+            id="pid_gemma_text_encoder",
+            repo_id="Comfy-Org/PixelDiT",
+            filename="text_encoders/gemma_2_2b_it_elm_bf16.safetensors",
+            local_path=text_encoder_dir / "gemma_2_2b_it_elm_bf16.safetensors",
+            kind="file",
+            purpose="PiD/PixelDiT Gemma text encoder used by the optional PiD high-resolution decoder",
+        ),
+        QualityAssetSpec(
+            id="pid_qwenimage_decoder",
+            repo_id="Comfy-Org/PixelDiT",
+            filename="diffusion_models/pid_qwenimage_1024_to_4096_4step_bf16.safetensors",
+            local_path=diffusion_dir / "pid_qwenimage_1024_to_4096_4step_bf16.safetensors",
+            kind="file",
+            purpose="PiD Qwen-Image 1024-to-4096 4-step pixel diffusion decoder",
+        ),
+        QualityAssetSpec(
             id="krea2_realism_v1_lora",
             repo_id="RudySen/Krea2-realism-V1",
             filename="Krea2-realism-V1.safetensors",
