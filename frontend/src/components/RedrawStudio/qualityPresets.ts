@@ -1,3 +1,4 @@
+import type { ActiveLora } from '../../store'
 import type { GenerationRequest, LoraInfo } from '../../api'
 
 export type RedrawQualityMode = 'fast' | 'balanced' | 'best' | 'raw_benchmark'
@@ -11,6 +12,7 @@ export type RedrawTaskKind =
   | 'moodboard'
   | 'preserve_whole'
   | 'preserve_masked'
+  | 'nk2e_edit'
 
 export interface RedrawQualityPreset {
   task: RedrawTaskKind
@@ -103,6 +105,14 @@ const base: Record<RedrawTaskKind, Omit<RedrawQualityPreset, 'qualityMode' | 'st
     promptHint: 'Describe exactly what should appear inside the mask and preserve unmasked pixels.',
     warning: 'Masked precision edits are best with FLUX Fill installed. Krea native fallback may alter nearby pixels.',
   },
+  nk2e_edit: {
+    task: 'nk2e_edit',
+    moodboardStrength: 0.3,
+    denoise: 0.45,
+    editProvider: 'krea_native',
+    promptHint: 'Use NK2E for localized instruction edits while preserving identity and composition. Avoid large scene, pose, or background replacements.',
+    warning: 'Experimental NK2E preset: best for local edits like hair, accessories, objects, lighting, and style; weak for major structure changes.',
+  },
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -126,12 +136,13 @@ export function presetFor(task: RedrawTaskKind, qualityMode: RedrawQualityMode):
   }
 }
 
-export function loraToGeneration(lora: LoraInfo | null) {
+export function loraToGeneration(lora: LoraInfo | null): ActiveLora[] {
   if (!lora) return []
   return [{
     name: lora.name,
     filename: lora.filename,
     strength: lora.strength,
     enabled: true,
+    block_filter: lora.name === 'nk2e_v01' ? 'all' : 'style_safe',
   }]
 }

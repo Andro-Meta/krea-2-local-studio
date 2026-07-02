@@ -404,6 +404,7 @@ export interface AppSettings {
   prompt_expander_backend: 'local' | 'openrouter' | 'ideogram-json'
   local_llm_backend: 'transformers' | 'gguf_server'
   local_qwen_model_id: string
+  local_qwen_device: 'auto' | 'cuda' | 'cpu'
   gguf_helper_base_url: string
   gguf_helper_model: string
   gguf_helper_timeout_sec: number
@@ -414,6 +415,9 @@ export interface AppSettings {
   openrouter_free_only: boolean
   krea_share_auto_funnel: boolean
   krea2_vae_path: string
+  krea2_vae_mode: 'qwen' | 'comfy_qwen' | 'qwen_wan_blend' | 'wan_experimental'
+  krea2_vae_blend_radius: number
+  krea2_vae_blend_strength: number
   krea_attention_backend: 'sdpa' | 'sage'
   has_hf_token: boolean
   has_civitai_token: boolean
@@ -699,7 +703,7 @@ export const apiFetch = {
   installSageAttention: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-sageattention', {}, { timeout: 600000 }).then(r => r.data),
 
   expandPrompt: (prompt: string) =>
-    api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' }>('/api/expand-prompt', { prompt }).then(r => r.data),
+    api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' | 'gguf-server' }>('/api/expand-prompt', { prompt }).then(r => r.data),
   planPrompt: (prompt: string, max_tokens = 700) =>
     api.post<PromptPlan>('/api/plan-prompt', { prompt, max_tokens }).then(r => r.data),
   promptingGuide: () =>

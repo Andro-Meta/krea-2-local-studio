@@ -914,10 +914,31 @@ class Krea2Pipeline:
                                 f"Block swap active: {self._blocks_to_swap}/{len(mmdit.blocks)} DiT blocks streamed from RAM. {mem_snapshot()}"
                             )
 
-                # 3. VAE (optional experimental override; falls back to stock)
+                # 3. VAE (Qwen default; optional native Comfy-Qwen/Wan blend modes)
                 watchdog.check()
+                vae_mode = str(getattr(settings, "krea2_vae_mode", "qwen") or "qwen")
                 vae_override = resolve_vae_source(getattr(settings, "krea2_vae_path", "")).get("path") or None
-                ae = QwenAutoencoder(vae_override_path=vae_override).to(device=self._device, dtype=self._dtype).eval()
+                wan_blend_path = ""
+                try:
+                    from quality_assets import asset_by_id
+
+                    if vae_mode == "comfy_qwen" and not vae_override:
+                        candidate = asset_by_id("qwen_image_comfy_vae").local_path
+                        vae_override = str(candidate) if candidate.exists() else None
+                    elif vae_mode == "wan_experimental" and not vae_override:
+                        candidate = asset_by_id("wan_2_1_vae").local_path
+                        vae_override = str(candidate) if candidate.exists() else None
+                    blend_candidate = asset_by_id("wan_2_1_vae").local_path
+                    wan_blend_path = str(blend_candidate) if blend_candidate.exists() else ""
+                except Exception:
+                    wan_blend_path = ""
+                ae = QwenAutoencoder(
+                    vae_override_path=vae_override,
+                    vae_mode=vae_mode,
+                    wan_blend_path=wan_blend_path,
+                    blend_blur_radius=int(getattr(settings, "krea2_vae_blend_radius", 24) or 24),
+                    blend_high_strength=float(getattr(settings, "krea2_vae_blend_strength", 0.65) or 0.65),
+                ).to(device=self._device, dtype=self._dtype).eval()
                 logger.info(f"VAE loaded ({getattr(ae, 'vae_source', 'stock')}). {mem_snapshot()}")
 
                 # 4. Encoder — kept on CPU, moved to GPU only during encoding.

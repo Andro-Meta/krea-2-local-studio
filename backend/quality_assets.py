@@ -25,6 +25,7 @@ def asset_specs() -> list[QualityAssetSpec]:
     diffusion_dir = MODELS_DIR / "krea2" / "diffusion_models"
     vae_dir = MODELS_DIR / "krea2" / "vae"
     text_encoder_dir = MODELS_DIR / "krea2" / "text_encoders"
+    lora_dir = MODELS_DIR / "loras"
     gguf_dir = MODELS_DIR / "gguf"
     return [
         QualityAssetSpec(
@@ -97,7 +98,23 @@ def asset_specs() -> list[QualityAssetSpec]:
             filename="split_files/vae/wan_2.1_vae.safetensors",
             local_path=vae_dir / "wan_2.1_vae.safetensors",
             kind="file",
-            purpose="Wan 2.1 VAE used by native Krea2 workflows and community Comfy workflows",
+            purpose="Generic Wan 2.1 video VAE; experimental for Krea/Qwen image decode and useful as a high-frequency blend source",
+        ),
+        QualityAssetSpec(
+            id="qwen_image_comfy_vae",
+            repo_id="Comfy-Org/Qwen-Image_ComfyUI",
+            filename="split_files/vae/qwen_image_vae.safetensors",
+            local_path=vae_dir / "qwen_image_vae.safetensors",
+            kind="file",
+            purpose="Comfy-format Qwen Image VAE with Wan-like key layout and Qwen-specific weights",
+        ),
+        QualityAssetSpec(
+            id="spacepxl_wan_2x_vae",
+            repo_id="spacepxl/Wan2.1-VAE-upscale2x",
+            filename="Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors",
+            local_path=vae_dir / "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors",
+            kind="file",
+            purpose="Image-only Wan/Qwen 2x VAE decoder; outputs 12 channels and requires pixel shuffle",
         ),
         QualityAssetSpec(
             id="qwen3vl_abliterated_fp8",
@@ -156,6 +173,40 @@ def asset_specs() -> list[QualityAssetSpec]:
             purpose="Filter-bypass LoRA referenced by the workflow at strength 4.0",
             download_enabled=False,
             disabled_reason="Blocked: this asset is explicitly intended to bypass safety/filter behavior and should not be auto-downloaded by Krea Studio.",
+        ),
+        QualityAssetSpec(
+            id="k2q_turbo_lora_rank64",
+            repo_id="silveroxides/K2Q",
+            filename="krea2_turbo_lora_rank_64_final_nodiff.safetensors",
+            local_path=lora_dir / "k2q_turbo_lora_rank64.safetensors",
+            kind="file",
+            purpose="Optional K2Q Turbo distillation LoRA rank 64 for RAW + Turbo-LoRA benchmarking",
+        ),
+        QualityAssetSpec(
+            id="k2q_turbo_lora_rank128",
+            repo_id="silveroxides/K2Q",
+            filename="krea2_turbo_lora_rank_128_final_nodiff.safetensors",
+            local_path=lora_dir / "k2q_turbo_lora_rank128.safetensors",
+            kind="file",
+            purpose="Optional K2Q Turbo distillation LoRA rank 128 for RAW + Turbo-LoRA benchmarking",
+        ),
+        QualityAssetSpec(
+            id="nk2e_v01_lora",
+            repo_id="nynxz/NK2E",
+            filename="comfy/v0.1/NK2E-v0.1.safetensors",
+            local_path=lora_dir / "nk2e_v01.safetensors",
+            kind="file",
+            purpose="Experimental NK2E in-context edit LoRA for Redraw/img2img",
+        ),
+        QualityAssetSpec(
+            id="k2q_filter_bypass_projectors",
+            repo_id="silveroxides/K2Q",
+            filename=None,
+            local_path=lora_dir / "k2q_filter_bypass_projectors",
+            kind="snapshot",
+            purpose="K2Q txtfusion projector bypass files are blocked from auto-download",
+            download_enabled=False,
+            disabled_reason="Blocked: projector bypass assets can weaken safety/filter behavior and are manual-only.",
         ),
         QualityAssetSpec(
             id="gguf_krea2_turbo_q4km",

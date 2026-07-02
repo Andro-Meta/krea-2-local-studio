@@ -122,6 +122,15 @@ def funnel_status() -> dict:
     }
 
 
+def _krea_proxy_ports_from_funnel_output(output: str) -> list[int]:
+    ports: list[int] = []
+    for match in re.finditer(r"\|--\s+/krea\s+proxy\s+https?://127\.0\.0\.1:(\d+)", str(output or ""), flags=re.I):
+        port = int(match.group(1))
+        if port not in ports:
+            ports.append(port)
+    return ports
+
+
 def start_funnel(port: int = PORT) -> dict:
     args = ["funnel", f"--set-path={PUBLIC_PATH}", "--bg", "--yes", f"127.0.0.1:{port}"]
     res = _run_tailscale(args, timeout=45)
@@ -152,14 +161,38 @@ def start_funnel(port: int = PORT) -> dict:
 
 
 def local_krea_target_status(port: int = PORT) -> dict:
-    url = f"http://127.0.0.1:{int(port)}{PUBLIC_PATH}/api/auth/me"
+    ports = [int(port)]
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            body = response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        return {"ok": False, "url": url, "auth_required": False, "message": f"Local Krea returned HTTP {exc.code}."}
+        status = funnel_status()
+        for candidate in _krea_proxy_ports_from_funnel_output(status.get("message", "")):
+            if candidate not in ports:
+                ports.append(candidate)
     except Exception:
-        return {"ok": False, "url": url, "auth_required": False, "message": "Local Krea is not reachable on the expected sharing port."}
+        pass
+    last_url = ""
+    last_error = ""
+    body = ""
+    for candidate_port in ports:
+        url = f"http://127.0.0.1:{int(candidate_port)}{PUBLIC_PATH}/api/auth/me"
+        last_url = url
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                body = response.read().decode("utf-8", errors="replace")
+            break
+        except urllib.error.HTTPError as exc:
+            return {"ok": False, "url": url, "auth_required": False, "message": f"Local Krea returned HTTP {exc.code}."}
+        except Exception as exc:
+            last_error = str(exc)
+    else:
+        return {
+            "ok": False,
+            "url": last_url or f"http://127.0.0.1:{int(port)}{PUBLIC_PATH}/api/auth/me",
+            "auth_required": False,
+            "message": (
+                "Local Krea is not reachable on the expected sharing port. "
+                f"Checked ports {ports}. {last_error}".strip()
+            ),
+        }
     try:
         data = json.loads(body or "{}")
     except json.JSONDecodeError:

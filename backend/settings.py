@@ -40,7 +40,10 @@ class AppSettings(BaseSettings):
     krea2_auto_checkpoint: str = ""   # path to auto-load on startup
     krea2_auto_quant: str = "bf16"    # bf16, fp16, fp8, gguf, or int8
     krea2_blocks_to_swap: int = 0     # low-VRAM: stream last N DiT blocks from RAM (0 = off)
-    krea2_vae_path: str = ""          # optional override VAE (HDR/real/clear); empty = stock Qwen VAE
+    krea2_vae_path: str = ""          # optional manual VAE override; empty = stock Qwen VAE
+    krea2_vae_mode: str = "qwen"      # qwen | comfy_qwen | qwen_wan_blend | wan_experimental
+    krea2_vae_blend_radius: int = 24
+    krea2_vae_blend_strength: float = 0.65
     krea2_fp8_fast_matmul: bool = False  # opt-in: fp8 _scaled_mm on Ada/Blackwell (faster, slight quality trade)
     krea2_moodboard_auto_enrich: bool = True  # background-precompute Qwen guidance for official moodboards when idle
     krea2_torch_compile: bool = False  # opt-in: torch.compile the DiT (experimental; needs Triton/inductor)
@@ -96,10 +99,6 @@ if not settings.krea2_raw_int8_path:
         if _c.exists():
             settings.krea2_raw_int8_path = str(_c)
             break
-if not settings.krea2_vae_path:
-    _AUTO_WAN_VAE = _KREA2_DIR / "vae" / "wan_2.1_vae.safetensors"
-    if _AUTO_WAN_VAE.exists():
-        settings.krea2_vae_path = str(_AUTO_WAN_VAE)
 if not settings.krea2_auto_checkpoint and settings.krea2_turbo_path:
     settings.krea2_auto_checkpoint = settings.krea2_turbo_path
 

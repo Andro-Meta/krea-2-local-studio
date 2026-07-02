@@ -97,6 +97,10 @@ export default function LoraSection() {
     const isDownloading = downloading[lora.name]
     const disabled = lora.installed && lora.compatible === false
     const canDownload = lora.download_enabled !== false
+    const isBypass = lora.name === 'krea2filterbypass3'
+    const strengthMin = isBypass ? -40000 : -4
+    const strengthMax = isBypass ? 40000 : 4
+    const strengthStep = isBypass ? 1 : 0.05
     return (
       <Box
         key={lora.name}
@@ -170,41 +174,69 @@ export default function LoraSection() {
           )}
         </Stack>
         {active && lora.installed && (
-          <Stack spacing={0.5} sx={{ pt: 0.85 }}>
+          <Stack spacing={1.25} sx={{ pt: 1.1 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                Strength: {active.strength.toFixed(2)}
+                Strength: {isBypass ? Math.round(active.strength).toLocaleString() : active.strength.toFixed(2)}
               </Typography>
               <Typography variant="caption" sx={{ color: 'text.disabled' }}>
                 negative avoids · positive applies
               </Typography>
             </Stack>
-            <Slider
-              value={active.strength}
-              min={-4} max={4} step={0.05}
-              marks={[
-                { value: -2, label: 'avoid' },
-                { value: 0, label: 'off' },
-                { value: 2, label: 'apply' },
-                { value: 4, label: 'max' },
-              ]}
-              onChange={(_, v) => setStrength(lora.name, v as number)}
-              size="small"
-              valueLabelDisplay="auto"
-            />
-            <TextField
-              select
-              size="small"
-              label="Block filter"
-              value={active.block_filter ?? 'all'}
-              onChange={e => setBlockFilter(lora.name, e.target.value as typeof BLOCK_FILTERS[number])}
-              helperText={(active.block_filter ?? 'all') === 'style_safe' ? 'Recommended for Krea style LoRAs' : undefined}
-              sx={{ maxWidth: 220 }}
-            >
-              {BLOCK_FILTERS.map(filter => (
-                <MenuItem key={filter} value={filter}>{filter.replace('_', '-')}</MenuItem>
-              ))}
-            </TextField>
+            <Box sx={{ px: 1.25, pb: 0.5 }}>
+              <Slider
+                value={active.strength}
+                min={strengthMin} max={strengthMax} step={strengthStep}
+                marks={isBypass
+                  ? [
+                      { value: -40000, label: '-40k' },
+                      { value: 0, label: '0' },
+                      { value: 40000, label: '+40k' },
+                    ]
+                  : [
+                      { value: -2, label: 'avoid' },
+                      { value: 0, label: 'off' },
+                      { value: 2, label: 'apply' },
+                      { value: 4, label: 'max' },
+                    ]}
+                onChange={(_, v) => setStrength(lora.name, v as number)}
+                size="small"
+                valueLabelDisplay="auto"
+                sx={{
+                  '& .MuiSlider-markLabel': {
+                    fontSize: 11,
+                    transform: 'translateX(-50%) translateY(8px)',
+                  },
+                }}
+              />
+            </Box>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-start' }}>
+              {isBypass && (
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Exact strength"
+                  value={active.strength}
+                  onChange={e => setStrength(lora.name, Math.max(-40000, Math.min(40000, Number(e.target.value) || 0)))}
+                  inputProps={{ min: -40000, max: 40000, step: 1 }}
+                  helperText="Bypass supports very high strengths; poorly quantized models may black out."
+                  sx={{ minWidth: { xs: '100%', sm: 220 } }}
+                />
+              )}
+              <TextField
+                select
+                size="small"
+                label="Block filter"
+                value={active.block_filter ?? 'all'}
+                onChange={e => setBlockFilter(lora.name, e.target.value as typeof BLOCK_FILTERS[number])}
+                helperText={(active.block_filter ?? 'all') === 'style_safe' ? 'Recommended for Krea style LoRAs' : undefined}
+                sx={{ minWidth: { xs: '100%', sm: 220 } }}
+              >
+                {BLOCK_FILTERS.map(filter => (
+                  <MenuItem key={filter} value={filter}>{filter.replace('_', '-')}</MenuItem>
+                ))}
+              </TextField>
+            </Stack>
           </Stack>
         )}
       </Box>
@@ -246,7 +278,7 @@ export default function LoraSection() {
       />
       <Stack spacing={1.25}>
         {renderGroup('Installed', installed)}
-        {renderGroup('Available official downloads', missing)}
+        {renderGroup('Available optional downloads', missing)}
       </Stack>
 
       {/* URL import */}

@@ -1493,6 +1493,7 @@ async def get_loras():
 async def download_lora(lora_name: str):
     from lora_manager import OFFICIAL_LORAS, official_lora_download_kwargs
     from huggingface_hub import hf_hub_download
+    import shutil
     if lora_name not in OFFICIAL_LORAS:
         raise HTTPException(404, f"Unknown LoRA: {lora_name}")
     loop = asyncio.get_event_loop()
@@ -1503,6 +1504,12 @@ async def download_lora(lora_name: str):
                 **official_lora_download_kwargs(lora_name, token=settings.hf_token),
             ),
         )
+        info = OFFICIAL_LORAS[lora_name]
+        if "repo_filename" in info:
+            target = LORAS_DIR / str(info.get("filename") or f"{lora_name}.safetensors")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(dest, target)
+            dest = str(target)
         return {"ok": True, "path": dest}
     except Exception:
         logger.exception("Official LoRA download failed")
@@ -1606,6 +1613,18 @@ async def upscale(req: UpscaleRequest):
                 sampler=req.sampler, scheduler=req.scheduler,
                 tile_size=req.tile_width or req.tile_size, tiled_decode=req.tiled_decode,
             )
+        )
+    elif req.method == "wan_vae_2x":
+        if not pipeline.is_loaded():
+            raise HTTPException(400, "Model must be loaded for Wan/Qwen VAE 2x decode upscale")
+        from quality_assets import asset_by_id
+        from upscaler import upscale_wan_vae_2x
+
+        vae_path = asset_by_id("spacepxl_wan_2x_vae").local_path
+        if not vae_path.exists():
+            raise HTTPException(400, "Spacepxl Wan/Qwen 2x VAE asset is not installed.")
+        result = await loop.run_in_executor(
+            None, lambda: upscale_wan_vae_2x(img, pipeline.ae, str(vae_path), device=pipeline._device, dtype=pipeline._dtype)
         )
     elif req.method == "pid_upscale":
         from pid_decoder_provider import upscale_pid
@@ -2000,6 +2019,9 @@ async def get_settings():
         "openrouter_free_only": env.get("OPENROUTER_FREE_ONLY", str(settings.openrouter_free_only)).lower() in {"1", "true", "yes"},
         "krea_share_auto_funnel": env.get("KREA_SHARE_AUTO_FUNNEL", str(settings.krea_share_auto_funnel)).lower() in {"1", "true", "yes", "on"},
         "krea2_vae_path": env.get("KREA2_VAE_PATH", settings.krea2_vae_path),
+        "krea2_vae_mode": env.get("KREA2_VAE_MODE", settings.krea2_vae_mode),
+        "krea2_vae_blend_radius": int(env.get("KREA2_VAE_BLEND_RADIUS", str(settings.krea2_vae_blend_radius)) or 24),
+        "krea2_vae_blend_strength": float(env.get("KREA2_VAE_BLEND_STRENGTH", str(settings.krea2_vae_blend_strength)) or 0.65),
         "krea_attention_backend": env.get("KREA_ATTENTION_BACKEND", settings.krea_attention_backend),
         "has_hf_token": bool(env.get("HF_TOKEN", settings.hf_token)),
         "has_civitai_token": bool(env.get("CIVITAI_TOKEN", settings.civitai_token)),
@@ -2074,6 +2096,15 @@ async def update_settings(req: SettingsUpdate):
     if req.krea2_vae_path is not None:
         env["KREA2_VAE_PATH"] = req.krea2_vae_path
         settings.krea2_vae_path = req.krea2_vae_path
+    if req.krea2_vae_mode is not None:
+        env["KREA2_VAE_MODE"] = req.krea2_vae_mode
+        settings.krea2_vae_mode = req.krea2_vae_mode
+    if req.krea2_vae_blend_radius is not None:
+        env["KREA2_VAE_BLEND_RADIUS"] = str(int(req.krea2_vae_blend_radius))
+        settings.krea2_vae_blend_radius = int(req.krea2_vae_blend_radius)
+    if req.krea2_vae_blend_strength is not None:
+        env["KREA2_VAE_BLEND_STRENGTH"] = str(float(req.krea2_vae_blend_strength))
+        settings.krea2_vae_blend_strength = float(req.krea2_vae_blend_strength)
     if req.krea_attention_backend is not None:
         env["KREA_ATTENTION_BACKEND"] = req.krea_attention_backend
         settings.krea_attention_backend = req.krea_attention_backend

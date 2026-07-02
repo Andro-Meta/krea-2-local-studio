@@ -106,6 +106,44 @@ def upscale_tiled_vae(
         return img.resize((int(round(w * scale)), int(round(h * scale))), Image.LANCZOS)
 
 
+def upscale_wan_vae_2x(
+    img: Image.Image,
+    ae,
+    vae_path: str,
+    *,
+    device: str = "cuda",
+    dtype=BFLOAT16,
+) -> Image.Image:
+    """Spacepxl Wan/Qwen image-only 2x VAE decoder.
+
+    Encodes the source image with the active Krea/Qwen VAE, then decodes that
+    latent with Spacepxl's 12-channel Wan decoder. The decoder wrapper performs
+    the required pixel_shuffle(upscale_factor=2).
+    """
+    try:
+        import numpy as np
+        from safetensors.torch import load_file
+        from krea2.wan_vae import WanAutoencoder
+
+        arr = (np.array(img.convert("RGB")).astype("float32") / 127.5) - 1.0
+        t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
+        latent = ae.encode(t)
+        decoder = WanAutoencoder(load_file(str(vae_path))).to(device=device, dtype=dtype).eval()
+        if getattr(decoder, "upscale_factor", 1) != 2:
+            raise RuntimeError("Selected VAE is not a 2x pixel-shuffle decoder.")
+        x = latent.float() * ae.latents_std + ae.latents_mean
+        x = x.unsqueeze(2).to(dtype)
+        with torch.inference_mode():
+            decoded = decoder.decode(x).sample[:, :, 0].squeeze(0).clamp(-1, 1).float()
+        pixel = ((decoded + 1.0) / 2.0 * 255).byte().permute(1, 2, 0).cpu().numpy()
+        del decoder, latent, x, decoded, t
+        return Image.fromarray(pixel)
+    except Exception as e:
+        logger.warning(f"Wan/Qwen 2x VAE decode failed ({e}); falling back to Lanczos 2x")
+        w, h = img.size
+        return img.resize((w * 2, h * 2), Image.LANCZOS)
+
+
 def upscale_model_refine(
     img: Image.Image,
     pipeline,  # Krea2Pipeline

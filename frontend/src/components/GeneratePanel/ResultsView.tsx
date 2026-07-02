@@ -30,6 +30,7 @@ const UPSCALE_METHODS = [
   },
   { key: 'realesrgan', label: 'RealESRGAN 4×', sub: 'fast, no diffusion' },
   { key: 'pid_upscale', label: 'PiD 4× native (experimental)', sub: 'loads native PiD runtime · unloads Krea first · needs ~15GB VRAM', opts: { upscale_by: 4 } },
+  { key: 'wan_vae_2x', label: 'Wan/Qwen VAE 2× decoder (experimental)', sub: 'Spacepxl image-only decoder · pixel shuffle · needs model loaded', opts: { upscale_by: 2 } },
   { key: 'tiled_vae', label: 'Tiled VAE 2×', sub: 'lossless re-decode' },
   { key: 'model_refine', label: 'Detail refine 1×', sub: 'sharpen, no resize' },
 ]

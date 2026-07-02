@@ -47,6 +47,7 @@ export default function SystemStatus() {
     krea_attention_backend: 'sdpa' as 'sdpa' | 'sage',
     local_llm_backend: 'transformers' as 'transformers' | 'gguf_server',
     local_qwen_model_id: '',
+    local_qwen_device: 'auto' as 'auto' | 'cuda' | 'cpu',
     gguf_helper_base_url: 'http://127.0.0.1:1234/v1',
     gguf_helper_model: 'BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M',
     gguf_helper_timeout_sec: 120,
@@ -55,6 +56,9 @@ export default function SystemStatus() {
     krea2_raw_int8_path: '',
     gguf_turbo_path: '',
     gguf_raw_path: '',
+    krea2_vae_mode: 'qwen' as 'qwen' | 'comfy_qwen' | 'qwen_wan_blend' | 'wan_experimental',
+    krea2_vae_blend_radius: 24,
+    krea2_vae_blend_strength: 0.65,
   })
   const [savingSettings, setSavingSettings] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState<{ severity: 'success' | 'warning' | 'error'; text: string } | null>(null)
@@ -134,6 +138,7 @@ export default function SystemStatus() {
         krea_attention_backend: s.krea_attention_backend ?? 'sdpa',
         local_llm_backend: s.local_llm_backend ?? 'transformers',
         local_qwen_model_id: s.local_qwen_model_id ?? '',
+        local_qwen_device: s.local_qwen_device ?? 'auto',
         gguf_helper_base_url: s.gguf_helper_base_url ?? 'http://127.0.0.1:1234/v1',
         gguf_helper_model: s.gguf_helper_model ?? 'BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M',
         gguf_helper_timeout_sec: s.gguf_helper_timeout_sec ?? 120,
@@ -142,6 +147,9 @@ export default function SystemStatus() {
         krea2_raw_int8_path: s.krea2_raw_int8_path ?? '',
         gguf_turbo_path: s.gguf_turbo_path ?? '',
         gguf_raw_path: s.gguf_raw_path ?? '',
+        krea2_vae_mode: s.krea2_vae_mode ?? 'qwen',
+        krea2_vae_blend_radius: s.krea2_vae_blend_radius ?? 24,
+        krea2_vae_blend_strength: s.krea2_vae_blend_strength ?? 0.65,
       })
     } catch {
       setSettingsMessage({ severity: 'error', text: 'Could not load settings.' })
@@ -259,12 +267,16 @@ export default function SystemStatus() {
         prompt_expander_backend: settingsDraft.prompt_expander_backend,
         local_llm_backend: settingsDraft.local_llm_backend,
         local_qwen_model_id: settingsDraft.local_qwen_model_id,
+        local_qwen_device: settingsDraft.local_qwen_device,
         gguf_helper_base_url: settingsDraft.gguf_helper_base_url,
         gguf_helper_model: settingsDraft.gguf_helper_model,
         gguf_helper_timeout_sec: settingsDraft.gguf_helper_timeout_sec,
         diffusion_engine: settingsDraft.diffusion_engine,
         gguf_turbo_path: settingsDraft.gguf_turbo_path,
         gguf_raw_path: settingsDraft.gguf_raw_path,
+        krea2_vae_mode: settingsDraft.krea2_vae_mode,
+        krea2_vae_blend_radius: settingsDraft.krea2_vae_blend_radius,
+        krea2_vae_blend_strength: settingsDraft.krea2_vae_blend_strength,
         ...(settingsDraft.ideogram_api_key.trim() ? { ideogram_api_key: settingsDraft.ideogram_api_key.trim() } : {}),
         openrouter_model: settingsDraft.openrouter_model,
         openrouter_free_only: settingsDraft.openrouter_free_only,
@@ -286,6 +298,7 @@ export default function SystemStatus() {
       await apiFetch.updateSettings({
         local_llm_backend: settingsDraft.local_llm_backend,
         local_qwen_model_id: settingsDraft.local_qwen_model_id,
+        local_qwen_device: settingsDraft.local_qwen_device,
         gguf_helper_base_url: settingsDraft.gguf_helper_base_url,
         gguf_helper_model: settingsDraft.gguf_helper_model,
         gguf_helper_timeout_sec: settingsDraft.gguf_helper_timeout_sec,
@@ -879,14 +892,29 @@ export default function SystemStatus() {
               />
               <Stack direction="row" spacing={1} alignItems="flex-start">
                 <TextField
+                  select
+                  label="VAE decoder mode"
+                  value={settingsDraft.krea2_vae_mode}
+                  onChange={e => setSettingsDraft(d => ({ ...d, krea2_vae_mode: e.target.value as typeof d.krea2_vae_mode }))}
+                  size="small"
+                  disabled={!isAdmin}
+                  sx={{ minWidth: 260 }}
+                  helperText="Default is stock Qwen. Wan modes are optional experiments."
+                >
+                  <MenuItem value="qwen">Qwen VAE (default)</MenuItem>
+                  <MenuItem value="comfy_qwen">Comfy Qwen VAE</MenuItem>
+                  <MenuItem value="qwen_wan_blend">Qwen + Wan detail blend</MenuItem>
+                  <MenuItem value="wan_experimental">Generic Wan 2.1 (experimental)</MenuItem>
+                </TextField>
+                <TextField
                   label="VAE path"
                   value={vaePath}
                   onChange={e => setVaePath(e.target.value)}
                   size="small"
                   fullWidth
                   disabled={!isAdmin}
-                  placeholder="models\krea2\vae\wan_2.1_vae.safetensors"
-                  helperText="Default: Wan 2.1 VAE when present. Empty falls back to stock Qwen VAE. Applies on next model load."
+                  placeholder="Optional manual VAE override path"
+                  helperText="Optional manual override. Leave empty for selected mode's default asset. Applies on next model load."
                 />
                 <Button
                   variant="outlined" size="small" sx={{ mt: 0.5 }}
@@ -894,8 +922,13 @@ export default function SystemStatus() {
                   onClick={async () => {
                     setVaeSaving(true)
                     try {
-                      await apiFetch.updateSettings({ krea2_vae_path: vaePath })
-                      setSettingsMessage({ severity: 'success', text: 'VAE path saved. Reload the model to apply.' })
+                      await apiFetch.updateSettings({
+                        krea2_vae_path: vaePath,
+                        krea2_vae_mode: settingsDraft.krea2_vae_mode,
+                        krea2_vae_blend_radius: settingsDraft.krea2_vae_blend_radius,
+                        krea2_vae_blend_strength: settingsDraft.krea2_vae_blend_strength,
+                      })
+                      setSettingsMessage({ severity: 'success', text: 'VAE settings saved. Reload the model to apply.' })
                     } catch (e: any) {
                       setSettingsMessage({ severity: 'error', text: e?.response?.data?.detail ?? 'Could not save VAE path.' })
                     } finally {
@@ -906,6 +939,28 @@ export default function SystemStatus() {
                   Save
                 </Button>
               </Stack>
+              {settingsDraft.krea2_vae_mode === 'qwen_wan_blend' && (
+                <Stack direction="row" spacing={1}>
+                  <TextField
+                    label="Blend blur radius"
+                    type="number"
+                    size="small"
+                    value={settingsDraft.krea2_vae_blend_radius}
+                    onChange={e => setSettingsDraft(d => ({ ...d, krea2_vae_blend_radius: Math.max(1, Number(e.target.value) || 24) }))}
+                    inputProps={{ min: 1, max: 128, step: 1 }}
+                    helperText="Start 15-30"
+                  />
+                  <TextField
+                    label="Wan detail strength"
+                    type="number"
+                    size="small"
+                    value={settingsDraft.krea2_vae_blend_strength}
+                    onChange={e => setSettingsDraft(d => ({ ...d, krea2_vae_blend_strength: Math.max(0, Math.min(2, Number(e.target.value) || 0.65)) }))}
+                    inputProps={{ min: 0, max: 2, step: 0.05 }}
+                    helperText="Start 0.5-0.8"
+                  />
+                </Stack>
+              )}
               {loadError && <Alert severity="error" sx={{ py: 0 }}>{loadError}</Alert>}
               <Stack direction="row" spacing={1} flexWrap="wrap">
                 <Button
@@ -1163,6 +1218,19 @@ export default function SystemStatus() {
                     placeholder="HF repo id or local model folder"
                   />
                 )}
+                <TextField
+                  select
+                  label="Local Qwen device"
+                  value={settingsDraft.local_qwen_device}
+                  onChange={e => setSettingsDraft(d => ({ ...d, local_qwen_device: e.target.value as typeof d.local_qwen_device }))}
+                  size="small"
+                  fullWidth
+                  helperText="Auto uses CUDA only when VRAM is safe; otherwise CPU to avoid native crashes."
+                >
+                  <MenuItem value="auto">Auto safe</MenuItem>
+                  <MenuItem value="cpu">CPU</MenuItem>
+                  <MenuItem value="cuda">CUDA</MenuItem>
+                </TextField>
               </Stack>
             )}
             {settingsDraft.local_llm_backend === 'gguf_server' && (
@@ -1315,7 +1383,7 @@ export default function SystemStatus() {
           <Stack spacing={1.25}>
             <Typography variant="h6">Native Low-VRAM Diffusion</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              GGUF and INT8 are loaded in-process through Krea's native sampler, Qwen conditioning, LoRA, moodboard, and Wan 2.1 VAE path. No stable-diffusion.cpp sidecar is used.
+              GGUF and INT8 are loaded in-process through Krea's native sampler, Qwen conditioning, LoRA, moodboards, and the selected native VAE mode. No stable-diffusion.cpp sidecar is used.
             </Typography>
             <Button
               variant="contained"

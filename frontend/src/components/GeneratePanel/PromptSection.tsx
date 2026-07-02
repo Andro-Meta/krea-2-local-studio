@@ -20,35 +20,46 @@ function modelFromWandChoice(choice: string, current: string) {
 }
 
 export default function PromptSection() {
-  const { params, setParam, setParams, setLoras } = useStore()
+  const { params, setParam, setParams, setLoras, setPromptBusy } = useStore()
   const [expanding, setExpanding] = useState(false)
   const [planning, setPlanning] = useState(false)
   const [xperimenting, setXperimenting] = useState(false)
   const [plan, setPlan] = useState<PromptPlan | null>(null)
   const [notice, setNotice] = useState<{ message: string; severity: 'success' | 'warning' | 'error' } | null>(null)
   const [wandModel, setWandModel] = useState('')
+  const [wandBackend, setWandBackend] = useState<'local' | 'openrouter' | 'ideogram-json'>('local')
+  const [localLlmBackend, setLocalLlmBackend] = useState<'transformers' | 'gguf_server'>('transformers')
+  const [wandDevice, setWandDevice] = useState<'auto' | 'cuda' | 'cpu'>('auto')
+  const [showWandAdvanced, setShowWandAdvanced] = useState(false)
 
   useEffect(() => {
     apiFetch.settings()
-      .then(settings => setWandModel(settings.local_qwen_model_id ?? ''))
+      .then(settings => {
+        setWandModel(settings.local_qwen_model_id ?? '')
+        setWandBackend(settings.prompt_expander_backend ?? 'local')
+        setLocalLlmBackend(settings.local_llm_backend ?? 'transformers')
+        setWandDevice(settings.local_qwen_device ?? 'auto')
+      })
       .catch(() => undefined)
   }, [])
 
   const handleExpand = async () => {
     if (!params.prompt || expanding) return
     setExpanding(true)
+    setPromptBusy(true)
     try {
       await apiFetch.updateSettings({
-        prompt_expander_backend: 'local',
-        local_llm_backend: 'transformers',
+        prompt_expander_backend: wandBackend,
+        local_llm_backend: localLlmBackend,
         local_qwen_model_id: wandModel,
+        local_qwen_device: wandDevice,
       })
       const { expanded, changed, error, backend } = await apiFetch.expandPrompt(params.prompt)
       if (changed && expanded) {
         setParam('prompt', expanded)
-        const label = wandChoiceFromModel(wandModel) === 'abliterated'
+        const label = wandBackend === 'local' && localLlmBackend === 'transformers' && wandChoiceFromModel(wandModel) === 'abliterated'
           ? 'Abliterated Qwen3-VL'
-          : backend === 'openrouter' ? 'OpenRouter' : backend === 'ideogram-json' ? 'Ideogram JSON' : 'Local Qwen3-VL'
+          : backend === 'openrouter' ? 'OpenRouter' : backend === 'ideogram-json' ? 'Ideogram JSON' : localLlmBackend === 'gguf_server' ? 'local GGUF helper' : 'Local Qwen3-VL'
         setNotice({ severity: 'success', message: `Prompt expanded with ${label}.` })
       } else if (error) {
         setNotice({ severity: 'warning', message: error })
@@ -59,6 +70,7 @@ export default function PromptSection() {
       setNotice({ severity: 'error', message: err instanceof Error ? err.message : 'Prompt expansion failed.' })
     } finally {
       setExpanding(false)
+      setPromptBusy(false)
     }
   }
 
@@ -144,7 +156,7 @@ export default function PromptSection() {
           <Box>
             <Typography variant="subtitle2">Xperiment Settings</Typography>
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-              One-click Krea2 Turbo setup: assets, Wan VAE override, 6 steps, CFG 0, beta57, and Realism LoKr late@0.55.
+              One-click Krea2 Turbo setup: assets, Qwen VAE default, 6 steps, CFG 0, beta57, and Realism LoKr late@0.55.
             </Typography>
           </Box>
           <Button
@@ -170,7 +182,8 @@ export default function PromptSection() {
           onChange={e => setParam('prompt', e.target.value)}
           placeholder="Describe the image you want to create…"
         />
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
+        <Stack spacing={1}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'flex-start' }}>
           <CreatePromptFromImage
             value={params.prompt}
             onChange={prompt => setParam('prompt', prompt)}
@@ -178,34 +191,48 @@ export default function PromptSection() {
           />
           <TextField
             select
-            label="Wand model"
-            value={wandChoiceFromModel(wandModel)}
-            onChange={e => setWandModel(modelFromWandChoice(e.target.value, wandModel))}
+            label="Wand backend"
+            value={wandBackend}
+            onChange={e => setWandBackend(e.target.value as typeof wandBackend)}
             size="small"
-            sx={{ minWidth: { xs: '100%', sm: 260 } }}
-            helperText="Controls the Magic wand prompt expander."
+            sx={{ minWidth: { xs: '100%', sm: 210 } }}
+            helperText="Which backend expands prompts."
           >
-            <MenuItem value="default">Default Qwen3-VL</MenuItem>
-            <MenuItem value="abliterated">Abliterated Qwen3-VL</MenuItem>
-            <MenuItem value="custom">Custom repo/path</MenuItem>
+            <MenuItem value="local">Local</MenuItem>
+            <MenuItem value="openrouter">OpenRouter</MenuItem>
+            <MenuItem value="ideogram-json">Ideogram</MenuItem>
           </TextField>
-          {wandChoiceFromModel(wandModel) === 'custom' && (
+          {wandBackend === 'local' && localLlmBackend === 'transformers' && (
             <TextField
-              label="Custom wand model"
-              value={wandModel}
-              onChange={e => setWandModel(e.target.value)}
+              select
+              label="Wand model"
+              value={wandChoiceFromModel(wandModel)}
+              onChange={e => setWandModel(modelFromWandChoice(e.target.value, wandModel))}
               size="small"
-              sx={{ minWidth: { xs: '100%', sm: 260 } }}
-            />
+              sx={{ minWidth: { xs: '100%', md: 260 } }}
+              helperText="Default or abliterated."
+            >
+              <MenuItem value="default">Default Qwen3-VL</MenuItem>
+              <MenuItem value="abliterated">Abliterated Qwen3-VL</MenuItem>
+              <MenuItem value="custom">Custom repo/path</MenuItem>
+            </TextField>
           )}
           <Button
             variant="outlined"
             onClick={handleExpand}
             disabled={expanding || !params.prompt}
             startIcon={expanding ? <CircularProgress size={16} color="inherit" /> : <AutoFixHighIcon />}
-            sx={{ alignSelf: { xs: 'stretch', sm: 'flex-start' }, minHeight: 40 }}
+            sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}
           >
             Magic wand
+          </Button>
+          <Button
+            variant="text"
+            size="small"
+            onClick={() => setShowWandAdvanced(v => !v)}
+            sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}
+          >
+            {showWandAdvanced ? 'Hide wand settings' : 'Wand settings'}
           </Button>
           <Tooltip
             title={
@@ -216,10 +243,55 @@ export default function PromptSection() {
               </span>
             }
           >
-            <Button variant="text" size="small" startIcon={<TipsAndUpdatesIcon fontSize="small" />}>
+            <Button variant="text" size="small" startIcon={<TipsAndUpdatesIcon fontSize="small" />} sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}>
               Prompt tips
             </Button>
           </Tooltip>
+          </Stack>
+          <Collapse in={showWandAdvanced}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-start' }} sx={{ pt: 0.5 }}>
+              {wandBackend === 'local' && (
+            <TextField
+              select
+              label="Local helper"
+              value={localLlmBackend}
+              onChange={e => setLocalLlmBackend(e.target.value as typeof localLlmBackend)}
+              size="small"
+              sx={{ minWidth: { xs: '100%', sm: 210 } }}
+              helperText="Transformers can use vision; GGUF is text-only."
+            >
+              <MenuItem value="transformers">Qwen3-VL Transformers</MenuItem>
+              <MenuItem value="gguf_server">GGUF server</MenuItem>
+            </TextField>
+          )}
+          {wandBackend === 'local' && localLlmBackend === 'transformers' && (
+            <>
+              <TextField
+                select
+                label="Wand device"
+                value={wandDevice}
+                onChange={e => setWandDevice(e.target.value as typeof wandDevice)}
+                size="small"
+                sx={{ minWidth: { xs: '100%', sm: 160 } }}
+                helperText="Auto avoids VRAM crashes."
+              >
+                <MenuItem value="auto">Auto safe</MenuItem>
+                <MenuItem value="cpu">CPU</MenuItem>
+                <MenuItem value="cuda">CUDA</MenuItem>
+              </TextField>
+            </>
+          )}
+          {wandBackend === 'local' && localLlmBackend === 'transformers' && wandChoiceFromModel(wandModel) === 'custom' && (
+              <TextField
+                label="Custom wand model"
+                value={wandModel}
+                onChange={e => setWandModel(e.target.value)}
+                size="small"
+                sx={{ minWidth: { xs: '100%', sm: 260 } }}
+              />
+          )}
+            </Stack>
+          </Collapse>
         </Stack>
       </Stack>
       <Paper variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>

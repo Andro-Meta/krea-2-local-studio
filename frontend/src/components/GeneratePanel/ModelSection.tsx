@@ -1,5 +1,6 @@
-import React from 'react'
-import { Box, Chip, Stack, Tooltip, Typography } from '@mui/material'
+import React, { useEffect, useState } from 'react'
+import { Alert, Box, Button, Chip, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material'
+import { apiFetch, type AppSettings } from '../../api'
 import { useStore } from '../../store'
 
 const PROFILES = [
@@ -45,9 +46,44 @@ const QUANTS = [
 
 export default function ModelSection() {
   const { params, setParam, setParams, systemReport, engineCatalog } = useStore()
+  const [runtimeSettings, setRuntimeSettings] = useState<AppSettings | null>(null)
+  const [savingRuntime, setSavingRuntime] = useState(false)
+  const [runtimeMessage, setRuntimeMessage] = useState<{ severity: 'success' | 'warning' | 'error'; text: string } | null>(null)
   const loaded = systemReport?.model_status?.loaded
   const loadedCp = systemReport?.model_status?.checkpoint ?? ''
   const engines = engineCatalog?.engines ?? []
+  const textEncoder = systemReport?.model_status?.text_encoder_source
+  const vaeMode = runtimeSettings?.krea2_vae_mode ?? 'qwen'
+  const blendRadius = runtimeSettings?.krea2_vae_blend_radius ?? 24
+  const blendStrength = runtimeSettings?.krea2_vae_blend_strength ?? 0.65
+
+  useEffect(() => {
+    apiFetch.settings().then(setRuntimeSettings).catch(() => undefined)
+  }, [])
+
+  const updateRuntimeSettings = (patch: Partial<AppSettings>) => {
+    setRuntimeSettings(current => current ? { ...current, ...patch } : current)
+    setRuntimeMessage(null)
+  }
+
+  const saveRuntimeSettings = async () => {
+    if (!runtimeSettings) return
+    setSavingRuntime(true)
+    setRuntimeMessage(null)
+    try {
+      await apiFetch.updateSettings({
+        krea2_vae_mode: runtimeSettings.krea2_vae_mode,
+        krea2_vae_blend_radius: runtimeSettings.krea2_vae_blend_radius,
+        krea2_vae_blend_strength: runtimeSettings.krea2_vae_blend_strength,
+        krea2_vae_path: runtimeSettings.krea2_vae_path,
+      })
+      setRuntimeMessage({ severity: 'success', text: 'Decoder settings saved. Reload the model to apply them.' })
+    } catch (error: any) {
+      setRuntimeMessage({ severity: 'error', text: error?.response?.data?.detail ?? error.message ?? 'Could not save decoder settings.' })
+    } finally {
+      setSavingRuntime(false)
+    }
+  }
   const applyTurboDefaults = (diffusionEngine: typeof params.diffusion_engine = 'native_pytorch') => {
     setParams({
       diffusion_engine: diffusionEngine,
@@ -164,6 +200,68 @@ export default function ModelSection() {
             </Tooltip>
           ))}
         </Stack>
+        <Box>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5 }}>
+            VAE decoder mode
+          </Typography>
+          <Stack spacing={1}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+              <TextField
+                select
+                size="small"
+                label="Decoder"
+                value={vaeMode}
+                onChange={e => updateRuntimeSettings({ krea2_vae_mode: e.target.value as AppSettings['krea2_vae_mode'] })}
+                helperText="Applies after model reload. Qwen is the current default."
+                sx={{ minWidth: 240 }}
+              >
+                <MenuItem value="qwen">Qwen VAE (default)</MenuItem>
+                <MenuItem value="comfy_qwen">Comfy Qwen VAE</MenuItem>
+                <MenuItem value="qwen_wan_blend">Qwen + Wan detail blend</MenuItem>
+                <MenuItem value="wan_experimental">Generic Wan 2.1 (experimental)</MenuItem>
+              </TextField>
+              {vaeMode === 'qwen_wan_blend' && (
+                <>
+                  <TextField
+                    size="small"
+                    type="number"
+                    label="Blend radius"
+                    value={blendRadius}
+                    onChange={e => updateRuntimeSettings({ krea2_vae_blend_radius: Math.max(1, Number(e.target.value) || 24) })}
+                    inputProps={{ min: 1, max: 128, step: 1 }}
+                    sx={{ width: 140 }}
+                  />
+                  <TextField
+                    size="small"
+                    type="number"
+                    label="Wan detail"
+                    value={blendStrength}
+                    onChange={e => updateRuntimeSettings({ krea2_vae_blend_strength: Math.max(0, Math.min(2, Number(e.target.value) || 0.65)) })}
+                    inputProps={{ min: 0, max: 2, step: 0.05 }}
+                    sx={{ width: 140 }}
+                  />
+                </>
+              )}
+              <Button size="small" variant="outlined" onClick={saveRuntimeSettings} disabled={!runtimeSettings || savingRuntime}>
+                Save decoder
+              </Button>
+            </Stack>
+            <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+              `Qwen + Wan detail blend` decodes Qwen for base/color and injects high-frequency Wan detail. Generic Wan is manual/experimental.
+            </Typography>
+            {runtimeMessage && <Alert severity={runtimeMessage.severity} sx={{ py: 0 }}>{runtimeMessage.text}</Alert>}
+          </Stack>
+        </Box>
+        <Box>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+            Generation text encoder / CLIP
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', wordBreak: 'break-all' }}>
+            Krea 2 uses Qwen3-VL conditioning, not CLIP-L/T5. Runtime: {textEncoder?.kind ?? 'not loaded'}
+            {textEncoder?.runtime ? ` · ${textEncoder.runtime}` : ''}
+            {textEncoder?.status ? ` · ${textEncoder.status}` : ''}
+          </Typography>
+        </Box>
         {loaded && loadedCp && (
           <Typography variant="caption" sx={{ color: 'success.main', wordBreak: 'break-all' }}>
             Loaded: {loadedCp.split(/[\\/]/).pop()}

@@ -226,40 +226,41 @@ def _fallback_guidance(sources: list[MoodboardSource], mode: GuidanceMode) -> di
 
 
 def _local_qwen_generate(prompt: str, image_b64s: list[str]) -> str:
-    from prompt_expander import _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen, _strip_data_url
+    from prompt_expander import _LOCAL_QWEN_LOCK, _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen, _strip_data_url
 
-    tokenizer, processor, model = _load_local_qwen()
-    device = getattr(model, "device", "cpu")
-    if image_b64s and processor is not None:
-        images = [
-            Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")
-            for image_b64 in image_b64s[:10]
-        ]
-        pads = "".join("<|vision_start|><|image_pad|><|vision_end|>" for _ in images)
-        inputs = processor(
-            text=[f"<|im_start|>user\n{pads}{prompt}<|im_end|>\n<|im_start|>assistant\n"],
-            images=images,
-            return_tensors="pt",
-        ).to(device)
+    with _LOCAL_QWEN_LOCK:
+        tokenizer, processor, model = _load_local_qwen()
+        device = getattr(model, "device", "cpu")
+        if image_b64s and processor is not None:
+            images = [
+                Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")
+                for image_b64 in image_b64s[:10]
+            ]
+            pads = "".join("<|vision_start|><|image_pad|><|vision_end|>" for _ in images)
+            inputs = processor(
+                text=[f"<|im_start|>user\n{pads}{prompt}<|im_end|>\n<|im_start|>assistant\n"],
+                images=images,
+                return_tensors="pt",
+            ).to(device)
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=900,
+                do_sample=True,
+                temperature=0.45,
+                eos_token_id=getattr(tokenizer, "eos_token_id", None),
+            )
+            return _decode_generation(tokenizer, outputs, inputs.get("input_ids") if isinstance(inputs, dict) else None)
+
+        messages = [{"role": "user", "content": prompt}]
+        inputs = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(device)
         outputs = model.generate(
-            **inputs,
+            **_generation_kwargs(inputs),
             max_new_tokens=900,
             do_sample=True,
             temperature=0.45,
             eos_token_id=getattr(tokenizer, "eos_token_id", None),
         )
-        return _decode_generation(tokenizer, outputs, inputs.get("input_ids") if isinstance(inputs, dict) else None)
-
-    messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(device)
-    outputs = model.generate(
-        **_generation_kwargs(inputs),
-        max_new_tokens=900,
-        do_sample=True,
-        temperature=0.45,
-        eos_token_id=getattr(tokenizer, "eos_token_id", None),
-    )
-    return _decode_generation(tokenizer, outputs, _input_ids(inputs))
+        return _decode_generation(tokenizer, outputs, _input_ids(inputs))
 
 
 def generate_moodboard_guidance(

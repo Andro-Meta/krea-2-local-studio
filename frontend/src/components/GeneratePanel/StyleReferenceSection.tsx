@@ -75,7 +75,7 @@ export default function StyleReferenceSection() {
       <Collapse in={open}>
         <Box sx={{ pt: 1 }}>
           <Typography variant="caption" sx={{ color: 'text.disabled', mb: 1, display: 'block' }}>
-            Comfy-style references accept up to 10 images. Strength ranges from -2.0 to 2.0; negative values are advanced and push away from a reference.
+            Native Krea reference images accept up to 10 images. Strength ranges from -2.0 to 2.0; negative values are advanced and push away from a reference.
           </Typography>
 
           <TextField

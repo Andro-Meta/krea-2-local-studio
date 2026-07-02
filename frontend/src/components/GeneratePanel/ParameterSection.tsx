@@ -178,7 +178,7 @@ export default function ParameterSection() {
           onChange={e => setCreativity(e.target.value as typeof params.creativity)}
           size="small"
           fullWidth
-          helperText="Comfy-style Krea control: higher adds aesthetic interpretation; lower keeps tighter prompt adherence."
+          helperText="Native Krea control: higher adds aesthetic interpretation; lower keeps tighter prompt adherence."
         >
           <MenuItem value="raw">Raw / literal</MenuItem>
           <MenuItem value="low">Low</MenuItem>
@@ -202,8 +202,8 @@ export default function ParameterSection() {
           value={params.cfg}
           min={0} max={10} step={0.1}
           onChange={v => setParam('cfg', v)}
-          tip="Classifier-Free Guidance — how strictly the model follows your prompt. Turbo uses 0 (guidance is baked into distillation). RAW uses 3.5."
-          helperText={isTurbo ? 'Turbo: keep at 0 (guidance built-in)' : 'RAW default: 3.5'}
+          tip="Classifier-Free Guidance adds an unconditional/negative pass. Turbo still uses your prompt at CFG 0; it is distilled to follow the conditional prompt without extra CFG. RAW uses real CFG."
+          helperText={isTurbo ? 'Turbo default: 0 does not ignore the prompt; use 1+ only for experiments' : 'RAW default: 3.5'}
         />
 
         {params.cfg > 0 && (

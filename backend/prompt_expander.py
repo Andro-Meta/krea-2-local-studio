@@ -6,6 +6,7 @@ import io
 import logging
 import json
 import re
+import threading
 from collections.abc import Mapping
 from functools import lru_cache
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ GGUF_HELPER_DEFAULT_MODEL = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M"
 LOCAL_GGUF_HOSTS = {"127.0.0.1", "localhost", "::1"}
 LOCAL_QWEN_MIN_FREE_VRAM_GB = 12.0
 LOCAL_QWEN_MAX_EXISTING_CUDA_ALLOC_GB = 2.0
+_LOCAL_QWEN_LOCK = threading.RLock()
 
 # Verbatim from Krea's official prompt expansion used by the krea.ai API
 # (github.com/krea-ai/krea-2 docs/expansion.txt). Matching it locally closes the
@@ -145,18 +147,19 @@ def _resolve_local_qwen_device(torch_module) -> str:
 
 def unload_local_qwen() -> None:
     """Drop cached local Qwen helper models before memory-sensitive generation."""
-    _load_local_qwen.cache_clear()
-    try:
-        import gc
-        import torch
+    with _LOCAL_QWEN_LOCK:
+        _load_local_qwen.cache_clear()
+        try:
+            import gc
+            import torch
 
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            if hasattr(torch.cuda, "ipc_collect"):
-                torch.cuda.ipc_collect()
-    except Exception:
-        logger.debug("Could not fully clear local Qwen helper cache", exc_info=True)
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+        except Exception:
+            logger.debug("Could not fully clear local Qwen helper cache", exc_info=True)
 
 
 def _strip_data_url(image_b64: str) -> str:
@@ -190,24 +193,25 @@ def _generation_kwargs(inputs) -> dict:
 def expand_prompt_local(prompt: str) -> PromptExpansionResult:
     try:
         from settings import settings
-        tokenizer, _processor, model = _load_local_qwen(str(getattr(settings, "local_qwen_model_id", "") or ""))
-        messages = [
-            {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        ).to(getattr(model, "device", "cpu"))
-        outputs = model.generate(
-            **_generation_kwargs(inputs),
-            max_new_tokens=700,
-            do_sample=True,
-            temperature=0.7,
-            eos_token_id=getattr(tokenizer, "eos_token_id", None),
-        )
-        expanded = _decode_generation(tokenizer, outputs, _input_ids(inputs)) or prompt
+        with _LOCAL_QWEN_LOCK:
+            tokenizer, _processor, model = _load_local_qwen(str(getattr(settings, "local_qwen_model_id", "") or ""))
+            messages = [
+                {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+            inputs = tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            ).to(getattr(model, "device", "cpu"))
+            outputs = model.generate(
+                **_generation_kwargs(inputs),
+                max_new_tokens=700,
+                do_sample=True,
+                temperature=0.7,
+                eos_token_id=getattr(tokenizer, "eos_token_id", None),
+            )
+            expanded = _decode_generation(tokenizer, outputs, _input_ids(inputs)) or prompt
         return PromptExpansionResult(
             expanded=expanded,
             changed=expanded.strip() != prompt.strip(),
@@ -225,33 +229,34 @@ def expand_prompt_local(prompt: str) -> PromptExpansionResult:
 
 def describe_image_local(image_b64: str) -> dict[str, str]:
     from settings import settings
-    tokenizer, processor, model = _load_local_qwen(str(getattr(settings, "local_qwen_model_id", "") or ""))
-    if processor is None:
-        raise RuntimeError("Local Qwen3-VL processor is unavailable.")
-    image = Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")
-    prompt = (
-        "Write one vivid text-to-image prompt that could recreate this image. "
-        "Return one paragraph only. Include subject, setting, composition, medium, "
-        "lighting, color palette, texture, camera/art details, and mood. Do not "
-        "mention that you are looking at an image."
-    )
-    inputs = processor(
-        text=[(
-            "<|im_start|>user\n"
-            f"<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>\n"
-            "<|im_start|>assistant\n"
-        )],
-        images=[image],
-        return_tensors="pt",
-    ).to(getattr(model, "device", "cpu"))
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=420,
-        do_sample=True,
-        temperature=0.6,
-        eos_token_id=getattr(tokenizer, "eos_token_id", None),
-    )
-    text = _decode_generation(tokenizer, outputs, inputs.get("input_ids") if isinstance(inputs, dict) else None)
+    with _LOCAL_QWEN_LOCK:
+        tokenizer, processor, model = _load_local_qwen(str(getattr(settings, "local_qwen_model_id", "") or ""))
+        if processor is None:
+            raise RuntimeError("Local Qwen3-VL processor is unavailable.")
+        image = Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")
+        prompt = (
+            "Write one vivid text-to-image prompt that could recreate this image. "
+            "Return one paragraph only. Include subject, setting, composition, medium, "
+            "lighting, color palette, texture, camera/art details, and mood. Do not "
+            "mention that you are looking at an image."
+        )
+        inputs = processor(
+            text=[(
+                "<|im_start|>user\n"
+                f"<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )],
+            images=[image],
+            return_tensors="pt",
+        ).to(getattr(model, "device", "cpu"))
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=420,
+            do_sample=True,
+            temperature=0.6,
+            eos_token_id=getattr(tokenizer, "eos_token_id", None),
+        )
+        text = _decode_generation(tokenizer, outputs, inputs.get("input_ids") if isinstance(inputs, dict) else None)
     if not text:
         raise RuntimeError("Local Qwen3-VL returned an empty image description.")
     return {"prompt": text, "backend": "local"}

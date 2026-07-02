@@ -1,5 +1,5 @@
 import React from 'react'
-import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Checkbox, FormControlLabel, IconButton, Paper, Slider, Stack, TextField, Typography } from '@mui/material'
+import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Checkbox, FormControlLabel, IconButton, MenuItem, Paper, Slider, Stack, TextField, Typography } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import DeleteIcon from '@mui/icons-material/Delete'
 import { useStore, type RegionalPrompt } from '../../store'
@@ -27,6 +27,7 @@ function readAsDataUrl(file: File): Promise<string> {
 export default function AdvancedSceneSection() {
   const { params, setParam } = useStore()
   const regions = params.regional_prompts
+  const attachedLoras = params.loras.filter(lora => lora.enabled !== false)
 
   const updateRegion = (index: number, patch: Partial<RegionalPrompt>) => {
     setParam('regional_prompts', regions.map((region, i) => i === index ? { ...region, ...patch } : region))
@@ -86,7 +87,22 @@ export default function AdvancedSceneSection() {
                   </Button>
                   <FormControlLabel control={<Checkbox checked={region.visible} onChange={e => updateRegion(index, { visible: e.target.checked })} />} label="Visible" />
                   <FormControlLabel control={<Checkbox checked={region.normalize} onChange={e => updateRegion(index, { normalize: e.target.checked })} />} label="Normalize" />
-                  <TextField label="LoRA filter" value={region.lora_filter} onChange={e => updateRegion(index, { lora_filter: e.target.value })} size="small" />
+                  <TextField
+                    select
+                    label="Apply LoRAs in this region"
+                    value={region.lora_filter || 'all'}
+                    onChange={e => updateRegion(index, { lora_filter: e.target.value === 'all' ? '' : e.target.value })}
+                    size="small"
+                    helperText="Choose an attached LoRA by name, or leave all."
+                    sx={{ minWidth: { xs: '100%', sm: 240 } }}
+                  >
+                    <MenuItem value="all">All attached LoRAs</MenuItem>
+                    {attachedLoras.map(lora => (
+                      <MenuItem key={lora.name} value={lora.name}>
+                        {lora.name}
+                      </MenuItem>
+                    ))}
+                  </TextField>
                 </Stack>
                 <Box>
                   <Typography variant="caption" color="text.secondary">Strength: {region.strength.toFixed(2)}</Typography>

@@ -24,7 +24,7 @@ import {
   type RedrawTaskKind,
 } from './qualityPresets'
 
-type StudioTaskId = 'recreate' | 'insert' | 'extend' | 'sketch' | 'style' | 'moodboard' | 'preserve'
+type StudioTaskId = 'recreate' | 'insert' | 'extend' | 'sketch' | 'style' | 'moodboard' | 'preserve' | 'nk2e_edit'
 type ReferenceRole = 'scene' | 'person' | 'object' | 'sketch' | 'style' | 'mood'
 type PipelineKind = 'redraw' | 'img2img' | 'inpaint' | 'outpaint'
 type ExtendMode = 'redraw' | 'preserve'
@@ -177,6 +177,21 @@ const tasks: StudioTask[] = [
     pipeline: 'img2img',
     slots: [
       { id: 'source', label: 'Source', role: 'scene', note: 'Pixels to preserve or edit.' },
+      { id: 'reference', label: 'Reference', role: 'object', note: '' },
+      { id: 'style', label: 'Style', role: 'style', note: '' },
+      { id: 'mood', label: 'Mood', role: 'mood', note: '' },
+    ],
+  },
+  {
+    id: 'nk2e_edit',
+    title: 'NK2E Edit',
+    kicker: 'Experimental instruction edit LoRA',
+    description: 'Use NK2E for localized edits while preserving identity and composition.',
+    icon: AutoFixHighIcon,
+    defaultInstruction: 'Edit the source image according to the instruction while preserving identity, composition, camera angle, and lighting. Keep the change localized and coherent.',
+    pipeline: 'img2img',
+    slots: [
+      { id: 'source', label: 'Source', role: 'scene', note: 'Use as the image to edit.' },
       { id: 'reference', label: 'Reference', role: 'object', note: '' },
       { id: 'style', label: 'Style', role: 'style', note: '' },
       { id: 'mood', label: 'Mood', role: 'mood', note: '' },
@@ -365,6 +380,12 @@ export default function RedrawStudio() {
     () => styleLoras.find(lora => lora.name === selectedStyleLora) ?? null,
     [styleLoras, selectedStyleLora],
   )
+  const taskLoraInfo = useMemo(
+    () => task.id === 'nk2e_edit'
+      ? (loras.find(lora => lora.name === 'nk2e_v01') ?? null)
+      : selectedLoraInfo,
+    [loras, selectedLoraInfo, task.id],
+  )
   const activeImages = useMemo(() => slots.filter(slot => slot.image), [slots])
   const promptPreview = useMemo(
     () => buildRolePrompt(slots, instruction, task, preset.promptHint),
@@ -457,7 +478,7 @@ export default function RedrawStudio() {
       edit_provider: preset.editProvider,
       quality_preset: preset.qualityMode,
       use_prompt_expander: preset.usePromptExpander,
-      loras: loraToGeneration(selectedLoraInfo),
+      loras: loraToGeneration(taskLoraInfo),
       width: dimensions?.width ?? params.width,
       height: dimensions?.height ?? params.height,
       use_rebalance: true,
@@ -485,7 +506,7 @@ export default function RedrawStudio() {
       edit_provider: preset.editProvider,
       quality_preset: preset.qualityMode,
       use_prompt_expander: preset.usePromptExpander,
-      loras: loraToGeneration(selectedLoraInfo),
+      loras: loraToGeneration(taskLoraInfo),
       use_rebalance: true,
     })
     setReadyMessage(preserveMode === 'masked'
@@ -532,7 +553,7 @@ export default function RedrawStudio() {
       edit_provider: preset.editProvider,
       quality_preset: preset.qualityMode,
       use_prompt_expander: preset.usePromptExpander,
-      loras: loraToGeneration(selectedLoraInfo),
+      loras: loraToGeneration(taskLoraInfo),
       use_rebalance: true,
     })
     setReadyMessage('Preserve-source extension is ready. Use Generate below.')

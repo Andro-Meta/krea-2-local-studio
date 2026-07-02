@@ -346,6 +346,12 @@ export default function MoodboardSection({
           </Box>
 
           {/* Image board */}
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 1 }}>
+            Optional visual reference images
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mb: 0.75 }}>
+            Use these only when catalog moodboard text guidance is not strong enough. They are sent as direct Qwen visual references.
+          </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
             {board.map((b64, i) => (
               <Box key={i} sx={{ position: 'relative', width: 56, height: 56, borderRadius: 1, overflow: 'hidden' }}>
@@ -357,11 +363,15 @@ export default function MoodboardSection({
                 </IconButton>
               </Box>
             ))}
-            <Tooltip title="Optional: upload reference images only when you want stronger visual pull than style text guidance.">
-              <IconButton onClick={() => fileRef.current?.click()}
-                sx={{ width: 56, height: 56, border: '1px dashed rgba(202,196,208,0.4)', borderRadius: 1 }}>
-                <AddPhotoAlternateIcon fontSize="small" />
-              </IconButton>
+            <Tooltip title="Upload local images as direct visual style references for this generation.">
+              <Button
+                variant="outlined"
+                startIcon={<AddPhotoAlternateIcon fontSize="small" />}
+                onClick={() => fileRef.current?.click()}
+                sx={{ minHeight: 56, borderStyle: 'dashed' }}
+              >
+                Add visual reference
+              </Button>
             </Tooltip>
             <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={addImages} />
           </Stack>
@@ -381,7 +391,7 @@ export default function MoodboardSection({
                 size="small"
               />
               <Typography variant="caption" sx={{ color: 'text.disabled' }}>
-                0.35 = Comfy default · higher = stronger style push
+                0.35 = balanced default · higher = stronger style push
               </Typography>
             </Box>
           )}

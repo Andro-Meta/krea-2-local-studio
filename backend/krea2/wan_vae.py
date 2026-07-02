@@ -160,7 +160,7 @@ class Encoder3D(nn.Module):
 
 
 class Decoder3D(nn.Module):
-    def __init__(self, dim=96, z_dim=16, dim_mult=(1, 2, 4, 4), num_res_blocks=2, attn_scales=(), temporal_upsample=(True, True, False), dropout=0.0):
+    def __init__(self, dim=96, z_dim=16, dim_mult=(1, 2, 4, 4), num_res_blocks=2, attn_scales=(), temporal_upsample=(True, True, False), dropout=0.0, out_channels=3):
         super().__init__()
         dims = [dim * u for u in [dim_mult[-1], *dim_mult[::-1]]]
         self.conv1 = CausalConv3d(z_dim, dims[0], 3, padding=1)
@@ -179,7 +179,7 @@ class Decoder3D(nn.Module):
                 layers.append(Resample(out_dim, "upsample3d" if temporal_upsample[i] else "upsample2d"))
                 scale *= 2.0
         self.upsamples = nn.Sequential(*layers)
-        self.head = nn.Sequential(RMSNorm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, 3, 3, padding=1))
+        self.head = nn.Sequential(RMSNorm(out_dim, images=False), nn.SiLU(), CausalConv3d(out_dim, out_channels, 3, padding=1))
 
     def forward(self, x):
         x = self.upsamples(self.middle(self.conv1(x)))
@@ -187,12 +187,12 @@ class Decoder3D(nn.Module):
 
 
 class WanVAE2D(nn.Module):
-    def __init__(self):
+    def __init__(self, out_channels: int = 3):
         super().__init__()
         self.encoder = Encoder3D(z_dim=32)
         self.conv1 = CausalConv3d(32, 32, 1)
         self.conv2 = CausalConv3d(16, 16, 1)
-        self.decoder = Decoder3D(z_dim=16)
+        self.decoder = Decoder3D(z_dim=16, out_channels=out_channels)
 
     def encode(self, x):
         mu, _log_var = self.conv1(self.encoder(x)).chunk(2, dim=1)
@@ -207,7 +207,9 @@ class WanAutoencoder(nn.Module):
 
     def __init__(self, state_dict: dict):
         super().__init__()
-        self.model = WanVAE2D()
+        out_channels = int(getattr(state_dict.get("decoder.head.2.weight"), "shape", [3])[0])
+        self.upscale_factor = 2 if out_channels == 12 else 1
+        self.model = WanVAE2D(out_channels=out_channels)
         self.model.load_state_dict(state_dict, strict=True)
 
     def requires_grad_(self, requires_grad: bool = False):
@@ -232,4 +234,11 @@ class WanAutoencoder(nn.Module):
         out = self.model.decode(z)
         if out.ndim == 5 and out.shape[2] != 1:
             out = out[:, :, :1]
+        if self.upscale_factor > 1:
+            # Spacepxl's 2x image decoder emits B,12,F,H,W. Pixel shuffle must
+            # run on BCHW per frame, then we restore the temporal singleton.
+            b, c, t, h, w = out.shape
+            out_4d = rearrange(out, "b c t h w -> (b t) c h w")
+            out_4d = F.pixel_shuffle(out_4d, upscale_factor=self.upscale_factor)
+            out = rearrange(out_4d, "(b t) c h w -> b c t h w", b=b, t=t)
         return type("WanDecodeOutput", (), {"sample": out})()

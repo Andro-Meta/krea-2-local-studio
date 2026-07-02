@@ -8,14 +8,42 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from krea2.wan_vae import WanAutoencoder, is_wan_vae_state_dict
 
 logger = logging.getLogger(__name__)
 
 
+def _laplacian_detail_blend(low_src: torch.Tensor, high_src: torch.Tensor, *, blur_radius: int = 24, high_strength: float = 0.65) -> torch.Tensor:
+    radius = max(1, int(blur_radius))
+    kernel_size = radius * 2 + 1
+    sigma = max(float(radius) / 3.0, 0.1)
+    coords = torch.arange(kernel_size, device=low_src.device, dtype=torch.float32) - radius
+    kernel_1d = torch.exp(-(coords**2) / (2.0 * sigma * sigma))
+    kernel_1d = (kernel_1d / kernel_1d.sum()).to(dtype=low_src.dtype)
+    kernel = (kernel_1d[:, None] @ kernel_1d[None, :]).view(1, 1, kernel_size, kernel_size)
+    kernel = kernel.expand(low_src.shape[1], 1, kernel_size, kernel_size)
+
+    def blur(x: torch.Tensor) -> torch.Tensor:
+        padded = F.pad(x, (radius, radius, radius, radius), mode="reflect")
+        return F.conv2d(padded, kernel.to(dtype=padded.dtype), groups=x.shape[1])
+
+    low = blur(low_src.float()).to(low_src.dtype)
+    high = high_src - blur(high_src.float()).to(high_src.dtype)
+    return (low + high * float(high_strength)).clamp(-1, 1)
+
+
 class QwenAutoencoder(nn.Module):
-    def __init__(self, vae_override_path: str | None = None) -> None:
+    def __init__(
+        self,
+        vae_override_path: str | None = None,
+        *,
+        vae_mode: str = "qwen",
+        wan_blend_path: str | None = None,
+        blend_blur_radius: int = 24,
+        blend_high_strength: float = 0.65,
+    ) -> None:
         super().__init__()
         from diffusers import AutoencoderKLQwenImage
         from support_models import support_model_path
@@ -24,10 +52,15 @@ class QwenAutoencoder(nn.Module):
             str(support_model_path("qwen_image_vae")), subfolder="vae"
         )
         self.vae_source = "stock:qwen_image"
-        # Wan 2.1 is the preferred Krea/Qwen decoder when available. Other
-        # compatible VAE overrides are best-effort; any failure falls back to
-        # stock Qwen Image VAE.
-        if vae_override_path:
+        self.vae_mode = str(vae_mode or "qwen")
+        self.blend_blur_radius = int(blend_blur_radius or 24)
+        self.blend_high_strength = float(blend_high_strength or 0.65)
+        self.blend_ae = None
+        if self.vae_mode == "qwen_wan_blend" and wan_blend_path:
+            self.blend_ae = self._load_wan_file(wan_blend_path)
+            if self.blend_ae is not None:
+                self.vae_source = f"qwen+wan_blend:{Path(wan_blend_path).name}"
+        elif vae_override_path and self.vae_mode != "qwen":
             self._apply_override(vae_override_path)
         self.ae.requires_grad_(False)
 
@@ -72,8 +105,13 @@ class QwenAutoencoder(nn.Module):
                 sd = load_file(str(p))
                 if is_wan_vae_state_dict(sd):
                     self.ae = WanAutoencoder(sd)
-                    self.vae_source = f"wan2.1:{p.name}"
-                    logger.info("Loaded Wan 2.1/Qwen-compatible VAE: %s", p)
+                    if "qwen" in p.name.lower():
+                        self.vae_source = f"comfy_qwen:{p.name}"
+                    elif getattr(self.ae, "upscale_factor", 1) > 1:
+                        self.vae_source = f"spacepxl_2x:{p.name}"
+                    else:
+                        self.vae_source = f"wan_experimental:{p.name}"
+                    logger.info("Loaded Wan-layout VAE override: %s", p)
                     return
                 ref_keys = set(self.ae.state_dict().keys())
                 matched = sum(1 for k in sd if k in ref_keys)
@@ -94,6 +132,19 @@ class QwenAutoencoder(nn.Module):
             logger.warning("VAE override path is not a usable file/dir: %s", path)
         except Exception as exc:  # noqa: BLE001 - never let an override break loading
             logger.warning("VAE override failed (%s); keeping stock VAE.", exc)
+
+    def _load_wan_file(self, path: str):
+        try:
+            from safetensors.torch import load_file
+
+            p = Path(path)
+            sd = load_file(str(p))
+            if is_wan_vae_state_dict(sd):
+                logger.info("Loaded Wan detail-blend VAE: %s", p)
+                return WanAutoencoder(sd)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Wan detail-blend VAE failed (%s); using stock Qwen only.", exc)
+        return None
 
     def _set_tiling(self, enabled: bool) -> None:
         try:
@@ -126,6 +177,19 @@ class QwenAutoencoder(nn.Module):
             if tiled:
                 self._set_tiling(True)
             out = self.ae.decode(x).sample
+            if self.vae_mode == "qwen_wan_blend" and self.blend_ae is not None:
+                wan_out = self.blend_ae.to(device=x.device, dtype=x.dtype).decode(x).sample
+                out_4d = rearrange(out, "b c 1 h w -> b c h w")
+                wan_4d = rearrange(wan_out, "b c 1 h w -> b c h w")
+                out = rearrange(
+                    _laplacian_detail_blend(
+                        out_4d,
+                        wan_4d,
+                        blur_radius=self.blend_blur_radius,
+                        high_strength=self.blend_high_strength,
+                    ),
+                    "b c h w -> b c 1 h w",
+                )
         except oom:
             logger.warning("VAE decode hit CUDA OOM; retrying with tiled decode.")
             if torch.cuda.is_available():

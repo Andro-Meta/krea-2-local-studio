@@ -22,6 +22,36 @@ OFFICIAL_LORAS: dict[str, dict] = {
     # RAW up toward Turbo behavior (Banodoco 6/27: "raw + turbo lora @0.6 works
     # well"); it carries no trigger words.
     "krea2_turbo_lora_rank_64_bf16": {"display_name": "Turbo Distill (speeds RAW @0.6)", "trigger_words": [], "strength": 0.6},
+    "k2q_turbo_lora_rank64": {
+        "display_name": "K2Q Turbo LoRA r64",
+        "filename": "k2q_turbo_lora_rank64.safetensors",
+        "repo_id": "silveroxides/K2Q",
+        "repo_filename": "krea2_turbo_lora_rank_64_final_nodiff.safetensors",
+        "trigger_words": [],
+        "strength": 0.6,
+        "requires_inspection": True,
+        "match_info": "Optional RAW + Turbo-LoRA benchmark asset; inspected after download.",
+    },
+    "k2q_turbo_lora_rank128": {
+        "display_name": "K2Q Turbo LoRA r128",
+        "filename": "k2q_turbo_lora_rank128.safetensors",
+        "repo_id": "silveroxides/K2Q",
+        "repo_filename": "krea2_turbo_lora_rank_128_final_nodiff.safetensors",
+        "trigger_words": [],
+        "strength": 0.6,
+        "requires_inspection": True,
+        "match_info": "Optional RAW + Turbo-LoRA benchmark asset; inspected after download.",
+    },
+    "nk2e_v01": {
+        "display_name": "NK2E Edit (experimental)",
+        "filename": "nk2e_v01.safetensors",
+        "repo_id": "nynxz/NK2E",
+        "repo_filename": "comfy/v0.1/NK2E-v0.1.safetensors",
+        "trigger_words": [],
+        "strength": 0.7,
+        "requires_inspection": True,
+        "match_info": "Experimental Redraw/img2img edit LoRA; inspected after download.",
+    },
 }
 
 OFFICIAL_LORA_HF_IDS: dict[str, str] = {
@@ -52,17 +82,19 @@ MANUAL_LORAS: dict[str, dict] = {
 def list_loras() -> list[dict]:
     results = []
     for name, info in OFFICIAL_LORAS.items():
-        path = LORAS_DIR / f"{name}.safetensors"
+        filename = str(info.get("filename") or f"{name}.safetensors")
+        path = LORAS_DIR / filename
+        verdict = inspect_lora(path) if path.exists() and info.get("requires_inspection") else None
         results.append({
-            "filename": f"{name}.safetensors",
+            "filename": filename,
             "name": name,
             "display_name": info.get("display_name", name.replace("krea2_", "").replace("_", " ").title()),
             "trigger_words": info["trigger_words"],
             "strength": info["strength"],
             "is_official": True,
             "installed": path.exists(),
-            "compatible": True,
-            "match_info": "official Krea-2 LoRA",
+            "compatible": verdict["compatible"] if verdict else True,
+            "match_info": verdict["reason"] if verdict else str(info.get("match_info") or "official Krea-2 LoRA"),
             "download_enabled": True,
         })
     for name, info in MANUAL_LORAS.items():
@@ -103,6 +135,15 @@ def list_loras() -> list[dict]:
 def official_lora_download_kwargs(name: str, *, token: str | None = None) -> dict:
     if name not in OFFICIAL_LORAS:
         raise KeyError(name)
+    info = OFFICIAL_LORAS[name]
+    if "repo_filename" in info:
+        return {
+            "repo_id": info.get("repo_id", OFFICIAL_LORA_HF_IDS.get(name, "Comfy-Org/Krea-2")),
+            "filename": info["repo_filename"],
+            "local_dir": str(LORAS_DIR),
+            "local_dir_use_symlinks": False,
+            "token": token or None,
+        }
     return {
         "repo_id": OFFICIAL_LORA_HF_IDS.get(name, "Comfy-Org/Krea-2"),
         "filename": f"{name}.safetensors",

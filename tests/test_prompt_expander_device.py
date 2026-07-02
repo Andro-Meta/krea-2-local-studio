@@ -73,6 +73,23 @@ class PromptExpanderDeviceTests(unittest.TestCase):
             prompt_expander.unload_local_qwen()
             loader.cache_clear.assert_called_once()
 
+    def test_unload_local_qwen_uses_helper_lock(self) -> None:
+        import prompt_expander
+
+        calls: list[str] = []
+
+        class FakeLock:
+            def __enter__(self):
+                calls.append("enter")
+
+            def __exit__(self, *args):
+                calls.append("exit")
+
+        with patch.object(prompt_expander, "_LOCAL_QWEN_LOCK", FakeLock()):
+            prompt_expander.unload_local_qwen()
+
+        self.assertEqual(calls, ["enter", "exit"])
+
 
 if __name__ == "__main__":
     unittest.main()

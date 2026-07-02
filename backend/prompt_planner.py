@@ -97,25 +97,26 @@ def plan_prompt_heuristic(prompt: str, *, max_tokens: int = 700) -> PromptPlanRe
 
 def plan_prompt_local(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult:
     try:
-        from prompt_expander import _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen
+        from prompt_expander import _LOCAL_QWEN_LOCK, _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen
 
-        tokenizer, _processor, model = _load_local_qwen()
-        messages = [
-            {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        ).to(getattr(model, "device", "cpu"))
-        outputs = model.generate(
-            **_generation_kwargs(inputs),
-            max_new_tokens=max(128, min(int(max_tokens), 1600)),
-            do_sample=False,
-            eos_token_id=getattr(tokenizer, "eos_token_id", None),
-        )
-        parsed = parse_planner_response(_decode_generation(tokenizer, outputs, _input_ids(inputs)))
+        with _LOCAL_QWEN_LOCK:
+            tokenizer, _processor, model = _load_local_qwen()
+            messages = [
+                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+            inputs = tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            ).to(getattr(model, "device", "cpu"))
+            outputs = model.generate(
+                **_generation_kwargs(inputs),
+                max_new_tokens=max(128, min(int(max_tokens), 1600)),
+                do_sample=False,
+                eos_token_id=getattr(tokenizer, "eos_token_id", None),
+            )
+            parsed = parse_planner_response(_decode_generation(tokenizer, outputs, _input_ids(inputs)))
         planned = parsed.get("planned_prompt") or prompt
         return PromptPlanResult(
             original_prompt=prompt,

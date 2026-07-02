@@ -338,7 +338,9 @@ interface AppState {
   resultsMetadata: Array<Record<string, any>>
   lastSeed: number | null
   generationError: string | null
+  promptBusy: boolean
   setGenerating: (v: boolean) => void
+  setPromptBusy: (v: boolean) => void
   setJobId: (id: string | null) => void
   setProgress: (n: number) => void
   setQueue: (position: number | null, length: number | null) => void
@@ -393,7 +395,9 @@ export const useStore = create<AppState>((set, get) => ({
   resultsMetadata: [],
   lastSeed: null,
   generationError: null,
+  promptBusy: false,
   setGenerating: (v) => set({ generating: v }),
+  setPromptBusy: (v) => set({ promptBusy: v }),
   setJobId: (id) => set({ jobId: id }),
   setProgress: (n) => set({ progress: n }),
   setQueue: (position, length) => set({ queuePosition: position, queueLength: length }),

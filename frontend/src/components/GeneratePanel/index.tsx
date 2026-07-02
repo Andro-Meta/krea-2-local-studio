@@ -21,6 +21,7 @@ const ACTIVE_JOB_KEY = 'krea2_active_generation_job'
 export default function GeneratePanel() {
   const { params, generating, progress, results, resultsMetadata, lastSeed, generationError,
           queuePosition, queueLength,
+          promptBusy,
           setGenerating, setJobId, setProgress, setResults, setError,
           setQueue, modelLoaded, setModelLoaded, setTab, engineCatalog, setEngineCatalog } = useStore()
   const inRedrawStudio = params.mode !== 'txt2img'
@@ -177,7 +178,7 @@ export default function GeneratePanel() {
   }, [applyJobSnapshot, setGenerating, setJobId, watchJob])
 
   const handleGenerate = useCallback(async () => {
-    if (generating) return
+    if (generating || promptBusy) return
     setError(null)
     setGenerating(true)
     setProgress(0)
@@ -294,7 +295,7 @@ export default function GeneratePanel() {
       setQueue(null, null)
       stopWatchingJob()
     }
-  }, [params, generating, setQueue, setJobId, setGenerating, setProgress, setResults, setError, watchJob, stopWatchingJob])
+  }, [params, generating, promptBusy, setQueue, setJobId, setGenerating, setProgress, setResults, setError, watchJob, stopWatchingJob])
 
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 900, mx: 'auto' }}>
@@ -335,6 +336,7 @@ export default function GeneratePanel() {
         <ParameterSection />
 
         {generationError && <Alert severity="error" onClose={() => setError(null)}>{generationError}</Alert>}
+        {promptBusy && <Alert severity="info" sx={{ py: 0 }}>Magic Wand is still rewriting the prompt. Generate will be available when it finishes.</Alert>}
         {connectionNote && <Alert severity="info" sx={{ py: 0 }}>{connectionNote}</Alert>}
 
         {generating && (
@@ -353,11 +355,11 @@ export default function GeneratePanel() {
           size="large"
           startIcon={generating ? <CircularProgress size={18} color="inherit" /> : <AutoAwesomeIcon />}
           onClick={handleGenerate}
-          disabled={generating || !params.prompt.trim() || !modelLoaded}
+          disabled={generating || promptBusy || !params.prompt.trim() || !modelLoaded}
           fullWidth
           sx={{ height: 52, fontSize: '1rem' }}
         >
-          {generating ? 'Generating…' : 'Generate'}
+          {generating ? 'Generating…' : promptBusy ? 'Waiting for Magic Wand…' : 'Generate'}
         </Button>
 
         <ResultsView images={results} seed={lastSeed} metadata={resultsMetadata} />

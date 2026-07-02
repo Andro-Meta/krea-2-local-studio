@@ -96,6 +96,39 @@ class SharingServiceTests(unittest.TestCase):
         self.assertTrue(status["auth_required"])
         self.assertIn("45678", status["url"])
 
+    def test_local_krea_target_falls_back_to_funnel_proxy_port(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"authenticated":false,"username":null,"role":null}'
+
+        seen_urls = []
+
+        def fake_urlopen(url, timeout=5):
+            seen_urls.append(url)
+            if ":8200/" in url:
+                raise OSError("stale default port")
+            return Response()
+
+        with (
+            patch("sharing_service.funnel_status", return_value={
+                "running": True,
+                "message": "|-- /krea proxy http://127.0.0.1:57569",
+            }),
+            patch("sharing_service.urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            status = sharing_service.local_krea_target_status(port=8200)
+
+        self.assertTrue(status["ok"])
+        self.assertIn("57569", status["url"])
+        self.assertTrue(any(":8200/" in url for url in seen_urls))
+        self.assertTrue(any(":57569/" in url for url in seen_urls))
+
     def test_repair_funnel_runs_tailscale_up_and_reapplies_krea_path(self) -> None:
         calls = []
 
