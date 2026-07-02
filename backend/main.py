@@ -29,7 +29,7 @@ _BACKEND = Path(__file__).parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from crash_reporter import clear_generation_breadcrumb, disable_fault_logging, enable_fault_logging, stale_generation_breadcrumbs, write_generation_breadcrumb
+from crash_reporter import archive_stale_generation_breadcrumbs, clear_generation_breadcrumb, disable_fault_logging, enable_fault_logging, stale_generation_breadcrumbs, write_generation_breadcrumb
 from gallery import delete_image, get_gallery, get_image_record_by_filename, init_db, save_image, set_favorite
 from generation_queue import GenerationQueue
 from inference import pipeline
@@ -557,6 +557,9 @@ async def startup():
     stale = stale_generation_breadcrumbs(LOGS_DIR)
     if stale:
         logger.warning("Found %d stale active generation breadcrumb(s) after previous shutdown/crash: %s", len(stale), stale)
+        archived = archive_stale_generation_breadcrumbs(LOGS_DIR)
+        if archived:
+            logger.info("Archived stale active generation breadcrumb(s): %s", archived)
     logger.info("Python fault handler logging to %s", fault_path)
     await init_db()
     await init_moderation_db()

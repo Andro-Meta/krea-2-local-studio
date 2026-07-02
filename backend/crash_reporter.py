@@ -105,3 +105,24 @@ def stale_generation_breadcrumbs(logs_dir: str | Path) -> list[dict]:
         data["path"] = str(path)
         items.append(data)
     return items
+
+
+def archive_stale_generation_breadcrumbs(logs_dir: str | Path) -> list[str]:
+    """Move stale active-generation breadcrumbs into a timestamped archive dir.
+
+    Startup logs the breadcrumb payloads once, then archives the files so the
+    same stale crash evidence does not keep warning on every clean restart.
+    """
+    logs = Path(logs_dir)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    archive = logs / "crash-breadcrumbs" / stamp
+    moved: list[str] = []
+    for path in sorted(logs.glob("active-generation-*.json")):
+        archive.mkdir(parents=True, exist_ok=True)
+        dest = archive / path.name
+        try:
+            path.replace(dest)
+            moved.append(str(dest))
+        except FileNotFoundError:
+            pass
+    return moved

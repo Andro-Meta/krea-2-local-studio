@@ -48,6 +48,20 @@ class CrashReporterTests(unittest.TestCase):
             self.assertTrue(path.parent.exists())
             disable_fault_logging()
 
+    def test_archives_stale_generation_breadcrumbs(self) -> None:
+        from crash_reporter import archive_stale_generation_breadcrumbs, stale_generation_breadcrumbs, write_generation_breadcrumb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            req = SimpleNamespace(prompt="a fox")
+            write_generation_breadcrumb(tmp, job_id="job123", req=req, stage="running")
+
+            archived = archive_stale_generation_breadcrumbs(tmp)
+
+            self.assertEqual(stale_generation_breadcrumbs(tmp), [])
+            self.assertEqual(len(archived), 1)
+            self.assertTrue(Path(archived[0]).exists())
+            self.assertIn("crash-breadcrumbs", archived[0])
+
 
 if __name__ == "__main__":
     unittest.main()
