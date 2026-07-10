@@ -97,7 +97,12 @@ def main() -> int:
 
     if not wait_for_url(args.ready_url, timeout_seconds=args.timeout):
         return 1
-    public_url = maybe_start_funnel(auto_funnel=args.auto_funnel)
+    try:
+        public_url = maybe_start_funnel(auto_funnel=args.auto_funnel)
+    except Exception as exc:
+        # Tailscale missing/uninstalled must never block the local app.
+        print(f"[share] Funnel unavailable: {exc}. Local URL still works.", flush=True)
+        public_url = ""
     webbrowser.open(public_url or args.open_url)
     return 0
 

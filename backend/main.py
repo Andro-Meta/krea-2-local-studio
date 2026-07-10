@@ -1013,7 +1013,7 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
         else:
             raise RuntimeError(
                 "Native Studio generation is deprecated. ComfyUI is required "
-                "(KREA_USE_COMFY defaults to on). Start ComfyUI and retry."
+                "ComfyUI is the generation engine. Start ComfyUI and retry."
             )
         missing_outputs = [fname for fname in (filenames or []) if fname and not (OUTPUTS_DIR / fname).exists()]
         write_generation_breadcrumb(
@@ -1276,13 +1276,7 @@ async def load_model(req: LoadModelRequest):
 
 @app.post("/api/load-model/preflight")
 async def load_model_preflight(req: LoadModelRequest):
-    if use_comfy_backend():
-        return {"ok": True, "detail": "ComfyUI backend active; models load on demand in ComfyUI.", "system": get_system_report()}
-    return {
-        "ok": False,
-        "detail": "Native Studio model loading is deprecated. Use ComfyUI (KREA_USE_COMFY=1).",
-        "system": get_system_report(),
-    }
+    return {"ok": True, "detail": "ComfyUI backend active; models load on demand in ComfyUI.", "system": get_system_report()}
 
 @app.post("/api/unload-model")
 async def unload_model():

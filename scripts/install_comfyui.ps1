@@ -117,7 +117,10 @@ $nodes = @(
     "moonwhaler/comfyui-seedvr2-tilingupscaler",
     "lbouaraba/comfyui-krea2edit",
     "1038lab/ComfyUI-QwenVL",
-    "lunaaispace-eng/ComfyUI-DeGrid"
+    "lunaaispace-eng/ComfyUI-DeGrid",
+    # kjnodes provides LazySwitchKJ + PathchSageAttentionKJ used by the
+    # Turbo 4X workflow template (backend/workflows/turbo_4x_api.json).
+    "kijai/ComfyUI-KJNodes"
 )
 $requiredNodes = @(
     "ComfyUI-Krea2TextEncoder",
@@ -265,6 +268,20 @@ if (-not (Test-Path $realVae)) {
 } else {
     Write-Host "  Krea-2 Real VAE already present."
 }
+
+# -- 5c2. FaceDetailer detector (God Mode stage 4) ----------------------------
+# Impact-Subpack's UltralyticsDetectorProvider reads bbox models from
+# ComfyUI/models/ultralytics/bbox (not covered by extra_model_paths).
+$bboxDir = Join-Path $comfyDir "models\ultralytics\bbox"
+New-Item -ItemType Directory -Force -Path $bboxDir | Out-Null
+$faceModel = Join-Path $bboxDir "face_yolov8m.pt"
+if (-not (Test-Path $faceModel)) {
+    Write-Host "  Downloading FaceDetailer detector (face_yolov8m)..."
+    try {
+        $ProgressPreference = "SilentlyContinue"
+        Invoke-WebRequest -Uri "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8m.pt" -OutFile $faceModel -TimeoutSec 300
+    } catch { Write-Host "    WARNING: face_yolov8m download failed; God Mode FaceDetailer will be unavailable." }
+} else { Write-Host "  FaceDetailer detector already present." }
 
 # -- 5d. Depth ControlNet assets (facok node + DA3 depth model) --------------
 # The comfyui-krea2-controlnet node (cloned above) needs the public depth Control

@@ -34,8 +34,22 @@ WS_IMAGE_NODE = "save_ws"
 ProgressCb = Optional[Callable[[int, int], None]]
 
 
+def _env_file_comfy_url() -> str:
+    """KREA_COMFY_URL from .env (run.bat does not export it into the process)."""
+    try:
+        env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+        with open(env_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.strip().startswith("KREA_COMFY_URL="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
 def comfy_base_url() -> str:
-    return os.environ.get("KREA_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
+    url = os.environ.get("KREA_COMFY_URL", "") or _env_file_comfy_url() or "http://127.0.0.1:8188"
+    return url.rstrip("/")
 
 
 def _ws_base(http_base: str) -> str:

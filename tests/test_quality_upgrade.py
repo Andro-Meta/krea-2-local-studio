@@ -331,8 +331,24 @@ class QualityUpgradeTests(unittest.TestCase):
             "qwen3vl_abliterated_fp8",
             "qwen_image_comfy_vae",
             "krea2_filter_bypass",
+            "krea2_identity_edit_v1",
+            "nk2e_v01_lora",
         ]:
             self.assertIn(asset_id, install_bat)
+
+    def test_install_bat_prompts_for_api_tokens(self) -> None:
+        install_bat = (ROOT / "install.bat").read_text(encoding="utf-8")
+
+        self.assertIn("Hugging Face token", install_bat)
+        self.assertIn("CivitAI API token", install_bat)
+        self.assertIn("set_env_tokens.py", install_bat)
+        # Tokens must be captured before the asset downloads they accelerate.
+        self.assertLess(install_bat.index("set_env_tokens.py"), install_bat.index("download_quality_assets.py"))
+
+    def test_install_bat_offers_optional_god_mode_assets(self) -> None:
+        install_bat = (ROOT / "install.bat").read_text(encoding="utf-8")
+
+        self.assertIn("download_godmode_assets.py", install_bat)
 
     def test_comfy_installer_requires_default_nodes(self) -> None:
         installer = (ROOT / "scripts" / "install_comfyui.ps1").read_text(encoding="utf-8")
@@ -345,6 +361,21 @@ class QualityUpgradeTests(unittest.TestCase):
         installer = (ROOT / "scripts" / "install_comfyui.ps1").read_text(encoding="utf-8")
 
         self.assertIn("lbouaraba/comfyui-krea2edit", installer)
+
+    def test_comfy_installer_covers_turbo4x_and_god_mode_dependencies(self) -> None:
+        installer = (ROOT / "scripts" / "install_comfyui.ps1").read_text(encoding="utf-8")
+
+        # kjnodes: LazySwitchKJ/PathchSageAttentionKJ in the Turbo 4X template.
+        self.assertIn("kijai/ComfyUI-KJNodes", installer)
+        # FaceDetailer bbox detector for God Mode stage 4.
+        self.assertIn("face_yolov8m", installer)
+
+    def test_godmode_download_script_targets_comfy_model_dirs(self) -> None:
+        script = (ROOT / "scripts" / "download_godmode_assets.py").read_text(encoding="utf-8")
+
+        self.assertIn("Comfy-Org/z_image_turbo", script)
+        for filename in ["z_image_turbo_bf16.safetensors", "qwen_3_4b.safetensors", "ae.safetensors"]:
+            self.assertIn(filename, script)
 
     def test_snapshot_asset_status_requires_payload_files(self) -> None:
         import quality_assets

@@ -27,17 +27,11 @@ if errorlevel 1 (
     echo WARNING: Some old Krea processes could not be stopped. Startup may still fail or memory may remain in use.
 )
 
-:: -- Start ComfyUI image engine (unless KREA_USE_COMFY=0) ----------------------
-set "KREA_USE_COMFY_CFG=1"
-if exist ".env" (
-    for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
-        if /I "%%a"=="KREA_USE_COMFY" set "KREA_USE_COMFY_CFG=%%b"
-    )
-)
-if /I not "%KREA_USE_COMFY_CFG%"=="0" (
-    echo Bringing up ComfyUI image engine...
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\start_comfyui.ps1"
-)
+:: -- Start ComfyUI image engine (REQUIRED for generation) -----------------------
+:: The script no-ops if an engine is already listening, and skips local startup
+:: entirely when KREA_COMFY_URL in .env points at a non-local engine.
+echo Bringing up ComfyUI image engine...
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\start_comfyui.ps1"
 
 for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"`) do set "KREA_SERVER_PORT=%%a"
 
@@ -86,7 +80,7 @@ if "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" set "KREA_SHARE_STARTUP_ARGS=%KREA_SH
 if not "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" if /I not "%KREA_SHARE_AUTO_FUNNEL%"=="false" echo Public Funnel auto-start is off because login gate is off or no admin exists.
 start "" /b %KREA_PYTHON% scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
 echo Local sharing server: http://localhost:%KREA_SERVER_PORT%/krea
-if /I not "%KREA_USE_COMFY_CFG%"=="0" echo ComfyUI image engine: http://localhost:8188
+echo ComfyUI image engine: http://localhost:8188
 if not exist "logs" mkdir logs
 for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-%KREA_LOG_STAMP%.log"
@@ -117,17 +111,9 @@ if errorlevel 1 (
     echo WARNING: Some old Krea processes could not be stopped. Startup may still fail or memory may remain in use.
 )
 
-:: -- Start ComfyUI image engine (unless KREA_USE_COMFY=0) ----------------------
-set "KREA_USE_COMFY_CFG=1"
-if exist ".env" (
-    for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
-        if /I "%%a"=="KREA_USE_COMFY" set "KREA_USE_COMFY_CFG=%%b"
-    )
-)
-if /I not "%KREA_USE_COMFY_CFG%"=="0" (
-    echo Bringing up ComfyUI image engine...
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\start_comfyui.ps1"
-)
+:: -- Start ComfyUI image engine (REQUIRED for generation) -----------------------
+echo Bringing up ComfyUI image engine...
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\start_comfyui.ps1"
 
 :: -- Preflight: Krea support models --------------------------------------------
 %KREA_PYTHON% scripts\download_support_models.py --check >nul 2>&1
@@ -174,7 +160,7 @@ echo ====================================
 echo  Krea 2 Studio
 echo.
 echo    Local:      http://localhost:8200
-if /I not "%KREA_USE_COMFY_CFG%"=="0" echo    ComfyUI:    http://localhost:8188
+echo    ComfyUI:    http://localhost:8188
 if defined LAN_IP (
     echo    LAN:        http://%LAN_IP%:8200
 )

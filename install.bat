@@ -99,9 +99,30 @@ if errorlevel 1 (
 )
 echo        Dependencies installed.
 
+:: -- .env scaffold + API tokens -------------------------------------------------
+:: Created BEFORE downloads so the tokens speed up every download step below.
+echo.
+echo [6/11] Configuring .env and API tokens...
+if not exist ".env" (
+    copy ".env.example" ".env" >nul
+    echo        Created .env from template.
+)
+echo.
+echo        Optional API tokens (press Enter to skip either):
+echo          - Hugging Face token: faster model downloads + access to gated repos.
+echo            Create at https://huggingface.co/settings/tokens (read access).
+echo          - CivitAI API token: required for some CivitAI LoRAs, faster downloads.
+echo            Create at https://civitai.com/user/account
+echo.
+set "KREA_HF_TOKEN_IN="
+set /p KREA_HF_TOKEN_IN="        Hugging Face token (blank = skip): "
+set "KREA_CIVITAI_TOKEN_IN="
+set /p KREA_CIVITAI_TOKEN_IN="        CivitAI API token (blank = skip): "
+python scripts/set_env_tokens.py "%KREA_HF_TOKEN_IN%" "%KREA_CIVITAI_TOKEN_IN%"
+
 :: -- Download Krea support models ------------------------------------------------
 echo.
-echo [6/10] Downloading Krea support models for moodboards...
+echo [7/11] Downloading Krea support models for moodboards...
 echo        This prepares Qwen3-VL conditioning and Qwen-Image VAE assets.
 python scripts/download_support_models.py
 if errorlevel 1 (
@@ -112,19 +133,31 @@ if errorlevel 1 (
 
 :: -- Download default ComfyUI workflow assets ---------------------------------
 echo.
-echo [7b/10] Downloading default ComfyUI workflow assets...
+echo [7b/11] Downloading default ComfyUI workflow assets...
 echo        This prepares the default Turbo INT8 ConvRot graph, abliterated Krea CLIP,
-echo        Qwen VAE fallback, and filter-bypass LoRA used by the default recipe.
-python scripts/download_quality_assets.py --assets krea2_turbo_int8_convrot,qwen3vl_abliterated_fp8,qwen_image_comfy_vae,krea2_filter_bypass
+echo        Qwen VAE fallback, filter-bypass LoRA, the Character Edit identity LoRA,
+echo        and the NK2E redraw LoRA.
+python scripts/download_quality_assets.py --assets krea2_turbo_int8_convrot,qwen3vl_abliterated_fp8,qwen_image_comfy_vae,krea2_filter_bypass,krea2_identity_edit_v1,nk2e_v01_lora
 if errorlevel 1 (
     echo ERROR: Failed to download one or more default ComfyUI workflow assets.
     echo        Re-run install.bat after checking internet/Hugging Face access.
     exit /b 1
 )
 
+:: -- Optional: God Mode assets (Z-Image Turbo refine pack, ~19GB) --------------
+echo.
+echo [7c/11] God Mode uses a second model (Z-Image Turbo) to refine Krea renders.
+echo         It downloads ~19GB extra. You can skip now and install later from
+echo         System ^> Quality Assets or by running scripts\download_godmode_assets.py.
+choice /c YN /n /t 30 /d N /m "        Download God Mode assets now? [Y/N] (auto-skip in 30s) "
+if not errorlevel 2 (
+    python scripts/download_godmode_assets.py
+    if errorlevel 1 echo WARNING: God Mode assets incomplete. God Mode stays hidden until they exist.
+)
+
 :: -- Node.js + Frontend build --------------------------------------------------
 echo.
-echo [8/10] Building frontend...
+echo [8/11] Building frontend...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo WARNING: Node.js not found. Skipping frontend build.
@@ -159,28 +192,21 @@ echo        Frontend skipped.
 
 :: -- ComfyUI image engine ------------------------------------------------------
 echo.
-echo [9/10] Setting up ComfyUI image engine (backend)...
+echo [9/11] Setting up ComfyUI image engine (backend)...
 echo        Clones ComfyUI, creates its venv, installs PyTorch + requirements,
 echo        ComfyUI-Manager, the Krea-2 custom nodes, and extra_model_paths.yaml.
 echo        This can take several minutes on first run.
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\install_comfyui.ps1"
 if errorlevel 1 (
-    echo WARNING: ComfyUI provisioning did not complete. You can re-run install.bat,
-    echo          run scripts\install_comfyui.ps1 directly, or set KREA_USE_COMFY=0
-    echo          in .env to use the in-process native engine instead.
-)
-
-:: -- .env scaffold ------------------------------------------------------------
-if not exist ".env" (
-    echo.
-    echo Creating .env from template...
-    copy ".env.example" ".env" >nul
-    echo        Edit .env -- set HF_TOKEN and model paths.
+    echo ERROR: ComfyUI provisioning did not complete. ComfyUI is the generation
+    echo        engine, so the app cannot generate images without it. Re-run
+    echo        install.bat or run scripts\install_comfyui.ps1 directly.
+    exit /b 1
 )
 
 :: -- Tailscale sharing helper -------------------------------------------------
 echo.
-echo [10/10] Checking Tailscale for public sharing...
+echo [10/11] Checking Tailscale for public sharing...
 where tailscale >nul 2>&1
 if errorlevel 1 (
     if exist "C:\Program Files\Tailscale\tailscale.exe" (
@@ -213,10 +239,9 @@ echo ====================================
 echo  Install complete!
 echo.
 echo  Next steps:
-echo    1. Edit .env -- set HF_TOKEN
-echo    2. Run run.bat to start public sharing (also launches ComfyUI)
-echo    3. If moodboard conditioning is missing, open System ^> Krea Moodboard Conditioning
-echo    4. For local-only mode, run run.bat local
-echo    5. ComfyUI is the image engine; set KREA_USE_COMFY=0 in .env for the native engine
+echo    1. Run run.bat to start public sharing (also launches ComfyUI)
+echo    2. If moodboard conditioning is missing, open System ^> Krea Moodboard Conditioning
+echo    3. For local-only mode, run run.bat local
+echo    4. Optional heavy extras (God Mode pack, RAW checkpoints, SeedVR2 7B) are in System ^> Quality Assets
 echo ====================================
 echo.

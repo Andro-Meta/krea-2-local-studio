@@ -2,6 +2,8 @@
 
 Local, web-based Krea 2 Studio for Windows, built on **ComfyUI as the generation engine**. The FastAPI backend composes ComfyUI graphs for every image operation; the React frontend provides a friendly, login-gated studio UI for text-to-image, redraw, img2img, inpaint/outpaint, character edit, depth control, upscaling, moodboards, LoRAs, gallery review, and optional Tailscale sharing.
 
+![Krea 2 Studio Create tab: prompt tools, quick recipes, engine selection, and the searchable moodboard browser](docs/images/create-tab.png)
+
 This is an unofficial local studio. It is not affiliated with Krea AI.
 
 ## Architecture
@@ -41,7 +43,7 @@ Install Python 3.12+ and Node.js 18+, then run:
 install.bat
 ```
 
-`install.bat` creates the Python venv, installs dependencies, sets up the ComfyUI engine with the required custom nodes (Krea2 nodes, QwenVL, RES4LYF, LanPaint, Ultimate SD Upscale, SeedVR2, RBG seed variance, Krea2Edit), downloads the default assets (Turbo INT8 ConvRot checkpoint, abliterated Qwen3-VL text encoder, Qwen VAE), and builds the frontend.
+`install.bat` creates the Python venv, installs dependencies, asks for your optional **Hugging Face** and **CivitAI** API tokens (they speed up every download and unlock gated/CivitAI models; both skippable), sets up the ComfyUI engine with all required custom nodes (Krea2 nodes, QwenVL, RES4LYF, LanPaint, Ultimate SD Upscale, SeedVR2, RBG seed variance, Krea2Edit, KJNodes, and more), downloads the default assets (Turbo INT8 ConvRot checkpoint, abliterated Qwen3-VL text encoder, Qwen VAE, Character Edit identity LoRA, NK2E LoRA, depth ControlNet pack, FaceDetailer detector), offers the optional **God Mode** refine pack (~19 GB, skippable, installable later), and builds the frontend. Tailscale (for public sharing) is likewise offered but optional.
 
 Then start the login-gated sharing app (ComfyUI comes up automatically, hidden):
 
@@ -61,14 +63,14 @@ Closing the terminal (X button or Ctrl+C) shuts down both the Studio server and 
 
 The default install prepares, under the ComfyUI model folders:
 
-- Krea 2 Turbo INT8 ConvRot at `ComfyUI/models/diffusion_models/`
-- abliterated Qwen3-VL fp8 text encoder at `ComfyUI/models/text_encoders/`
-- Qwen-Image VAE at `ComfyUI/models/vae/`
-- SR models (RealESRGAN x2, Remacri x4) at `ComfyUI/models/upscale_models/`
-- official Krea LoRAs at `models/loras/`
-- helper Qwen3-VL for the QwenVL nodes
+- Krea 2 Turbo INT8 ConvRot checkpoint, abliterated Qwen3-VL fp8 text encoder, and Qwen-Image VAE under `models/krea2/` (mapped into ComfyUI via `extra_model_paths.yaml`)
+- Character Edit identity LoRA, NK2E LoRA, filter-bypass LoRA, and depth Control LoRA under `models/loras/`
+- Depth-Anything-3 (small) under `models/geometry_estimation/`
+- SR models (RealESRGAN x2, Remacri x4) under `models/upscale_models/`
+- FaceDetailer bbox detector under `ComfyUI/models/ultralytics/bbox/`
+- helper Qwen3-VL for the QwenVL nodes (auto-fetched on first helper use)
 
-Krea 2 RAW and the SeedVR2 DiTs are optional downloads from the System tab (RAW is large and not required for the Turbo workflow). Engine/quantization variants (fp8, bf16, GGUF) are selectable per generation; they choose the matching ComfyUI UNET loader.
+Krea 2 RAW, the SeedVR2 DiTs (auto-download on first upscale), and the God Mode pack (Z-Image Turbo refine, ~19 GB — `scripts/download_godmode_assets.py` or System > Quality Assets) are optional. Engine/quantization variants (INT8, fp8, bf16, GGUF) are selectable per generation; they choose the matching ComfyUI UNET loader.
 
 ## Moodboards
 
@@ -103,7 +105,13 @@ Roles:
 
 ## Performance
 
-The recommended starting point for a 24 GB GPU is Krea 2 Turbo INT8 ConvRot at 1K with the safe queued batch mode. The ComfyUI engine starts with `--disable-pinned-memory`, a VRAM reserve, and SageAttention when available; tune via `KREA_COMFY_ARGS`, `KREA_COMFY_HIGHVRAM`, `KREA_COMFY_RESERVE_VRAM`, `KREA_COMFY_SAGE` in `.env`.
+The recommended starting point for a 24 GB GPU is Krea 2 Turbo INT8 ConvRot at 1K with the safe queued batch mode. The ComfyUI engine starts with `--disable-pinned-memory`, a VRAM reserve, and SageAttention when available. Tune it in `.env`:
+
+- `KREA_COMFY_VRAM_MODE=highvram | normalvram | lowvram | novram` — ComfyUI memory strategy (`highvram` keeps models resident, ideal for INT8/fp8 on 24 GB; `lowvram`/`novram` for smaller cards).
+- `KREA_COMFY_RESERVE_VRAM=2.0` — GB of headroom so the driver never spills into shared RAM.
+- `KREA_COMFY_SAGE=0` — disable SageAttention.
+- `KREA_COMFY_ARGS=...` — full override of all ComfyUI launch flags (advanced).
+- `KREA_COMFY_URL=http://host:8188` — use an existing/remote ComfyUI instead of the auto-started local one (non-local URLs skip local startup entirely).
 
 For measured efficiency notes see `docs/performance.md`.
 

@@ -12,6 +12,33 @@ $comfyDir = Join-Path $root "ComfyUI"
 $py = Join-Path $comfyDir "venv\Scripts\python.exe"
 $main = Join-Path $comfyDir "main.py"
 
+# Load KREA_COMFY_* tuning flags from .env (run.bat does not export them into
+# the environment). Real environment variables keep priority over .env.
+$envFile = Join-Path $root ".env"
+if (Test-Path $envFile) {
+    foreach ($line in Get-Content $envFile) {
+        if ($line -match '^\s*(KREA_COMFY_[A-Z_]+)\s*=\s*(.*?)\s*$') {
+            $key = $Matches[1]
+            $value = $Matches[2]
+            if ($value -and -not [Environment]::GetEnvironmentVariable($key)) {
+                [Environment]::SetEnvironmentVariable($key, $value)
+            }
+        }
+    }
+}
+
+# KREA_COMFY_URL is the single engine knob: unset/local -> we manage a local
+# ComfyUI here; a non-local URL -> the user runs their own engine elsewhere,
+# so there is nothing to start on this machine.
+$comfyUrl = $env:KREA_COMFY_URL
+if ($comfyUrl -and $comfyUrl -notmatch '^https?://(127\.0\.0\.1|localhost)([:/]|$)') {
+    Write-Host "  External ComfyUI engine configured at $comfyUrl - not starting a local one."
+    exit 0
+}
+if ($comfyUrl -match '^https?://(?:127\.0\.0\.1|localhost):(\d+)') {
+    $Port = [int]$Matches[1]
+}
+
 if (-not (Test-Path $main) -or -not (Test-Path $py)) {
     Write-Host "  ComfyUI not found at $comfyDir - skipping (set KREA_USE_COMFY=0 to use the native engine)."
     exit 0
@@ -35,12 +62,18 @@ if ($env:KREA_COMFY_ARGS) {
     $extra = $env:KREA_COMFY_ARGS -split '\s+'
 } else {
     $extra = @("--disable-pinned-memory")
-    # --highvram is OFF by default now: on a 24GB card it pins the DiT + the 5GB
-    # Qwen3-VL text encoder + VAE resident, leaving no headroom for activations so
-    # the driver spills to shared RAM (catastrophic with fp8 + stacked LoRAs / the
-    # depth ControlNet). Default lets ComfyUI offload the text encoder during
-    # sampling. Set KREA_COMFY_HIGHVRAM=1 to force it back on.
-    if ($env:KREA_COMFY_HIGHVRAM -eq "1") { $extra += "--highvram" }
+    # VRAM strategy. KREA_COMFY_VRAM_MODE picks ComfyUI's memory mode directly:
+    #   highvram   - keep models resident in VRAM (fastest; fine for INT8/fp8 on 24GB)
+    #   normalvram - ComfyUI's default balancing (also the default here)
+    #   lowvram    - aggressive offload for small cards
+    #   novram     - maximum offload (last resort)
+    # KREA_COMFY_HIGHVRAM=1 remains as a back-compat alias for highvram.
+    $vramMode = "$env:KREA_COMFY_VRAM_MODE".Trim().ToLower()
+    if (@("highvram", "normalvram", "lowvram", "novram") -contains $vramMode) {
+        if ($vramMode -ne "normalvram") { $extra += "--$vramMode" }
+    } elseif ($env:KREA_COMFY_HIGHVRAM -eq "1") {
+        $extra += "--highvram"
+    }
     # --reserve-vram keeps a headroom buffer so ComfyUI never allocates into the
     # zone where the NVIDIA driver spills VRAM into shared system RAM (the cause
     # of catastrophic minutes-per-step slowdowns with fp8 + stacked LoRAs, e.g.

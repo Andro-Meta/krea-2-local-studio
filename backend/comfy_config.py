@@ -1,18 +1,13 @@
-"""Feature toggle for the ComfyUI backend adapter.
+"""ComfyUI backend routing.
 
-When enabled (the default), image generation is routed to a local ComfyUI
-server via comfy_workflows.comfy_generate instead of the in-process native
-PyTorch pipeline. Set KREA_USE_COMFY=0 to fall back to the legacy native
-engine.
+ComfyUI is the generation engine: all image work is routed to the ComfyUI
+server (local by default, or wherever KREA_COMFY_URL points) via
+comfy_workflows.comfy_generate. The legacy in-process PyTorch pipeline was
+removed, so this always returns True; it remains a function because call
+sites read like a capability check.
 """
 from __future__ import annotations
 
-import os
-
-_FALSEY = {"0", "false", "no", "off", ""}
-
 
 def use_comfy_backend() -> bool:
-    # Phase 1: native Studio DiT is deprecated. Always route image work to ComfyUI.
-    # KREA_USE_COMFY=0 is ignored (kept only so old .env files don't surprise anyone).
     return True
