@@ -10,7 +10,7 @@ requests>=2.31.0
 pillow>=10.4.0
 numpy>=1.26.0
 einops>=0.7.0
-huggingface_hub>=0.26.0
+huggingface_hub>=1.23.0
 psutil>=5.9.0
 
 # ML
