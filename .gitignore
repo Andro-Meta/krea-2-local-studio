@@ -19,6 +19,25 @@ frontend/node_modules/
 frontend/dist/
 npm-debug.log*
 
+# ComfyUI engine checkout (installed by scripts/install_comfyui.ps1)
+ComfyUI/
+
+# Scratch / one-off dev scripts and working folders
+scripts/_*.py
+.mb_rewrite/
+.tmp_*
+
+# Local user data and runtime caches
+data/custom_moodboards/
+data/civitai_lora_cache.json
+data/prompt_recipes.json
+
+# Personal reference dumps and test images in docs
+docs/Discord-Banodoco-6-27/
+docs/*.png
+docs/*.jpg
+docs/*.webp
+
 # Generated data
 outputs/
 logs/

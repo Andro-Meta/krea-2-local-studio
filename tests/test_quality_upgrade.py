@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -118,41 +119,6 @@ class QualityUpgradeTests(unittest.TestCase):
             expected = torch.nn.functional.linear(x, diff * 0.25)
             self.assertTrue(reports[0]["applied"], reports)
             self.assertTrue(torch.allclose(model.txtfusion.projector(x), expected))
-
-    def test_realtime_preview_request_accepts_shared_moodboards(self) -> None:
-        from schemas import RealtimePreviewRequest
-
-        req = RealtimePreviewRequest(
-            session_id="rt-test",
-            prompt="a castle",
-            canvas_image_b64="abc",
-            mood="cinematic",
-            moodboard_ids=[12, 34],
-            moodboard_uuids=["one", "two"],
-            moodboard_images=["style-ref"],
-            moodboard_strength=0.4,
-            loras=[{"name": "krea2_darkbrush", "strength": -0.5, "enabled": True}],
-        )
-
-        self.assertEqual(req.mood, "cinematic")
-        self.assertEqual(req.moodboard_ids, [12, 34])
-        self.assertEqual(req.moodboard_uuids, ["one", "two"])
-        self.assertEqual(req.moodboard_images, ["style-ref"])
-        self.assertEqual(req.moodboard_strength, 0.4)
-        self.assertEqual(req.loras[0]["strength"], -0.5)
-
-    def test_provider_auto_uses_krea_when_flux_missing(self) -> None:
-        import edit_providers
-
-        provider = edit_providers.resolve_edit_provider("auto", "inpaint", flux_fill_installed=False)
-        self.assertEqual(provider.name, "krea_native")
-        self.assertIn("FLUX Fill", provider.reason)
-
-    def test_provider_auto_uses_flux_for_strict_edits_when_available(self) -> None:
-        import edit_providers
-
-        provider = edit_providers.resolve_edit_provider("auto", "outpaint", flux_fill_installed=True)
-        self.assertEqual(provider.name, "flux_fill")
 
     def test_mask_crop_expands_and_composites_back(self) -> None:
         import mask_editing
@@ -311,86 +277,6 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(metadata["batch"]["count"], 4)
         self.assertTrue(metadata["batch"]["parallel"])
 
-    def test_raw_checkpoint_defaults_are_normalized_for_direct_api_requests(self) -> None:
-        from inference import normalize_generation_defaults
-        from schemas import GenerationRequest
-
-        req = GenerationRequest(prompt="a quiet forest", checkpoint="raw")
-
-        normalize_generation_defaults(req)
-
-        self.assertEqual(req.steps, 52)
-        self.assertEqual(req.cfg, 3.5)
-        self.assertIsNone(req.mu)
-        self.assertEqual(req.quantization, "bf16")
-
-    def test_raw_defaults_do_not_override_explicit_user_values(self) -> None:
-        from inference import normalize_generation_defaults
-        from schemas import GenerationRequest
-
-        req = GenerationRequest(prompt="a quiet forest", checkpoint="raw", steps=24, cfg=2.0, mu=0.9)
-
-        normalize_generation_defaults(req)
-
-        self.assertEqual(req.steps, 24)
-        self.assertEqual(req.cfg, 2.0)
-        self.assertEqual(req.mu, 0.9)
-
-    def test_turbo_defaults_are_normalized_for_direct_api_requests(self) -> None:
-        from inference import normalize_generation_defaults
-        from schemas import GenerationRequest
-
-        req = GenerationRequest(prompt="a quiet forest", checkpoint="turbo")
-
-        normalize_generation_defaults(req)
-
-        self.assertEqual(req.steps, 8)
-        self.assertEqual(req.cfg, 0.0)
-        self.assertEqual(req.mu, 1.15)
-        self.assertEqual(req.quantization, "fp8")
-
-    def test_creativity_high_raises_unset_style_influence(self) -> None:
-        from inference import normalize_generation_defaults
-        from schemas import GenerationRequest
-
-        req = GenerationRequest(prompt="a quiet forest", creativity="high")
-
-        normalize_generation_defaults(req)
-
-        self.assertEqual(req.creativity, "high")
-        self.assertEqual(req.moodboard_strength, 0.5)
-        self.assertEqual(req.rebalance_multiplier, 1.15)
-
-    def test_creativity_preserves_explicit_user_values(self) -> None:
-        from inference import normalize_generation_defaults
-        from schemas import GenerationRequest
-
-        req = GenerationRequest(
-            prompt="a quiet forest",
-            creativity="low",
-            moodboard_strength=0.9,
-            rebalance_multiplier=7.0,
-        )
-
-        normalize_generation_defaults(req)
-
-        self.assertEqual(req.moodboard_strength, 0.9)
-        self.assertEqual(req.rebalance_multiplier, 7.0)
-
-    def test_lanpaint_method_rejects_non_inpaint_modes(self) -> None:
-        from inference import _resolve_native_sampler
-
-        req = SimpleNamespace(
-            mode="txt2img",
-            sampler="euler_flow",
-            inpaint_method="lanpaint_experimental",
-            init_image_b64="",
-            mask_b64="",
-        )
-
-        with self.assertRaisesRegex(ValueError, "only available for inpaint"):
-            _resolve_native_sampler(req)
-
     def test_official_lora_download_uses_loras_subfolder(self) -> None:
         import lora_manager
 
@@ -411,25 +297,6 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertFalse(item["download_enabled"])
         self.assertIn("manual", item["match_info"].lower())
 
-    def test_flux_fill_call_uses_documented_defaults(self) -> None:
-        import flux_fill_provider
-
-        kwargs = flux_fill_provider.flux_fill_call_kwargs(
-            prompt="add a lantern",
-            image=Image.new("RGB", (512, 512), "white"),
-            mask=Image.new("L", (512, 512), 255),
-            width=512,
-            height=512,
-            seed=42,
-            steps=8,
-        )
-
-        self.assertEqual(kwargs["guidance_scale"], 30.0)
-        self.assertEqual(kwargs["num_inference_steps"], 50)
-        self.assertEqual(kwargs["max_sequence_length"], 512)
-        self.assertEqual(kwargs["height"], 512)
-        self.assertEqual(kwargs["width"], 512)
-
     def test_quality_asset_download_specs_use_official_paths(self) -> None:
         import quality_assets
 
@@ -442,82 +309,57 @@ class QualityUpgradeTests(unittest.TestCase):
         self.assertEqual(specs["qwen_image_comfy_vae"].filename, "split_files/vae/qwen_image_vae.safetensors")
         self.assertEqual(specs["spacepxl_wan_2x_vae"].repo_id, "spacepxl/Wan2.1-VAE-upscale2x")
         self.assertEqual(specs["qwen3vl_abliterated_fp8"].repo_id, "ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy")
+        self.assertEqual(specs["qwen3vl_krea2_fp8"].filename, "text_encoders/qwen3vl_4b_fp8_scaled.safetensors")
         self.assertEqual(specs["k2q_turbo_lora_rank64"].repo_id, "silveroxides/K2Q")
         self.assertEqual(specs["k2q_turbo_lora_rank64"].filename, "krea2_turbo_lora_rank_64_final_nodiff.safetensors")
         self.assertEqual(specs["k2q_turbo_lora_rank128"].filename, "krea2_turbo_lora_rank_128_final_nodiff.safetensors")
         self.assertEqual(specs["nk2e_v01_lora"].filename, "comfy/v0.1/NK2E-v0.1.safetensors")
-        self.assertFalse(specs["k2q_filter_bypass_projectors"].download_enabled)
+        self.assertEqual(specs["krea2_identity_edit_v1"].repo_id, "conradlocke/krea2-identity-edit")
+        self.assertEqual(specs["krea2_identity_edit_v1"].filename, "krea2_identity_edit_v1.safetensors")
+        self.assertTrue(str(specs["krea2_identity_edit_v1"].local_path).endswith("models\\loras\\krea2_identity_edit_v1.safetensors"))
+        self.assertEqual(specs["k2q_filter_bypass_projectors"].allow_patterns, ["txtfusion.projector_singlelayer/*"])
+        self.assertTrue(specs["k2q_filter_bypass_projectors"].download_enabled)
         self.assertEqual(specs["gguf_krea2_turbo_q4km"].filename, "Krea-2-Turbo-Q4_K_M.gguf")
         self.assertEqual(specs["gguf_qwen3vl_4b_q4km"].filename, "Qwen3VL-4B-Instruct-Q4_K_M.gguf")
-        self.assertEqual(specs["pid_qwenimage_decoder"].filename, "diffusion_models/pid_qwenimage_1024_to_4096_4step_bf16.safetensors")
-        self.assertEqual(specs["pid_qwenimage_official_checkpoint"].filename, "checkpoints/PiD_res2kto4k_sr4x_official_qwenimage_distill_4step/model_ema_bf16.pth")
-        self.assertFalse(specs["krea2_filter_bypass"].download_enabled)
-        self.assertEqual(specs["flux_fill"].repo_id, "black-forest-labs/FLUX.1-Fill-dev")
+        self.assertTrue(specs["krea2_filter_bypass"].download_enabled)
 
-    def test_pid_upscale_dispatches_to_provider(self) -> None:
-        from fastapi.testclient import TestClient
-        from PIL import Image
-        import base64
-        import io
-        import main
+    def test_install_bat_downloads_default_comfy_assets(self) -> None:
+        install_bat = (ROOT / "install.bat").read_text(encoding="utf-8")
 
-        buf = io.BytesIO()
-        Image.new("RGB", (8, 8), "black").save(buf, format="PNG")
-        payload = base64.b64encode(buf.getvalue()).decode()
+        for asset_id in [
+            "krea2_turbo_int8_convrot",
+            "qwen3vl_abliterated_fp8",
+            "qwen_image_comfy_vae",
+            "krea2_filter_bypass",
+        ]:
+            self.assertIn(asset_id, install_bat)
 
-        with (
-            patch("main.pipeline.is_loaded", return_value=True),
-            patch("main.pipeline.unload") as unload,
-            patch("main.clear_cuda_cache") as clear_cache,
-            patch("pid_decoder_provider.upscale_pid", return_value=Image.new("RGB", (16, 16), "white")) as provider,
-            TestClient(main.app) as client,
-        ):
-            response = client.post("/api/upscale", json={"image_b64": payload, "method": "pid_upscale", "upscale_by": 4, "prompt": "test"})
+    def test_comfy_installer_requires_default_nodes(self) -> None:
+        installer = (ROOT / "scripts" / "install_comfyui.ps1").read_text(encoding="utf-8")
 
-        self.assertEqual(response.status_code, 200)
-        unload.assert_called_once()
-        clear_cache.assert_called_once()
-        provider.assert_called_once()
-        self.assertIn("image_b64", response.json())
+        for node in ["ComfyUI-Krea2TextEncoder", "ComfyUI-Conditioning-Rebalance", "ComfyUI-INT8-Fast"]:
+            self.assertIn(node, installer)
+        self.assertIn("Required default ComfyUI node failed to clone", installer)
 
-    def test_pid_upscale_rejects_non_4x_scale(self) -> None:
-        from fastapi.testclient import TestClient
-        from PIL import Image
-        import base64
-        import io
-        import main
+    def test_comfy_installer_includes_character_edit_node(self) -> None:
+        installer = (ROOT / "scripts" / "install_comfyui.ps1").read_text(encoding="utf-8")
 
-        buf = io.BytesIO()
-        Image.new("RGB", (8, 8), "black").save(buf, format="PNG")
-        payload = base64.b64encode(buf.getvalue()).decode()
+        self.assertIn("lbouaraba/comfyui-krea2edit", installer)
 
-        with TestClient(main.app) as client:
-            response = client.post("/api/upscale", json={"image_b64": payload, "method": "pid_upscale", "upscale_by": 2, "prompt": "test"})
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("4x", response.json()["detail"])
-
-    def test_flux_asset_status_guides_token_setup(self) -> None:
+    def test_snapshot_asset_status_requires_payload_files(self) -> None:
         import quality_assets
 
-        spec = quality_assets.asset_by_id("flux_fill")
-        with patch.object(quality_assets, "asset_installed", return_value=False):
-            status = quality_assets.asset_status(spec, has_hf_token=False)
-            self.assertTrue(status["gated"])
-            self.assertTrue(status["needs_token"])
-            self.assertEqual(status["setup_url"], "https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev")
+        base_spec = quality_assets.asset_by_id("k2q_filter_bypass_projectors")
+        with tempfile.TemporaryDirectory() as td:
+            spec = replace(base_spec, local_path=Path(td))
+            Path(td, ".gitattributes").write_text("", encoding="utf-8")
+            self.assertFalse(quality_assets.asset_status(spec)["installed"])
 
-            with_token = quality_assets.asset_status(spec, has_hf_token=True)
-            self.assertFalse(with_token["needs_token"])
+            payload = Path(td, "txtfusion.projector_singlelayer", "krea2bypass_filtered_01.safetensors")
+            payload.parent.mkdir(parents=True)
+            payload.write_bytes(b"fake")
 
-    def test_quality_asset_status_reports_disabled_downloads(self) -> None:
-        import quality_assets
-
-        spec = quality_assets.asset_by_id("krea2_filter_bypass")
-        status = quality_assets.asset_status(spec, has_hf_token=True)
-
-        self.assertFalse(status["download_enabled"])
-        self.assertIn("safety", status["disabled_reason"].lower())
+            self.assertTrue(quality_assets.asset_status(spec)["installed"])
 
     def test_xperiment_setup_returns_measured_fast_defaults(self) -> None:
         from fastapi.testclient import TestClient
@@ -536,21 +378,21 @@ class QualityUpgradeTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["sampler"], {"sampler": "er_sde", "scheduler": "beta57", "steps": 6, "cfg": 0.0})
+        self.assertEqual(data["sampler"], {"sampler": "er_sde", "scheduler": "beta57", "steps": 8, "cfg": 1.0})
         self.assertEqual(data["diffusion_engine"], "native_int8_convrot")
         self.assertEqual(data["quantization"], "int8")
-        self.assertEqual(data["lora"]["strength"], 0.55)
-        self.assertEqual(data["lora"]["block_filter"], "late")
-        self.assertEqual(data["loras"][0]["name"], "Krea2-realism-V1")
-        self.assertEqual(data["loras"][0]["strength"], 0.55)
-        self.assertEqual(data["loras"][0]["block_filter"], "late")
-        self.assertEqual(data["loras"][1]["name"], "krea2filterbypass3")
-        self.assertEqual(data["loras"][1]["strength"], 4.0)
+        loras = {item["name"]: item for item in data["loras"]}
+        self.assertEqual(loras["Krea2-realism-V1"]["strength"], 0.6)
+        self.assertEqual(loras["Krea2-realism-V1"]["block_filter"], "late")
+        self.assertIn(data["lora"]["name"], loras)
+        if "krea2filterbypass3" in loras:
+            self.assertEqual(loras["krea2filterbypass3"]["strength"], 4.0)
         self.assertFalse(data["use_prompt_expander"])
         self.assertEqual(data["prompt_expander_backend"], "local")
         self.assertEqual(data["local_llm_backend"], "transformers")
         self.assertEqual(data["local_qwen_model_id"], "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated")
-        self.assertIn("1024px", data["benchmark_note"])
+        self.assertIn("8 steps", data["benchmark_note"])
+        self.assertIn("CFG 1", data["benchmark_note"])
 
     def test_gguf_low_vram_setup_skips_installed_assets_and_sets_paths(self) -> None:
         from fastapi.testclient import TestClient

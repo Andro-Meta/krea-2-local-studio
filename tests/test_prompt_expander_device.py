@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import asyncio
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -34,12 +36,13 @@ class _FakeTorch:
 
 
 class PromptExpanderDeviceTests(unittest.TestCase):
-    def test_auto_uses_cpu_when_vram_is_tight(self) -> None:
+    def test_auto_fails_fast_when_vram_is_tight(self) -> None:
         import prompt_expander
         from settings import settings
 
         with patch.object(settings, "local_qwen_device", "auto"):
-            self.assertEqual(prompt_expander._resolve_local_qwen_device(_FakeTorch(free_gb=8.0)), "cpu")
+            with self.assertRaisesRegex(RuntimeError, "Auto mode no longer falls back to CPU"):
+                prompt_expander._resolve_local_qwen_device(_FakeTorch(free_gb=8.0))
 
     def test_auto_uses_cuda_when_vram_is_plentiful(self) -> None:
         import prompt_expander
@@ -48,12 +51,13 @@ class PromptExpanderDeviceTests(unittest.TestCase):
         with patch.object(settings, "local_qwen_device", "auto"):
             self.assertEqual(prompt_expander._resolve_local_qwen_device(_FakeTorch(free_gb=18.0)), "cuda")
 
-    def test_auto_uses_cpu_when_krea_pipeline_already_allocated_cuda(self) -> None:
+    def test_auto_fails_fast_when_krea_pipeline_already_allocated_cuda(self) -> None:
         import prompt_expander
         from settings import settings
 
         with patch.object(settings, "local_qwen_device", "auto"):
-            self.assertEqual(prompt_expander._resolve_local_qwen_device(_FakeTorch(free_gb=13.2, allocated_gb=10.0)), "cpu")
+            with self.assertRaisesRegex(RuntimeError, "already has 10.0GB CUDA allocated"):
+                prompt_expander._resolve_local_qwen_device(_FakeTorch(free_gb=13.2, allocated_gb=10.0))
 
     def test_explicit_device_overrides_auto_policy(self) -> None:
         import prompt_expander
@@ -89,6 +93,82 @@ class PromptExpanderDeviceTests(unittest.TestCase):
             prompt_expander.unload_local_qwen()
 
         self.assertEqual(calls, ["enter", "exit"])
+
+    def test_expand_prompt_local_unloads_after_use(self) -> None:
+        import prompt_expander
+
+        class FakeTokenizer:
+            eos_token_id = 1
+
+            def apply_chat_template(self, *_args, **_kwargs):
+                class Inputs:
+                    shape = (1, 2)
+
+                    def to(self, _device):
+                        return self
+
+                return Inputs()
+
+            def decode(self, *_args, **_kwargs):
+                return "expanded prompt"
+
+        class FakeModel:
+            device = "cpu"
+
+            def generate(self, **_kwargs):
+                return [[1, 2, 3]]
+
+        with (
+            patch.object(prompt_expander, "_load_local_qwen", return_value=(FakeTokenizer(), None, FakeModel())),
+            patch.object(prompt_expander, "unload_local_qwen_after_use") as unload,
+        ):
+            result = prompt_expander.expand_prompt_local("a fox")
+
+        self.assertTrue(result.changed)
+        unload.assert_called_once()
+
+    def test_local_helper_preempts_and_reloads_loaded_krea_model(self) -> None:
+        import main
+        from settings import settings
+
+        class FakePipeline:
+            _loaded_quant = "int8"
+            _loading = False
+
+            def __init__(self, checkpoint: str):
+                self._loaded_checkpoint = checkpoint
+                self.calls: list[str] = []
+
+            def is_loaded(self):
+                return True
+
+            def unload(self):
+                self.calls.append("unload")
+
+            def load(self, checkpoint, quantization, **_kwargs):
+                self.calls.append(f"load:{Path(checkpoint).name}:{quantization}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "model.safetensors"
+            checkpoint.write_bytes(b"x")
+            fake = FakePipeline(str(checkpoint))
+
+            async def run():
+                with (
+                    patch.object(main, "pipeline", fake),
+                    patch.object(main, "generation_queue", None),
+                    patch.object(main, "clear_cuda_cache") as clear,
+                    patch.object(settings, "local_llm_backend", "transformers"),
+                    patch.object(settings, "local_qwen_device", "auto"),
+                ):
+                    result = await main._run_helper_with_optional_krea_preempt("local", lambda: "ok")
+                return result, clear.called
+
+            result, cleared = asyncio.run(run())
+
+        self.assertEqual(result, "ok")
+        self.assertTrue(cleared)
+        self.assertEqual(fake.calls, ["unload", "load:model.safetensors:int8"])
 
 
 if __name__ == "__main__":

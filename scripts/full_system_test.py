@@ -55,17 +55,6 @@ def wait_job(base_url: str, job_id: str, *, timeout_s: int) -> dict:
     raise TimeoutError(f"job did not finish: {job_id}; last={last}")
 
 
-def wait_preview(base_url: str, job_id: str, *, timeout_s: int) -> dict:
-    deadline = time.time() + timeout_s
-    last: dict = {}
-    while time.time() < deadline:
-        last = request_json(base_url, f"/api/realtime/preview/{job_id}", timeout=30)
-        if last.get("status") in {"done", "error", "cancelled", "stale"}:
-            return last
-        time.sleep(2)
-    raise TimeoutError(f"preview did not finish: {job_id}; last={last}")
-
-
 def ensure_model(base_url: str, timeout_s: int) -> dict:
     status = request_json(base_url, "/api/system", timeout=30)
     model_status = status.get("model_status", {})
@@ -382,34 +371,6 @@ def main() -> int:
         api_checks["upscale_ultimate"] = {"error": str(exc)}
         notes.append(f"upscale_ultimate: failed: {exc}")
 
-    try:
-        preview_job = request_json(
-            args.base_url,
-            "/api/realtime/preview",
-            method="POST",
-            payload={
-                "session_id": "full-system-test",
-                "prompt": "photorealistic cozy cottage from a rough canvas sketch",
-                "negative_prompt": "low quality, blurry, text, watermark",
-                "canvas_image_b64": encode_image(source),
-                "width": 512,
-                "height": 512,
-                "preview_steps": 5,
-                "moodboard_strength": 0.45,
-                "seed": 270627,
-            },
-            timeout=60,
-        )
-        preview = wait_preview(args.base_url, preview_job["job_id"], timeout_s=args.timeout)
-        save_json(out_dir / "realtime_preview_job.json", preview)
-        if preview.get("status") == "done" and preview.get("image_b64"):
-            decode_image(preview["image_b64"]).save(out_dir / "realtime_preview.png")
-            notes.append("realtime_preview: ok")
-        else:
-            notes.append(f"realtime_preview: failed: {preview.get('error')}")
-    except Exception as exc:
-        notes.append(f"realtime_preview: failed: {exc}")
-
     contact_sheet(generated, out_dir / "contact_sheet.png")
     save_json(out_dir / "api_checks.json", api_checks)
 
@@ -422,7 +383,7 @@ def main() -> int:
         "- redraw/img2img/style references.",
         "- native inpaint, LanPaint inpaint, outpaint.",
         "- moodboard search/detail/favorite and catalog moodboard generation when local catalog data is present.",
-        "- preprocessor preview, realtime preview, gallery surface, and Ultimate upscale.",
+        "- preprocessor preview, gallery surface, and Ultimate upscale.",
         "",
         "## Results",
         *[f"- {note}" for note in notes],

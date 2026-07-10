@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import importlib.util
+import platform
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _installed(package: str) -> bool:
+    return importlib.util.find_spec(package) is not None
+
+
+def accelerator_status() -> dict:
+    system = platform.system().lower()
+    triton_installed = _installed("triton")
+    sage_installed = _installed("sageattention")
+    xformers_installed = _installed("xformers")
+    windows = system.startswith("win")
+    repo_root = Path(__file__).resolve().parents[1]
+    comfy_python = repo_root / "ComfyUI" / "venv" / "Scripts" / "python.exe"
+    comfy = {"available": False, "python": str(comfy_python), "triton": False, "sageattention": False, "comfy_kitchen": False}
+    if comfy_python.exists():
+        try:
+            code = (
+                "import importlib.util, json; "
+                "mods=['triton','sageattention','comfy_kitchen']; "
+                "print(json.dumps({m: importlib.util.find_spec(m) is not None for m in mods}))"
+            )
+            proc = subprocess.run([str(comfy_python), "-c", code], capture_output=True, text=True, timeout=10)
+            if proc.returncode == 0:
+                import json
+
+                mods = json.loads(proc.stdout.strip() or "{}")
+                comfy.update({"available": True, **mods})
+        except Exception:
+            pass
+    return {
+        "sdpa": {"available": True, "default": True},
+        "studio_python": sys.executable,
+        "comfyui_venv": comfy,
+        "triton_windows": {
+            "installed": triton_installed,
+            "compatible": windows,
+            "recommendation": "optional" if windows else "use platform Triton only if already validated",
+        },
+        "sageattention": {
+            "installed": sage_installed,
+            "compatible": True,
+            "recommendation": "experimental",
+        },
+        "xformers": {
+            "installed": xformers_installed,
+            "compatible": False,
+            "recommendation": "not recommended for Krea path yet",
+        },
+    }
+
+
+def attention_acceleration_diagnostic(
+    *,
+    device: str = "cuda",
+    dtype: str = "bf16",
+    text_fusion: bool = True,
+    mask_shape_safe: bool = True,
+) -> dict:
+    """Report whether optional attention acceleration is safe to enable.
+
+    This is diagnostic-only; Studio does not enable custom attention kernels by
+    default because Krea 2's fp8/text-fusion paths are easy to destabilize.
+    """
+    has_sage = importlib.util.find_spec("sageattention") is not None
+    if not has_sage:
+        return {
+            "status": "unavailable",
+            "available": False,
+            "reason": "SageAttention is not installed",
+            "recommendation": "Keep the default PyTorch SDPA attention path.",
+        }
+    if str(dtype).lower() == "fp8" or text_fusion:
+        return {
+            "status": "safe_disabled",
+            "available": True,
+            "reason": "fp8/text-fusion attention path is unsafe for acceleration",
+            "recommendation": "Keep acceleration off for Krea 2 fp8 or text-fusion runs.",
+        }
+    if platform.system().lower().startswith("win"):
+        return {
+            "status": "safe_disabled",
+            "available": True,
+            "reason": "Windows Triton/SageAttention runtime is not enabled by default",
+            "recommendation": "Use the default SDPA path unless you install and validate a compatible kernel.",
+        }
+    if device != "cuda":
+        return {
+            "status": "safe_disabled",
+            "available": True,
+            "reason": "attention acceleration requires CUDA",
+            "recommendation": "Use SDPA on CPU or non-CUDA devices.",
+        }
+    if not mask_shape_safe:
+        return {
+            "status": "safe_disabled",
+            "available": True,
+            "reason": "attention mask shape is unsupported by the accelerated path",
+            "recommendation": "Use SDPA for this request.",
+        }
+    return {
+        "status": "available_but_off",
+        "available": True,
+        "reason": "optional attention package is present but disabled by default",
+        "recommendation": "Only enable after fixed-seed visual A/B validation.",
+    }

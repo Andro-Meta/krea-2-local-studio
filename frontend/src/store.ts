@@ -1,6 +1,5 @@
 import { create } from 'zustand'
-import type { EngineCatalog, LoraInfo, SystemReport } from './api'
-import { createDefaultDocument, type RealtimeDocument, type RealtimeTool } from './components/RealtimeStudio/canvasDocument'
+import type { EngineCatalog, LoraInfo, MoodboardSuggestion, SystemReport } from './api'
 
 export interface ActiveLora {
   name: string
@@ -37,11 +36,12 @@ export interface RegionalPrompt {
 export interface GenerateParams {
   prompt: string
   negative_prompt: string
-  mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
+  mode: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw' | 'character_edit'
   model_profile: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
   diffusion_engine: 'native_pytorch' | 'native_gguf' | 'native_int8_convrot'
   checkpoint: 'turbo' | 'raw'
   quantization: 'bf16' | 'fp8' | 'gguf' | 'fp16' | 'int8'
+  turbo_int8_variant: string
   steps: number
   cfg: number
   mu: number | null
@@ -54,15 +54,35 @@ export interface GenerateParams {
   num_images: number
   batch_mode: 'safe_queue' | 'parallel'
   parallel_batch_confirmed: boolean
+  batch_int8_all: boolean
   seed: number
   denoise: number
-  sampler: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
-  scheduler: 'simple' | 'normal' | 'beta' | 'beta57' | 'sgm_uniform' | 'bong_tangent' | 'karras' | 'exponential'
-  inpaint_method: 'native' | 'lanpaint_experimental' | 'flux_fill'
+  sampler: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'res_3s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
+  scheduler: 'simple' | 'normal' | 'beta' | 'beta57' | 'sgm_uniform' | 'bong_tangent' | 'kl_optimal' | 'karras' | 'exponential'
+  inpaint_method: 'native' | 'lanpaint_experimental'
   differential_inpaint: boolean
   differential_strength: number
   cfg_zero_star: boolean
   cfg_zero_init_steps: number
+  res4lyf_sampler: string
+  res4lyf_eta: number
+  res4lyf_bongmath: boolean
+  actual_denoise: boolean
+  incontext_edit: boolean
+  incontext_image_b64: string
+  incontext_mask_b64: string
+  incontext_vision_position: 'before' | 'after'
+  incontext_vision_megapixels: number
+  incontext_encoder: 'krea2' | 'qwen_edit_plus'
+  incontext_system_prompt: string
+  character_edit_source_b64: string
+  character_edit_grounding_px: number
+  character_edit_task: 'restage' | 'local_edit' | 'replace' | 'restyle' | 'removal' | 'two_reference'
+  character_edit_lora_strength: number
+  style_transfer_image_b64: string
+  style_transfer_method: 'AdaIN' | 'WCT' | 'WCT2' | 'scattersort'
+  style_transfer_weight: number
+  style_transfer_apply_to: 'denoised' | 'positive' | 'negative'
   lanpaint_inner_steps: number
   lanpaint_strength: number
   lanpaint_lambda: number
@@ -71,11 +91,14 @@ export interface GenerateParams {
   lanpaint_friction: number
   lanpaint_early_stop: number
   lanpaint_prompt_mode: 'Image First' | 'Prompt First'
-  edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
+  edit_provider?: 'auto' | 'krea_native'
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   creativity: 'raw' | 'low' | 'medium' | 'high'
   style_references: StyleReference[]
   style_fusion_mode: 'style_only' | 'preserve_structure' | 'semantic_fusion'
+  image_prompt_enabled: boolean
+  image_prompt_mode: 'match_style' | 'copy_composition'
+  image_prompt_strength: number
   regional_prompts: RegionalPrompt[]
   regional_base_prompt_strength: number
   regional_normalize_masks: boolean
@@ -110,6 +133,7 @@ export interface GenerateParams {
   refine: boolean
   refine_denoise: number
   refine_steps: number
+  vae_degrid: boolean
   mood: string
   selected_moodboard_ids: number[]
   moodboard_uuids: string[]
@@ -126,8 +150,19 @@ export interface GenerateParams {
   seed_variance_fade_curve: 'instant' | 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out' | 'smoothstep' | 'burst'
   seed_variance_injection_start: number
   seed_variance_injection_end: number
-  seed_variance_schedule: 'constant' | 'decreasing' | 'step_cutoff'
+  seed_variance_schedule: 'constant' | 'decreasing' | 'step_cutoff' | 'hard_lock' | 'tiered_release'
   seed_variance_cutoff_step: number
+  depth_control: boolean
+  depth_control_strength: number
+  depth_estimator: 'da3' | 'depth_anything_v2' | 'zoe' | 'midas'
+  depth_resolution: number
+  depth_invert: boolean
+  god_mode: boolean
+  mrflow: boolean
+  mrflow_upscaler: 'esrgan_x2' | 'remacri_x4'
+  mrflow_preset: string
+  mrflow_refine_denoise: number
+  mrflow_refine_steps: number
   seed_variance_total_steps: number
   seed_variance_cutoff_strength: number
 }
@@ -147,61 +182,28 @@ export interface LightboxState {
   index: number
 }
 
-export interface RealtimePreviewState {
-  status: 'idle' | 'queued' | 'running' | 'ready' | 'final-ready' | 'error'
-  sessionId: string
-  jobId: string | null
-  revision: number
-  progress: number
-  image: string
-  seed: number | null
-  metadata?: Record<string, any> | null
-  error: string | null
-  lastUpdated: number | null
-  paused: boolean
-}
+export type CreateMode = 'txt2img' | 'test_labs' | 'character_edit' | 'upscale' | 'redraw'
 
-export interface RealtimeSettings {
-  debounceMs: number
-  previewSize: number
-  previewSteps: number
-  finalSteps: number
-  canvasInfluence: number
-  seed: number
-  lockSeed: boolean
-  autoPreview: boolean
-}
-
-export interface RealtimeState {
-  document: RealtimeDocument
-  selectedLayerId: string | null
-  tool: RealtimeTool
-  color: string
-  brushSize: number
-  shape: 'rectangle' | 'circle' | 'triangle'
-  prompt: string
-  negativePrompt: string
-  preview: RealtimePreviewState
-  settings: RealtimeSettings
-}
-
-export type CreateMode = 'txt2img' | 'redraw' | 'realtime'
-
-function makeSessionId(): string {
-  const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`
-  return `rt-${id}`
-}
+export const TAB = {
+  CREATE: 0,
+  GALLERY: 1,
+  MOODBOARDS: 2,
+  SYSTEM: 3,
+} as const
 
 const defaultParams: GenerateParams = {
   prompt: '',
   negative_prompt: '',
   mode: 'txt2img',
   model_profile: 'krea_turbo',
-  diffusion_engine: 'native_pytorch',
+  // Default recipe: "Xperiment fast (beta57)" on Turbo Int8 - er_sde/beta57 @6
+  // steps, CFG 1 with CFG-Zero* on. Fastest sweep winner (~3.4s) and a user pick.
+  diffusion_engine: 'native_int8_convrot',
   checkpoint: 'turbo',
-  quantization: 'fp8',
+  quantization: 'int8',
+  turbo_int8_variant: 'redcraft',
   steps: 8,
-  cfg: 0.0,
+  cfg: 1.0,
   mu: 1.15,
   y1: 0.5,
   y2: 1.15,
@@ -212,15 +214,35 @@ const defaultParams: GenerateParams = {
   num_images: 1,
   batch_mode: 'safe_queue',
   parallel_batch_confirmed: false,
+  batch_int8_all: false,
   seed: -1,
   denoise: 0.75,
-  sampler: 'euler',
-  scheduler: 'simple',
+  sampler: 'er_sde',
+  scheduler: 'beta57',
   inpaint_method: 'native',
   differential_inpaint: false,
   differential_strength: 1.0,
-  cfg_zero_star: false,
+  cfg_zero_star: true,
   cfg_zero_init_steps: 1,
+  res4lyf_sampler: '',
+  res4lyf_eta: 0.5,
+  res4lyf_bongmath: false,
+  actual_denoise: false,
+  incontext_edit: false,
+  incontext_image_b64: '',
+  incontext_mask_b64: '',
+  incontext_vision_position: 'before',
+  incontext_vision_megapixels: 1.0,
+  incontext_encoder: 'krea2',
+  incontext_system_prompt: '',
+  character_edit_source_b64: '',
+  character_edit_grounding_px: 768,
+  character_edit_task: 'restage',
+  character_edit_lora_strength: 1.0,
+  style_transfer_image_b64: '',
+  style_transfer_method: 'AdaIN',
+  style_transfer_weight: 0.8,
+  style_transfer_apply_to: 'denoised',
   lanpaint_inner_steps: 5,
   lanpaint_strength: 1.0,
   lanpaint_lambda: 16.0,
@@ -234,6 +256,9 @@ const defaultParams: GenerateParams = {
   creativity: 'medium',
   style_references: [],
   style_fusion_mode: 'semantic_fusion',
+  image_prompt_enabled: false,
+  image_prompt_mode: 'match_style',
+  image_prompt_strength: 0.2,
   regional_prompts: [],
   regional_base_prompt_strength: 0.3,
   regional_normalize_masks: true,
@@ -250,7 +275,9 @@ const defaultParams: GenerateParams = {
   krea_enhancer_enabled: false,
   krea_enhancer_strength: 1.0,
   krea_enhancer_delta_cap: 0.75,
-  loras: [],
+  // Default recipe is "Xperiment fast · loose"; the filter-bypass LoRA is part of
+  // every quick recipe, so it's on from startup at 6850 too.
+  loras: [{ name: 'krea2filterbypass3', filename: 'krea2filterbypass3.safetensors', strength: 6850, enabled: true, block_filter: 'style_safe' }],
   bboxes: [],
   init_image_b64: '',
   mask_b64: '',
@@ -268,14 +295,19 @@ const defaultParams: GenerateParams = {
   refine: false,
   refine_denoise: 0.3,
   refine_steps: 6,
+  vae_degrid: true,
   mood: '',
   selected_moodboard_ids: [],
   moodboard_uuids: [],
   moodboard_strength: 0.35,
   moodboard_images: [],
-  seed_variance_preset: 'off',
+  // Default: Wild + hard_lock "composition lock" @ loose 2/8. Early steps follow
+  // the base prompt (composition stays put); the detail phase gets full Wild
+  // variance so seed rolls change expression/detail without re-rolling the shot.
+  // NOTE: hard_lock only varies anything when cutoff_strength > 0.
+  seed_variance_preset: 'wild',
   seed_variance_strength: 0.0,
-  seed_variance_algorithm: 'legacy',
+  seed_variance_algorithm: 'rbg',
   seed_variance_model_type: 'krea2',
   seed_variance_randomize_percent: 0,
   seed_variance_shift_strength: 100,
@@ -284,44 +316,21 @@ const defaultParams: GenerateParams = {
   seed_variance_fade_curve: 'linear',
   seed_variance_injection_start: 0,
   seed_variance_injection_end: 1,
-  seed_variance_schedule: 'constant',
-  seed_variance_cutoff_step: 8,
+  seed_variance_schedule: 'hard_lock',
+  seed_variance_cutoff_step: 2,
+  depth_control: false,
+  depth_control_strength: 1.2,
+  depth_estimator: 'da3',
+  depth_resolution: 504,
+  depth_invert: false,
+  god_mode: false,
+  mrflow: false,
+  mrflow_upscaler: 'esrgan_x2',
+  mrflow_preset: '',
+  mrflow_refine_denoise: 0,
+  mrflow_refine_steps: 0,
   seed_variance_total_steps: 20,
-  seed_variance_cutoff_strength: 0,
-}
-
-const defaultRealtime: RealtimeState = {
-  document: createDefaultDocument(),
-  selectedLayerId: null,
-  tool: 'brush',
-  color: '#111111',
-  brushSize: 28,
-  shape: 'rectangle',
-  prompt: '4k product photography of a whimsical sculptural object in a natural landscape',
-  negativePrompt: 'low quality, blurry, text, watermark, deformed, pasted collage',
-  preview: {
-    status: 'idle',
-    sessionId: makeSessionId(),
-    jobId: null,
-    revision: 0,
-    progress: 0,
-    image: '',
-    seed: null,
-    metadata: null,
-    error: null,
-    lastUpdated: null,
-    paused: false,
-  },
-  settings: {
-    debounceMs: 1500,
-    previewSize: 512,
-    previewSteps: 4,
-    finalSteps: 8,
-    canvasInfluence: 0.45,
-    seed: -1,
-    lockSeed: false,
-    autoPreview: false,
-  },
+  seed_variance_cutoff_strength: 1.0,
 }
 
 interface AppState {
@@ -361,8 +370,10 @@ interface AppState {
   setTab: (n: number) => void
   createMode: CreateMode
   setCreateMode: (mode: CreateMode) => void
-  moodboardView: 'official' | 'favorites' | 'custom' | 'new'
+  moodboardView: 'official' | 'andrometa' | 'favorites' | 'custom' | 'new'
   setMoodboardView: (view: 'official' | 'favorites' | 'custom' | 'new') => void
+  moodboardSuggestions: MoodboardSuggestion[]
+  setMoodboardSuggestions: (items: MoodboardSuggestion[]) => void
 
   lightbox: LightboxState | null
   lightboxImage: string | null
@@ -373,12 +384,6 @@ interface AppState {
   patchLightboxItem: (id: number, partial: Partial<LightboxItem>) => void
   removeLightboxItem: (id: number) => void
   setLightboxImage: (src: string | null) => void
-
-  realtime: RealtimeState
-  setRealtime: (partial: Partial<RealtimeState>) => void
-  setRealtimeDocument: (document: RealtimeDocument) => void
-  setRealtimePreview: (partial: Partial<RealtimePreviewState>) => void
-  setRealtimeSettings: (partial: Partial<RealtimeSettings>) => void
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -414,12 +419,14 @@ export const useStore = create<AppState>((set, get) => ({
   loras: [],
   setLoras: (l) => set({ loras: l }),
 
-  tab: 0,
+  tab: TAB.CREATE,
   setTab: (n) => set({ tab: n }),
   createMode: 'txt2img',
   setCreateMode: (mode) => set({ createMode: mode }),
   moodboardView: 'official',
   setMoodboardView: (view) => set({ moodboardView: view }),
+  moodboardSuggestions: [],
+  setMoodboardSuggestions: (items) => set({ moodboardSuggestions: items }),
 
   lightbox: null,
   lightboxImage: null,
@@ -456,14 +463,4 @@ export const useStore = create<AppState>((set, get) => ({
   setLightboxImage: (src) => src
     ? set({ lightbox: { items: [{ src }], index: 0 }, lightboxImage: src })
     : set({ lightbox: null, lightboxImage: null }),
-
-  realtime: defaultRealtime,
-  setRealtime: (partial) => set(s => ({ realtime: { ...s.realtime, ...partial } })),
-  setRealtimeDocument: (document) => set(s => ({ realtime: { ...s.realtime, document } })),
-  setRealtimePreview: (partial) => set(s => ({
-    realtime: { ...s.realtime, preview: { ...s.realtime.preview, ...partial } },
-  })),
-  setRealtimeSettings: (partial) => set(s => ({
-    realtime: { ...s.realtime, settings: { ...s.realtime.settings, ...partial } },
-  })),
 }))

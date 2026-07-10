@@ -40,26 +40,6 @@ class EmotionRebalanceTests(unittest.TestCase):
         self.assertLess(emotion[8], balanced[8])
 
 
-class ThinkSteeringTemplateTests(unittest.TestCase):
-    def test_assistant_suffix_injects_think_span(self) -> None:
-        from krea2.text_prompt import DEFAULT_EXPRESSION_THINK, assistant_suffix
-
-        suffix = assistant_suffix("<|im_end|>\n<|im_start|>assistant\n", "show real fear")
-
-        self.assertTrue(suffix.startswith("<|im_end|>\n<|im_start|>assistant\n"))
-        self.assertIn("<think>", suffix)
-        self.assertIn("show real fear", suffix)
-        self.assertIn("</think>", suffix)
-        self.assertTrue(DEFAULT_EXPRESSION_THINK)
-
-    def test_assistant_suffix_without_think_is_unchanged(self) -> None:
-        from krea2.text_prompt import assistant_suffix
-
-        base = "<|im_end|>\n<|im_start|>assistant\n"
-        self.assertEqual(assistant_suffix(base, ""), base)
-        self.assertEqual(assistant_suffix(base, None), base)
-
-
 class RawProfileTests(unittest.TestCase):
     def test_raw_profile_uses_empty_negative_and_high_step_range(self) -> None:
         from model_profiles import MODEL_PROFILES
@@ -121,24 +101,6 @@ class PromptingGuideTests(unittest.TestCase):
 
 
 class AltVaeTests(unittest.TestCase):
-    def test_resolve_vae_source_prefers_override_when_present(self) -> None:
-        import tempfile
-
-        from krea2.vae_source import resolve_vae_source
-
-        with tempfile.TemporaryDirectory() as tmp:
-            override = Path(tmp) / "real_vae.safetensors"
-            override.write_bytes(b"stub")
-            src = resolve_vae_source(str(override))
-            self.assertEqual(src["kind"], "override")
-            self.assertEqual(src["path"], str(override))
-
-    def test_resolve_vae_source_falls_back_to_stock_when_missing(self) -> None:
-        from krea2.vae_source import resolve_vae_source
-
-        src = resolve_vae_source("E:/nonexistent/vae.safetensors")
-        self.assertEqual(src["kind"], "stock")
-
     def test_alt_vae_assets_registered(self) -> None:
         from quality_assets import asset_specs
 
@@ -152,18 +114,6 @@ class Fp16ModeTests(unittest.TestCase):
 
         req = GenerationRequest(prompt="x", quantization="fp16")
         self.assertEqual(req.quantization, "fp16")
-
-    def test_fp16_preflight_uses_full_precision_gate(self) -> None:
-        from unittest.mock import patch
-
-        from inference import preflight_model_load
-
-        # fp16 is full-size like bf16 -> must hit the high-RAM gate, not the fp8 path.
-        with patch("inference.get_ram_gb", return_value=(32.0, 24.0)), \
-             patch("inference.get_gpu_info", return_value=("RTX 4090", 24.0, 22.0)), \
-             patch("inference.get_gpu_process_details", return_value=[]):
-            with self.assertRaisesRegex(RuntimeError, "system RAM"):
-                preflight_model_load("krea2_raw_bf16.safetensors", "fp16")
 
 
 if __name__ == "__main__":

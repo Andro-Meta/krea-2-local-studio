@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Box, Button, CircularProgress, IconButton, Modal, Snackbar, Tooltip, Typography } from '@mui/material'
+import { Alert, Box, Button, CircularProgress, IconButton, Modal, Snackbar, Tooltip, Typography, useMediaQuery, useTheme } from '@mui/material'
 import CloseIcon from '@mui/icons-material/Close'
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
 import ChevronRightIcon from '@mui/icons-material/ChevronRight'
@@ -12,8 +12,12 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import ImageSearchIcon from '@mui/icons-material/ImageSearch'
 import BrushIcon from '@mui/icons-material/Brush'
 import OpenInFullIcon from '@mui/icons-material/OpenInFull'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
+import ZoomInIcon from '@mui/icons-material/ZoomIn'
+import ZoomOutIcon from '@mui/icons-material/ZoomOut'
+import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong'
 import { apiFetch, type AuthSession } from '../../api'
-import { useStore } from '../../store'
+import { TAB, useStore } from '../../store'
 import { downloadImage, srcToBase64 } from '../../lib/imageActions'
 import { metadataToGenerateParams, type ImportTargetMode } from '../../lib/galleryMetadataImport'
 
@@ -36,6 +40,8 @@ function metadataRows(metadata?: Record<string, any>) {
   }
   add('Seed', metadata.seed)
   add('Model', metadata.checkpoint || metadata.method)
+  add('Model file', metadata.model?.unet)
+  add('Int8 variant', metadata.turbo_int8_variant)
   add('Quantization', metadata.quantization)
   add('Steps', metadata.steps)
   add('CFG', metadata.cfg)
@@ -75,6 +81,12 @@ export default function Lightbox() {
   const lastPan = useRef<Point | null>(null)
   const lastPinchDistance = useRef<number | null>(null)
   const swipeStart = useRef<Point | null>(null)
+
+  const theme = useTheme()
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
+  // null = follow default (open on desktop, closed on mobile); boolean = explicit user choice
+  const [infoOpenState, setInfoOpenState] = useState<boolean | null>(null)
+  const infoOpen = infoOpenState ?? !isMobile
 
   const hasMany = (lightbox?.items.length ?? 0) > 1
   const counter = useMemo(() => lightbox ? `${lightbox.index + 1} / ${lightbox.items.length}` : '', [lightbox])
@@ -171,7 +183,7 @@ export default function Lightbox() {
         mask_b64: '',
         moodboard_images: mode === 'redraw' ? [b64] : params.moodboard_images,
       }))
-      setTab(0)
+      setTab(TAB.CREATE)
       closeLightbox()
     } catch (e: any) {
       setToast({ text: e?.message ?? 'Could not load image', severity: 'error' })
@@ -199,7 +211,7 @@ export default function Lightbox() {
         const result = await apiFetch.describeImage(b64)
         setParams({ prompt: result.prompt, mode: 'txt2img' })
       })
-      setTab(0)
+      setTab(TAB.CREATE)
       closeLightbox()
     } catch (e: any) {
       setToast({ text: e?.response?.data?.detail ?? e?.message ?? 'Could not create prompt', severity: 'error' })
@@ -220,7 +232,7 @@ export default function Lightbox() {
       } else {
         await withImage(b64 => setParams(metadataToGenerateParams(item.metadata!, mode, b64)))
       }
-      setTab(0)
+      setTab(TAB.CREATE)
       closeLightbox()
     } catch (e: any) {
       setToast({ text: e?.message ?? 'Could not import settings', severity: 'error' })
@@ -244,7 +256,7 @@ export default function Lightbox() {
     window.dispatchEvent(new CustomEvent('krea-gallery-item-deleted', { detail: { id: item.id } }))
   }
 
-  const actionSx = { bgcolor: 'rgba(0,0,0,0.55)', minWidth: 44, minHeight: 44, zIndex: 3 }
+  const actionSx = { bgcolor: 'rgba(0,0,0,0.55)', minWidth: 44, minHeight: 44, flexShrink: 0, zIndex: 3 }
   const stopControlPointer = (e: React.PointerEvent) => e.stopPropagation()
   const rows = metadataRows(item.metadata)
   const canDelete = auth?.role === 'admin' || (!!auth?.username && item.owner_username === auth.username)
@@ -264,7 +276,7 @@ export default function Lightbox() {
         onWheel={e => zoomBy(-e.deltaY / 500, { x: e.clientX, y: e.clientY })}
         onDoubleClick={() => scale > 1 ? resetZoom() : setScale(2)}
       >
-        <Typography sx={{ position: 'fixed', top: 18, left: 18, color: 'rgba(255,255,255,0.8)', zIndex: 2 }}>
+        <Typography sx={{ position: 'fixed', top: 22, left: '50%', transform: 'translateX(-50%)', color: 'rgba(255,255,255,0.8)', zIndex: 2, pointerEvents: 'none' }}>
           {counter}
         </Typography>
         <img
@@ -301,6 +313,18 @@ export default function Lightbox() {
             </IconButton>
           </>
         )}
+        {item.metadata && (
+          <Tooltip title={infoOpen ? 'Hide info' : 'Show info'}>
+            <IconButton
+              sx={{ position: 'fixed', top: 16, right: 68, ...actionSx, color: infoOpen ? 'primary.light' : 'inherit' }}
+              onPointerDown={stopControlPointer}
+              onPointerUp={stopControlPointer}
+              onClick={(e) => { e.stopPropagation(); setInfoOpenState(!infoOpen) }}
+            >
+              <InfoOutlinedIcon />
+            </IconButton>
+          </Tooltip>
+        )}
         <IconButton
           sx={{ position: 'fixed', top: 16, right: 16, ...actionSx }}
           onPointerDown={stopControlPointer}
@@ -312,6 +336,29 @@ export default function Lightbox() {
         >
           <CloseIcon />
         </IconButton>
+        <Box
+          sx={{ position: 'fixed', top: 16, left: 16, display: 'flex', gap: 0.5, zIndex: 3 }}
+          onPointerDown={stopControlPointer}
+          onPointerUp={stopControlPointer}
+        >
+          <Tooltip title="Zoom out">
+            <IconButton sx={actionSx} onClick={(e) => { e.stopPropagation(); zoomBy(-0.5) }} disabled={scale <= 1}>
+              <ZoomOutIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Zoom in">
+            <IconButton sx={actionSx} onClick={(e) => { e.stopPropagation(); zoomBy(0.5) }}>
+              <ZoomInIcon />
+            </IconButton>
+          </Tooltip>
+          {scale > 1 && (
+            <Tooltip title="Fit to screen">
+              <IconButton sx={actionSx} onClick={(e) => { e.stopPropagation(); resetZoom() }}>
+                <CenterFocusStrongIcon />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Box>
         {busy && (
           <Box sx={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
             <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', bgcolor: 'rgba(0,0,0,0.72)', px: 2, py: 1.5, borderRadius: 2 }}>
@@ -320,15 +367,19 @@ export default function Lightbox() {
             </Box>
           </Box>
         )}
-        {item.metadata && (
+        {item.metadata && infoOpen && (
           <Box
             sx={{
-              position: 'fixed', top: 68, right: 16, width: { xs: 'calc(100vw - 32px)', sm: 340 },
-              maxHeight: '55vh', overflow: 'auto', p: 1.5, borderRadius: 2, zIndex: 3,
-              bgcolor: 'rgba(0,0,0,0.72)', color: 'white', backdropFilter: 'blur(10px)',
+              position: 'fixed', zIndex: 3, overflow: 'auto', p: 1.5, borderRadius: 2,
+              top: { xs: 'auto', sm: 68 }, bottom: { xs: 72, sm: 'auto' },
+              left: { xs: 8, sm: 'auto' }, right: { xs: 8, sm: 16 },
+              width: { xs: 'auto', sm: 340 }, maxHeight: { xs: '45vh', sm: '72vh' },
+              bgcolor: 'rgba(0,0,0,0.82)', color: 'white', backdropFilter: 'blur(10px)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
             }}
             onPointerDown={e => e.stopPropagation()}
             onClick={e => e.stopPropagation()}
+            onWheel={e => e.stopPropagation()}
           >
             <Typography variant="subtitle2" sx={{ mb: 1 }}>Generation metadata</Typography>
             {item.metadata.prompt && (
@@ -361,12 +412,36 @@ export default function Lightbox() {
         <Box
           sx={{
             position: 'fixed', left: 0, right: 0, bottom: 0, p: 1,
-            display: 'flex', gap: 0.75, justifyContent: 'center', flexWrap: 'wrap',
-            bgcolor: 'linear-gradient(transparent, rgba(0,0,0,0.75))',
+            display: 'flex', gap: 0.75,
+            justifyContent: { xs: 'flex-start', sm: 'center' },
+            flexWrap: { xs: 'nowrap', sm: 'wrap' },
+            overflowX: { xs: 'auto', sm: 'visible' },
+            WebkitOverflowScrolling: 'touch',
+            background: 'linear-gradient(transparent, rgba(0,0,0,0.8))',
           }}
           onPointerDown={e => e.stopPropagation()}
           onClick={e => e.stopPropagation()}
         >
+          {item.metadata && (
+            <Button
+              size="small"
+              variant={infoOpen ? 'contained' : 'outlined'}
+              startIcon={<InfoOutlinedIcon />}
+              onClick={() => setInfoOpenState(!infoOpen)}
+              sx={{
+                flexShrink: 0,
+                minHeight: 44,
+                px: 1.5,
+                bgcolor: infoOpen ? 'primary.main' : 'rgba(0,0,0,0.55)',
+                borderColor: 'rgba(255,255,255,0.35)',
+                color: 'white',
+                textTransform: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {infoOpen ? 'Hide info' : 'Info'}
+            </Button>
+          )}
           {item.id && (
             <Tooltip title="Favorite">
               <IconButton sx={actionSx} onClick={toggleFavorite}>

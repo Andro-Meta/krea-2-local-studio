@@ -19,9 +19,14 @@ class GenerationQueue:
         self._payloads: dict[str, Any] = {}
         self._records: dict[str, dict[str, Any]] = {}
         self._active_job_id: str | None = None
+        self._cancel_requested: set[str] = set()
         self._event = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
+
+    @property
+    def active_job_id(self) -> str | None:
+        return self._active_job_id
 
     def enqueue(self, job_id: str, payload: Any, *, username: str | None, role: str) -> dict[str, Any]:
         if job_id in self._records:
@@ -60,6 +65,25 @@ class GenerationQueue:
         self._maybe_idle()
         return True
 
+    def request_cancel(self, job_id: str) -> str:
+        """Cancel a queued job or flag the running one for interruption.
+
+        Returns 'dequeued' (was pending, removed), 'interrupt' (is the active job,
+        now flagged so the caller can interrupt ComfyUI), or 'none'.
+        """
+        record = self._records.get(job_id)
+        if not record:
+            return "none"
+        if record.get("status") == "queued":
+            return "dequeued" if self.cancel(job_id) else "none"
+        if job_id == self._active_job_id and record.get("status") == "running":
+            self._cancel_requested.add(job_id)
+            return "interrupt"
+        return "none"
+
+    def cancel_requested(self, job_id: str) -> bool:
+        return job_id in self._cancel_requested
+
     def status(self, job_id: str) -> dict[str, Any]:
         return dict(self._records[job_id])
 
@@ -91,12 +115,16 @@ class GenerationQueue:
             try:
                 await self._handler(job_id, self._payloads[job_id])
             except Exception as exc:
-                record["status"] = "error"
-                record["error"] = str(exc)
+                if job_id in self._cancel_requested:
+                    record["status"] = "cancelled"
+                else:
+                    record["status"] = "error"
+                    record["error"] = str(exc)
             else:
                 if record.get("status") == "running":
-                    record["status"] = "done"
+                    record["status"] = "cancelled" if job_id in self._cancel_requested else "done"
             finally:
+                self._cancel_requested.discard(job_id)
                 self._payloads.pop(job_id, None)
                 self._active_job_id = None
                 self._recompute_positions()

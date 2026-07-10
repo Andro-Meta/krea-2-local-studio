@@ -16,20 +16,27 @@ if not exist "venv\Scripts\activate.bat" (
 )
 call venv\Scripts\activate.bat
 
-if not exist "backend\krea2\mmdit.py" (
-    echo Downloading krea2 source files...
-    %KREA_PYTHON% scripts\download_krea2.py
-    if errorlevel 1 (
-        echo ERROR: Could not download krea2/mmdit.py. Check internet connection.
-        pause
-        exit /b 1
-    )
-)
+:: Rebuild the frontend bundle if the UI source changed since the last build,
+:: so a restart always serves your latest UI (skips fast when up to date).
+%KREA_PYTHON% scripts\build_frontend_if_stale.py
 
-echo Stopping any old Krea sharing/server process...
+:: Stop any leftover backend + ComfyUI from a previous session first (frees VRAM/RAM).
+echo Stopping any old Krea processes (backend + ComfyUI)...
 %KREA_PYTHON% scripts\startup_cleanup.py --wait-seconds 20
 if errorlevel 1 (
     echo WARNING: Some old Krea processes could not be stopped. Startup may still fail or memory may remain in use.
+)
+
+:: -- Start ComfyUI image engine (unless KREA_USE_COMFY=0) ----------------------
+set "KREA_USE_COMFY_CFG=1"
+if exist ".env" (
+    for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+        if /I "%%a"=="KREA_USE_COMFY" set "KREA_USE_COMFY_CFG=%%b"
+    )
+)
+if /I not "%KREA_USE_COMFY_CFG%"=="0" (
+    echo Bringing up ComfyUI image engine...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\start_comfyui.ps1"
 )
 
 for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"`) do set "KREA_SERVER_PORT=%%a"
@@ -79,6 +86,7 @@ if "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" set "KREA_SHARE_STARTUP_ARGS=%KREA_SH
 if not "%KREA_SHARE_AUTO_FUNNEL_ENABLED%"=="1" if /I not "%KREA_SHARE_AUTO_FUNNEL%"=="false" echo Public Funnel auto-start is off because login gate is off or no admin exists.
 start "" /b %KREA_PYTHON% scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
 echo Local sharing server: http://localhost:%KREA_SERVER_PORT%/krea
+if /I not "%KREA_USE_COMFY_CFG%"=="0" echo ComfyUI image engine: http://localhost:8188
 if not exist "logs" mkdir logs
 for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-%KREA_LOG_STAMP%.log"
@@ -87,7 +95,7 @@ echo ==== Krea server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
 %KREA_PYTHON% -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
 echo Waiting for app startup... this can take 20-60 seconds.
 set "PYTHONUNBUFFERED=1"
-%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info --no-access-log
+%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" --stop-comfyui --tail "logs\comfyui.log" --tail "logs\comfyui.err.log" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 127.0.0.1 --port %KREA_SERVER_PORT% --log-level info --no-access-log --ws-ping-interval 30 --ws-ping-timeout 120
 exit /b %ERRORLEVEL%
 
 :local
@@ -98,20 +106,27 @@ if not exist "venv\Scripts\activate.bat" (
 )
 call venv\Scripts\activate.bat
 
-:: -- Preflight: mmdit.py -------------------------------------------------------
-if not exist "backend\krea2\mmdit.py" (
-    echo Downloading krea2 source files...
-    %KREA_PYTHON% scripts\download_krea2.py
-    if errorlevel 1 (
-        echo ERROR: Could not download krea2/mmdit.py. Check internet connection.
-        exit /b 1
-    )
-)
+:: Rebuild the frontend bundle if the UI source changed since the last build,
+:: so a restart always serves your latest UI (skips fast when up to date).
+%KREA_PYTHON% scripts\build_frontend_if_stale.py
 
-echo Stopping any old Krea sharing/server process...
+:: Stop any leftover backend + ComfyUI from a previous session first (frees VRAM/RAM).
+echo Stopping any old Krea processes (backend + ComfyUI)...
 %KREA_PYTHON% scripts\startup_cleanup.py --wait-seconds 20
 if errorlevel 1 (
     echo WARNING: Some old Krea processes could not be stopped. Startup may still fail or memory may remain in use.
+)
+
+:: -- Start ComfyUI image engine (unless KREA_USE_COMFY=0) ----------------------
+set "KREA_USE_COMFY_CFG=1"
+if exist ".env" (
+    for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+        if /I "%%a"=="KREA_USE_COMFY" set "KREA_USE_COMFY_CFG=%%b"
+    )
+)
+if /I not "%KREA_USE_COMFY_CFG%"=="0" (
+    echo Bringing up ComfyUI image engine...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\start_comfyui.ps1"
 )
 
 :: -- Preflight: Krea support models --------------------------------------------
@@ -159,6 +174,7 @@ echo ====================================
 echo  Krea 2 Studio
 echo.
 echo    Local:      http://localhost:8200
+if /I not "%KREA_USE_COMFY_CFG%"=="0" echo    ComfyUI:    http://localhost:8188
 if defined LAN_IP (
     echo    LAN:        http://%LAN_IP%:8200
 )
@@ -188,7 +204,7 @@ echo ==== Krea local server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
 %KREA_PYTHON% -c "import sys,platform; print('python_executable='+sys.executable); print('python_version='+platform.python_version()); import torch; print('torch='+torch.__version__); print('cuda='+str(torch.cuda.is_available())); print('gpu='+(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none'))" >> "%KREA_SERVER_LOG%" 2>&1
 echo Waiting for app startup... this can take 20-60 seconds.
 set "PYTHONUNBUFFERED=1"
-%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info --no-access-log
+%KREA_PYTHON% scripts\run_with_log.py --log "%KREA_SERVER_LOG%" --stop-comfyui --tail "logs\comfyui.log" --tail "logs\comfyui.err.log" -- %KREA_PYTHON% -u -m uvicorn backend.main:app --host 0.0.0.0 --port 8200 --log-level info --no-access-log --ws-ping-interval 30 --ws-ping-timeout 120
 
 echo.
 echo Server stopped.

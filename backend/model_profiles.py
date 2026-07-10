@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from krea2.sampler_registry import validate_sampler_configuration
+from sampler_registry import validate_sampler_configuration
 
 
 @dataclass(frozen=True)
@@ -137,7 +137,6 @@ def engine_catalog() -> dict[str, Any]:
         "supports_cfg": True,
         "supports_img2img": True,
         "supports_inpaint": True,
-        "supports_realtime": True,
         "supports_parallel_batch": True,
         "supports_lora_ab_test": False,
         "max_batch": 4,
@@ -174,7 +173,6 @@ def engine_catalog() -> dict[str, Any]:
         "supports_standard_samplers": False,
         "supports_img2img": True,
         "supports_inpaint": True,
-        "supports_realtime": True,
         "supports_parallel_batch": True,
         "supports_lora_ab_test": True,
         "max_batch": 2,

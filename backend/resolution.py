@@ -1,7 +1,7 @@
 """Resolution tiers and aspect-ratio -> dimension computation.
 
 "1K" / "2K" are defined by the **long side** (1024 / 2048), which keeps results
-predictable and within the 2048 hard cap for every aspect ratio. All dimensions
+predictable and within the normal generation cap for every aspect ratio. All dimensions
 are aligned to the model's patch grid (multiple of 16 = COMPRESSION*PATCH).
 
 Torch-free so it can be unit-tested in lightweight CI and mirrored on the
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 ALIGN = 16            # COMPRESSION (8) * PATCH (2)
 MIN_EDGE = 256
-MAX_EDGE = 2048
+MAX_EDGE = 2048       # Normal generation cap. Use the Upscale tab for 4K.
 
 RESOLUTION_TIERS: dict[str, int] = {"1k": 1024, "2k": 2048}
 

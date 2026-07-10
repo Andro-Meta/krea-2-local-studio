@@ -21,10 +21,23 @@ from moodboards_catalog import (  # noqa: E402
 )
 
 
-def missing_guidance_ids(db_path: Path, *, source: str = "official", limit: int = 1, include_existing: bool = False) -> list[int]:
+def missing_guidance_ids(
+    db_path: Path,
+    *,
+    source: str = "official",
+    limit: int = 1,
+    include_existing: bool = False,
+    upgrade: bool = False,
+) -> list[int]:
+    from moodboard_enrichment import GUIDANCE_VERSION
+
     where = ["source = ?"]
     params: list[object] = [source]
-    if not include_existing:
+    if upgrade:
+        # Resumable schema upgrade: redo boards on an older guidance schema
+        # (or with no guidance), skip boards already on the current version.
+        where.append(f"(COALESCE(qwen_guidance_json, '') = '' OR COALESCE(qwen_guidance_version, 0) < {int(GUIDANCE_VERSION)})")
+    elif not include_existing:
         where.append("COALESCE(qwen_guidance_json, '') = ''")
     query = f"""
         SELECT id
@@ -49,6 +62,7 @@ async def enrich(args: argparse.Namespace) -> int:
         source=args.source,
         limit=args.limit,
         include_existing=args.include_existing,
+        upgrade=args.upgrade,
     )
     if not ids:
         print("No moodboards need Qwen guidance.")
@@ -92,6 +106,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=1, help="Number of moodboards to enrich this run.")
     parser.add_argument("--source", choices=["official", "custom"], default="official", help="Moodboard source to enrich.")
     parser.add_argument("--include-existing", action="store_true", help="Regenerate guidance even when present.")
+    parser.add_argument("--upgrade", action="store_true", help="Regenerate boards whose guidance is older than the current schema version (resumable).")
     parser.add_argument("--dry-run", action="store_true", help="Print selected IDs without running Qwen.")
     parser.add_argument("--stop-on-error", action="store_true", help="Stop at the first failed enrichment.")
     args = parser.parse_args()

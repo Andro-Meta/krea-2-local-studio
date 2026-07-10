@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react'
-import { Alert, Box, Button, Checkbox, CircularProgress, Collapse, FormControlLabel, MenuItem, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
+import { Alert, Box, Button, Checkbox, Chip, CircularProgress, Collapse, FormControlLabel, MenuItem, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
 import TipsAndUpdatesIcon from '@mui/icons-material/TipsAndUpdates'
 import { useStore } from '../../store'
-import { apiFetch, type PromptPlan } from '../../api'
+import { apiFetch, type MoodboardSuggestion, type PromptPlan } from '../../api'
 import CreatePromptFromImage from '../CreatePromptFromImage'
 
 const ABLITERATED_QWEN = 'huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated'
@@ -20,24 +20,26 @@ function modelFromWandChoice(choice: string, current: string) {
 }
 
 export default function PromptSection() {
-  const { params, setParam, setParams, setLoras, setPromptBusy } = useStore()
+  const { params, setParam, setParams, setLoras, setPromptBusy, moodboardSuggestions, setMoodboardSuggestions } = useStore()
   const [expanding, setExpanding] = useState(false)
   const [planning, setPlanning] = useState(false)
   const [xperimenting, setXperimenting] = useState(false)
   const [plan, setPlan] = useState<PromptPlan | null>(null)
   const [notice, setNotice] = useState<{ message: string; severity: 'success' | 'warning' | 'error' } | null>(null)
+  const [preWandPrompt, setPreWandPrompt] = useState('')
   const [wandModel, setWandModel] = useState('')
   const [wandBackend, setWandBackend] = useState<'local' | 'openrouter' | 'ideogram-json'>('local')
-  const [localLlmBackend, setLocalLlmBackend] = useState<'transformers' | 'gguf_server'>('transformers')
+  const [localLlmBackend, setLocalLlmBackend] = useState<'comfy' | 'transformers' | 'gguf_server'>('comfy')
   const [wandDevice, setWandDevice] = useState<'auto' | 'cuda' | 'cpu'>('auto')
   const [showWandAdvanced, setShowWandAdvanced] = useState(false)
+  const [showPromptTools, setShowPromptTools] = useState(false)
 
   useEffect(() => {
     apiFetch.settings()
       .then(settings => {
         setWandModel(settings.local_qwen_model_id ?? '')
         setWandBackend(settings.prompt_expander_backend ?? 'local')
-        setLocalLlmBackend(settings.local_llm_backend ?? 'transformers')
+        setLocalLlmBackend(settings.local_llm_backend ?? 'comfy')
         setWandDevice(settings.local_qwen_device ?? 'auto')
       })
       .catch(() => undefined)
@@ -45,6 +47,7 @@ export default function PromptSection() {
 
   const handleExpand = async () => {
     if (!params.prompt || expanding) return
+    const originalPrompt = params.prompt
     setExpanding(true)
     setPromptBusy(true)
     try {
@@ -54,12 +57,14 @@ export default function PromptSection() {
         local_qwen_model_id: wandModel,
         local_qwen_device: wandDevice,
       })
-      const { expanded, changed, error, backend } = await apiFetch.expandPrompt(params.prompt)
+      const { expanded, changed, error, backend, suggested_moodboards } = await apiFetch.expandPrompt(params.prompt)
+      setMoodboardSuggestions(suggested_moodboards ?? [])
       if (changed && expanded) {
+        setPreWandPrompt(originalPrompt)
         setParam('prompt', expanded)
         const label = wandBackend === 'local' && localLlmBackend === 'transformers' && wandChoiceFromModel(wandModel) === 'abliterated'
           ? 'Abliterated Qwen3-VL'
-          : backend === 'openrouter' ? 'OpenRouter' : backend === 'ideogram-json' ? 'Ideogram JSON' : localLlmBackend === 'gguf_server' ? 'local GGUF helper' : 'Local Qwen3-VL'
+          : backend === 'openrouter' ? 'OpenRouter' : backend === 'ideogram-json' ? 'Ideogram JSON' : localLlmBackend === 'gguf_server' ? 'local GGUF helper' : localLlmBackend === 'comfy' ? 'ComfyUI QwenVL' : 'Local Qwen3-VL'
         setNotice({ severity: 'success', message: `Prompt expanded with ${label}.` })
       } else if (error) {
         setNotice({ severity: 'warning', message: error })
@@ -73,6 +78,36 @@ export default function PromptSection() {
       setPromptBusy(false)
     }
   }
+
+  const undoMagicWand = () => {
+    if (!preWandPrompt) return
+    setParam('prompt', preWandPrompt)
+    setPreWandPrompt('')
+    setNotice({ severity: 'success', message: 'Restored the prompt from before Magic Wand.' })
+  }
+
+  const applyMoodboardSuggestion = (board: MoodboardSuggestion) => {
+    const ids = Array.from(new Set([...params.selected_moodboard_ids, board.id]))
+    const uuids = board.uuid ? Array.from(new Set([...params.moodboard_uuids, board.uuid])) : params.moodboard_uuids
+    setParams({
+      selected_moodboard_ids: ids,
+      moodboard_uuids: uuids,
+      moodboard_strength: params.moodboard_strength || 0.35,
+    })
+    setNotice({ severity: 'success', message: `Applied moodboard "${board.title}".` })
+  }
+
+  const removeMoodboard = (id: number, uuid = '') => {
+    setParams({
+      selected_moodboard_ids: params.selected_moodboard_ids.filter(existing => existing !== id),
+      moodboard_uuids: uuid ? params.moodboard_uuids.filter(existing => existing !== uuid) : params.moodboard_uuids,
+    })
+  }
+
+  const activeMoodboards = params.selected_moodboard_ids.map(id => {
+    const suggestion = moodboardSuggestions.find(board => board.id === id)
+    return { id, title: suggestion?.title ?? `Moodboard #${id}`, uuid: suggestion?.uuid ?? '' }
+  })
 
   const handlePlan = async () => {
     if (!params.prompt || planning) return
@@ -122,6 +157,9 @@ export default function PromptSection() {
         mu: keepRaw ? null : 1.15,
         sampler: result.sampler.sampler as typeof params.sampler,
         scheduler: result.sampler.scheduler as typeof params.scheduler,
+        res4lyf_sampler: result.res4lyf?.sampler_name ?? '',
+        res4lyf_eta: result.res4lyf?.eta ?? 0.5,
+        res4lyf_bongmath: result.res4lyf?.bongmath ?? false,
         use_prompt_expander: result.use_prompt_expander ?? false,
         negative_prompt: '',
         loras: [
@@ -154,21 +192,12 @@ export default function PromptSection() {
       <Paper variant="outlined" sx={{ p: 1.25, bgcolor: 'background.default' }}>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
           <Box>
-            <Typography variant="subtitle2">Xperiment Settings</Typography>
+            <Typography variant="subtitle2">Create prompt from image</Typography>
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-              One-click Krea2 Turbo setup: assets, Qwen VAE default, 6 steps, CFG 0, beta57, and Realism LoKr late@0.55.
+              Upload an image and the local Qwen3-VL reverse-engineers a prompt to recreate it. Add optional guidance to focus on — or change — specific parts; leave it blank for a full auto prompt.
             </Typography>
           </Box>
-          <Button
-            type="button"
-            variant="outlined"
-            size="small"
-            onClick={handleXperiment}
-            disabled={xperimenting}
-            startIcon={xperimenting ? <CircularProgress size={14} color="inherit" /> : undefined}
-          >
-            {xperimenting ? 'Setting up...' : 'Apply Xperiment'}
-          </Button>
+          <CreatePromptFromImage value={params.prompt} onChange={prompt => setParam('prompt', prompt)} label="Create from image" withGuidance />
         </Stack>
       </Paper>
       <Stack spacing={1}>
@@ -182,41 +211,25 @@ export default function PromptSection() {
           onChange={e => setParam('prompt', e.target.value)}
           placeholder="Describe the image you want to create…"
         />
-        <Stack spacing={1}>
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'flex-start' }}>
-          <CreatePromptFromImage
-            value={params.prompt}
-            onChange={prompt => setParam('prompt', prompt)}
-            compact
-          />
-          <TextField
-            select
-            label="Wand backend"
-            value={wandBackend}
-            onChange={e => setWandBackend(e.target.value as typeof wandBackend)}
-            size="small"
-            sx={{ minWidth: { xs: '100%', sm: 210 } }}
-            helperText="Which backend expands prompts."
-          >
-            <MenuItem value="local">Local</MenuItem>
-            <MenuItem value="openrouter">OpenRouter</MenuItem>
-            <MenuItem value="ideogram-json">Ideogram</MenuItem>
-          </TextField>
-          {wandBackend === 'local' && localLlmBackend === 'transformers' && (
-            <TextField
-              select
-              label="Wand model"
-              value={wandChoiceFromModel(wandModel)}
-              onChange={e => setWandModel(modelFromWandChoice(e.target.value, wandModel))}
-              size="small"
-              sx={{ minWidth: { xs: '100%', md: 260 } }}
-              helperText="Default or abliterated."
-            >
-              <MenuItem value="default">Default Qwen3-VL</MenuItem>
-              <MenuItem value="abliterated">Abliterated Qwen3-VL</MenuItem>
-              <MenuItem value="custom">Custom repo/path</MenuItem>
-            </TextField>
-          )}
+        {activeMoodboards.length > 0 && (
+          <Paper variant="outlined" sx={{ p: 1, borderColor: 'rgba(208,188,255,0.35)', bgcolor: 'rgba(208,188,255,0.06)' }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.75 }}>
+              Active moodboards are applied as text guidance on generate:
+            </Typography>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+              {activeMoodboards.map(board => (
+                <Chip
+                  key={board.id}
+                  size="small"
+                  color="primary"
+                  label={board.title}
+                  onDelete={() => removeMoodboard(board.id, board.uuid)}
+                />
+              ))}
+            </Stack>
+          </Paper>
+        )}
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'stretch', md: 'flex-start' }}>
           <Button
             variant="outlined"
             onClick={handleExpand}
@@ -225,14 +238,6 @@ export default function PromptSection() {
             sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}
           >
             Magic wand
-          </Button>
-          <Button
-            variant="text"
-            size="small"
-            onClick={() => setShowWandAdvanced(v => !v)}
-            sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}
-          >
-            {showWandAdvanced ? 'Hide wand settings' : 'Wand settings'}
           </Button>
           <Tooltip
             title={
@@ -247,53 +252,48 @@ export default function PromptSection() {
               Prompt tips
             </Button>
           </Tooltip>
-          </Stack>
-          <Collapse in={showWandAdvanced}>
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-start' }} sx={{ pt: 0.5 }}>
-              {wandBackend === 'local' && (
-            <TextField
-              select
-              label="Local helper"
-              value={localLlmBackend}
-              onChange={e => setLocalLlmBackend(e.target.value as typeof localLlmBackend)}
+          {preWandPrompt && (
+            <Button
+              variant="text"
               size="small"
-              sx={{ minWidth: { xs: '100%', sm: 210 } }}
-              helperText="Transformers can use vision; GGUF is text-only."
+              onClick={undoMagicWand}
+              sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}
             >
-              <MenuItem value="transformers">Qwen3-VL Transformers</MenuItem>
-              <MenuItem value="gguf_server">GGUF server</MenuItem>
-            </TextField>
+              Undo Magic Wand
+            </Button>
           )}
-          {wandBackend === 'local' && localLlmBackend === 'transformers' && (
-            <>
-              <TextField
-                select
-                label="Wand device"
-                value={wandDevice}
-                onChange={e => setWandDevice(e.target.value as typeof wandDevice)}
-                size="small"
-                sx={{ minWidth: { xs: '100%', sm: 160 } }}
-                helperText="Auto avoids VRAM crashes."
-              >
-                <MenuItem value="auto">Auto safe</MenuItem>
-                <MenuItem value="cpu">CPU</MenuItem>
-                <MenuItem value="cuda">CUDA</MenuItem>
-              </TextField>
-            </>
-          )}
-          {wandBackend === 'local' && localLlmBackend === 'transformers' && wandChoiceFromModel(wandModel) === 'custom' && (
-              <TextField
-                label="Custom wand model"
-                value={wandModel}
-                onChange={e => setWandModel(e.target.value)}
-                size="small"
-                sx={{ minWidth: { xs: '100%', sm: 260 } }}
-              />
-          )}
-            </Stack>
-          </Collapse>
         </Stack>
+        <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: -0.25 }}>
+          Magic Wand expands your prompt and can suggest matching moodboards. Applying a suggestion makes it visible above.
+        </Typography>
+        {moodboardSuggestions.length > 0 && (
+          <Paper variant="outlined" sx={{ p: 1, borderColor: 'rgba(202,196,208,0.18)', bgcolor: 'rgba(255,255,255,0.03)' }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.75 }}>
+              Magic Wand found moodboards that fit this prompt. Apply one to add its text guidance; image influence remains opt-in in Image Prompt.
+            </Typography>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+              {moodboardSuggestions.map(board => (
+                <Tooltip key={board.id} title={board.reason || 'Apply this moodboard'} arrow>
+                  <Chip
+                    clickable
+                    size="small"
+                    label={board.title}
+                    color={params.selected_moodboard_ids.includes(board.id) ? 'primary' : 'default'}
+                    variant={params.selected_moodboard_ids.includes(board.id) ? 'filled' : 'outlined'}
+                    onClick={() => applyMoodboardSuggestion(board)}
+                  />
+                </Tooltip>
+              ))}
+            </Stack>
+          </Paper>
+        )}
       </Stack>
+      <Box>
+        <Button size="small" variant="text" onClick={() => setShowPromptTools(v => !v)} sx={{ minHeight: 32 }}>
+          {showPromptTools ? 'Hide prompt tools' : 'Prompt tools — planner, expression steering & negative prompt'}
+        </Button>
+        <Collapse in={showPromptTools}>
+          <Stack spacing={1} sx={{ pt: 0.5 }}>
       <Paper variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>
         <Stack spacing={1}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
@@ -374,19 +374,20 @@ export default function PromptSection() {
           </Collapse>
         </Stack>
       </Paper>
-      {(params.mode !== 'txt2img' || params.checkpoint === 'raw' || params.cfg > 0) && (
-        <TextField
-          label="Negative prompt"
-          multiline
-          minRows={1}
-          maxRows={3}
-          fullWidth
-          value={params.negative_prompt}
-          onChange={e => setParam('negative_prompt', e.target.value)}
-          placeholder={params.mode === 'txt2img' ? 'Optional for RAW / CFG; Turbo usually leaves this empty…' : 'What to avoid…'}
-          size="small"
-        />
-      )}
+      <TextField
+        label="Negative prompt"
+        multiline
+        minRows={1}
+        maxRows={3}
+        fullWidth
+        value={params.negative_prompt}
+        onChange={e => setParam('negative_prompt', e.target.value)}
+        placeholder="What to avoid (optional; Turbo usually leaves this empty)…"
+        size="small"
+      />
+          </Stack>
+        </Collapse>
+      </Box>
       <Snackbar
         open={!!notice}
         autoHideDuration={5000}

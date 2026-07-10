@@ -17,7 +17,7 @@ export default function GalleryPanel() {
   const [error, setError] = useState('')
   const [auth, setAuth] = useState<AuthSession | null>(null)
   const { openLightbox } = useStore()
-  const canDelete = (item: GalleryItem) => auth?.role === 'admin' || (!!auth?.username && item.owner_username === auth.username)
+  const canDelete = (item: GalleryItem) => !item.filesystem_only && (auth?.role === 'admin' || (!!auth?.username && item.owner_username === auth.username))
 
   useEffect(() => {
     apiFetch.authMe().then(setAuth).catch(() => setAuth(null))
@@ -57,6 +57,10 @@ export default function GalleryPanel() {
   }, [])
 
   const toggleFav = async (item: GalleryItem) => {
+    if (item.filesystem_only) {
+      setError('This image is on disk but not in the gallery database yet, so it cannot be favorited.')
+      return
+    }
     try {
       await apiFetch.setFavorite(item.id, !item.favorite)
       setItems(prev => prev.map(i => i.id === item.id ? { ...i, favorite: !i.favorite } : i))
@@ -131,6 +135,14 @@ export default function GalleryPanel() {
                 ) : (
                   <Box sx={{ width: '100%', height: '100%', bgcolor: 'background.paper', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Typography variant="caption" sx={{ color: 'text.disabled' }}>No preview</Typography>
+                  </Box>
+                )}
+                {auth?.role === 'admin' && (
+                  <Box sx={{ position: 'absolute', top: 4, left: 4, px: 0.75, py: 0.1, borderRadius: 1, bgcolor: 'rgba(0,0,0,0.6)', maxWidth: '88%' }}>
+                    <Typography variant="caption" noWrap sx={{ color: '#fff', fontSize: '0.65rem', display: 'block' }}>
+                      {item.owner_username || 'local'}
+                      {item.filesystem_only ? ' · file' : ''}
+                    </Typography>
                   </Box>
                 )}
                 <Stack

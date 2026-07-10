@@ -7,6 +7,7 @@ import logging
 import json
 import re
 import threading
+import time
 from collections.abc import Mapping
 from functools import lru_cache
 from dataclasses import dataclass
@@ -49,8 +50,10 @@ EXPANSION_SYSTEM_PROMPT = (
     "Then output a single expanded prompt paragraph.\n\n"
     "Follow these rules strictly:\n"
     "1. **Faithfulness First:** Preserve all original subjects, actions, colors, and spatial "
-    "relationships. Do not add new objects, props, characters, or animals unless the user "
-    "clearly implies them.\n"
+    "relationships. Do not add new characters or animals unless the user clearly implies them. "
+    "For prompts that ask for a scene, creature, landscape, city, room, suburb, battlefield, "
+    "or environment, add appropriate non-character scale anchors and setting details that clarify "
+    "where the subject is and how large it feels.\n"
     "2. **Practical T2I Structure:** Write a prompt that a text-to-image model can parse "
     "cleanly. Group subjects with their own attributes and actions. Use grounded phrasing for "
     "poses, interactions, and spatial layout.\n"
@@ -68,7 +71,24 @@ EXPANSION_SYSTEM_PROMPT = (
     "covers genitals and intimate anatomy.\n"
     "9. **Preserve User Medium:** When the user explicitly requests a medium (e.g. \"photo of\", "
     "\"photograph of\", \"illustration of\", \"painting of\", \"sketch of\", \"3D render of\"), honor it. "
-    "Do not pivot to a different medium to avoid difficulty — match the user's stated intent."
+    "Do not pivot to a different medium to avoid difficulty — match the user's stated intent.\n"
+    "10. **Scene and Scale:** Do not default to a tight subject portrait unless requested. When the "
+    "user asks for a scene or a large subject, specify a readable wide or medium-wide composition, "
+    "foreground/midground/background layers, and scale references such as streets, rooftops, tiny "
+    "human silhouettes, vehicles, houses, trees, power lines, mountains, or horizon lines when they "
+    "fit the request. Make the environment visually interesting and legible, not just a backdrop.\n"
+    "11. **Viewpoint and World Logic:** Preserve the user's stated camera location and physical "
+    "relationship between places. Do not swap the observer's location with the object being viewed, "
+    "and do not invert inside/outside, above/below, foreground/background, or observer/target "
+    "relationships. If the prompt defines where the viewer is standing and what they are looking at, "
+    "keep that world logic intact.\n"
+    "12. **Cinematic Staging and Feeling:** Improve boring prompts by giving the scene purposeful "
+    "subject placement, a natural pose or gesture, and an emotional atmosphere. Use motivated "
+    "foreground, midground, and background details; describe where the subject sits in the frame and "
+    "what they are doing physically. Favor poses that feel candid, tense, graceful, intimate, or "
+    "alive rather than stiff, generic, or mannequin-like. A subtle provocative edge is allowed when "
+    "it fits the user's intent — through posture, confidence, vulnerability, tension, wardrobe mood, "
+    "or gaze — but do not turn non-sexual prompts into explicit sexual content."
 )
 
 
@@ -78,6 +98,7 @@ class PromptExpansionResult:
     changed: bool
     error: str | None = None
     backend: str = "local"
+    sign_copy_pass: dict | None = None
 
 
 @lru_cache(maxsize=2)
@@ -127,20 +148,19 @@ def _resolve_local_qwen_device(torch_module) -> str:
         logger.info("Local Qwen prompt helper using CPU; could not read CUDA memory state.")
         return "cpu"
     if allocated_gb > LOCAL_QWEN_MAX_EXISTING_CUDA_ALLOC_GB:
-        logger.warning(
-            "Local Qwen prompt helper using CPU because this process already has %.1fGB CUDA allocated. "
-            "This avoids stacking the Magic Wand model beside the active Krea pipeline.",
-            allocated_gb,
+        raise RuntimeError(
+            "Local Qwen CUDA is unsafe because this process already has "
+            f"{allocated_gb:.1f}GB CUDA allocated by Krea/PiD. "
+            "Auto mode no longer falls back to CPU for interactive Magic Wand because it can hang for minutes. "
+            "Wait for generation to finish, unload the model, or explicitly choose CPU if you accept a slow run."
         )
-        return "cpu"
     if free_gb < LOCAL_QWEN_MIN_FREE_VRAM_GB:
-        logger.warning(
-            "Local Qwen prompt helper using CPU because only %.1f/%.1fGB VRAM is free. "
-            "This avoids loading a second Qwen3-VL model beside the active Krea pipeline.",
-            free_gb,
-            total_gb,
+        raise RuntimeError(
+            "Local Qwen CUDA is unsafe because only "
+            f"{free_gb:.1f}/{total_gb:.1f}GB VRAM is free. "
+            "Auto mode no longer falls back to CPU for interactive Magic Wand because it can hang for minutes. "
+            "Use Safe RAM clean/unload the model, switch Magic Wand to OpenRouter/GGUF helper, or explicitly choose CPU."
         )
-        return "cpu"
     logger.info("Local Qwen prompt helper using CUDA (%.1f/%.1fGB VRAM free).", free_gb, total_gb)
     return "cuda"
 
@@ -160,6 +180,16 @@ def unload_local_qwen() -> None:
                     torch.cuda.ipc_collect()
         except Exception:
             logger.debug("Could not fully clear local Qwen helper cache", exc_info=True)
+
+
+def unload_local_qwen_after_use() -> None:
+    """Aggressively release local Qwen after interactive helper work.
+
+    The prompt helper is large enough that keeping it cached competes with Krea
+    and PiD. Repeated wand clicks can reload it, but normal generation should
+    never inherit its memory pressure.
+    """
+    unload_local_qwen()
 
 
 def _strip_data_url(image_b64: str) -> str:
@@ -190,7 +220,8 @@ def _generation_kwargs(inputs) -> dict:
     return {"input_ids": inputs}
 
 
-def expand_prompt_local(prompt: str) -> PromptExpansionResult:
+def expand_prompt_transformers(prompt: str) -> PromptExpansionResult:
+    tokenizer = _processor = model = inputs = outputs = None
     try:
         from settings import settings
         with _LOCAL_QWEN_LOCK:
@@ -216,7 +247,7 @@ def expand_prompt_local(prompt: str) -> PromptExpansionResult:
             expanded=expanded,
             changed=expanded.strip() != prompt.strip(),
             error=None if expanded.strip() else "Local Qwen3-VL returned an empty expansion.",
-            backend="local",
+            backend="transformers",
         )
     except Exception as exc:
         msg = (
@@ -224,42 +255,187 @@ def expand_prompt_local(prompt: str) -> PromptExpansionResult:
             f"Conditioning / Local AI Assets to repair the local model. Details: {exc}"
         )
         logger.warning(msg)
-        return PromptExpansionResult(expanded=prompt, changed=False, error=msg, backend="local")
+        return PromptExpansionResult(expanded=prompt, changed=False, error=msg, backend="transformers")
+    finally:
+        del tokenizer, _processor, model, inputs, outputs
+        unload_local_qwen_after_use()
 
 
-def describe_image_local(image_b64: str) -> dict[str, str]:
+def expand_prompt_comfy(prompt: str) -> PromptExpansionResult:
+    from comfy_qwen_vl import expand_prompt_comfy as _comfy_expand
+
+    try:
+        expanded = (_comfy_expand(prompt, EXPANSION_SYSTEM_PROMPT) or "").strip() or prompt
+        return PromptExpansionResult(
+            expanded=expanded,
+            changed=expanded.strip() != prompt.strip(),
+            error=None if expanded.strip() else "Comfy QwenVL returned an empty expansion.",
+            backend="comfy",
+        )
+    except Exception as exc:
+        logger.warning("Comfy QwenVL prompt expansion failed; falling back to Transformers: %s", exc)
+        result = expand_prompt_transformers(prompt)
+        if result.error is None:
+            result.backend = "transformers_fallback"
+        return result
+
+
+def expand_prompt_local(prompt: str) -> PromptExpansionResult:
+    """Default local Magic Wand: Comfy QwenVL, with Transformers fallback."""
     from settings import settings
-    with _LOCAL_QWEN_LOCK:
-        tokenizer, processor, model = _load_local_qwen(str(getattr(settings, "local_qwen_model_id", "") or ""))
-        if processor is None:
-            raise RuntimeError("Local Qwen3-VL processor is unavailable.")
-        image = Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")
-        prompt = (
-            "Write one vivid text-to-image prompt that could recreate this image. "
-            "Return one paragraph only. Include subject, setting, composition, medium, "
-            "lighting, color palette, texture, camera/art details, and mood. Do not "
-            "mention that you are looking at an image."
+
+    backend = str(getattr(settings, "local_llm_backend", "comfy") or "comfy")
+    if backend == "transformers":
+        return expand_prompt_transformers(prompt)
+    if backend == "gguf_server":
+        return expand_prompt_gguf_server(
+            prompt,
+            base_url=str(getattr(settings, "gguf_helper_base_url", GGUF_HELPER_DEFAULT_BASE_URL) or GGUF_HELPER_DEFAULT_BASE_URL),
+            model=str(getattr(settings, "gguf_helper_model", GGUF_HELPER_DEFAULT_MODEL) or GGUF_HELPER_DEFAULT_MODEL),
+            timeout=int(getattr(settings, "gguf_helper_timeout_sec", 120) or 120),
         )
-        inputs = processor(
-            text=[(
-                "<|im_start|>user\n"
-                f"<|vision_start|><|image_pad|><|vision_end|>{prompt}<|im_end|>\n"
-                "<|im_start|>assistant\n"
-            )],
-            images=[image],
-            return_tensors="pt",
-        ).to(getattr(model, "device", "cpu"))
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=420,
-            do_sample=True,
-            temperature=0.6,
-            eos_token_id=getattr(tokenizer, "eos_token_id", None),
-        )
-        text = _decode_generation(tokenizer, outputs, inputs.get("input_ids") if isinstance(inputs, dict) else None)
+    return expand_prompt_comfy(prompt)
+
+
+# Instruction prompts for the local/remote image describer.
+#  - recreate: a full prompt that reproduces the whole image (subject + style).
+#  - style: only the visual style / art direction, so it can be applied to a new
+#    subject (moodboard-style transfer via the local abliterated Qwen3-VL).
+DESCRIBE_PROMPTS = {
+    "recreate": (
+        "Write one vivid text-to-image prompt that could recreate this image. "
+        "Return one paragraph only. Include subject, setting, composition, medium, "
+        "lighting, color palette, texture, camera/art details, and mood. Do not "
+        "mention that you are looking at an image."
+    ),
+    "style": (
+        "Describe ONLY the visual style of this image so it can be applied to a "
+        "different subject. Return one paragraph. Cover the medium/technique, art "
+        "direction, color palette, lighting, texture/rendering, mood, and any "
+        "camera/lens or brushwork cues. Do NOT describe the specific subject, "
+        "people, or scene content, and do not mention that you are looking at an image."
+    ),
+    "character": (
+        "Describe ONLY the person in this image for identity preservation. Return a "
+        "single compact comma-separated list of physical features and nothing else. "
+        "Include: approximate age range, sex, skin tone, face shape, hair color, hair "
+        "length and hairstyle, facial hair, eyebrow shape, eye color, nose shape, lip "
+        "shape, and any distinctive marks (moles, freckles, scars, dimples, glasses). "
+        "Do NOT mention clothing, background, scene, setting, lighting, pose, expression, "
+        "camera, or style. Do not add commentary or preamble, and do not mention that you "
+        "are looking at an image."
+    ),
+}
+
+
+def _describe_prompt(mode: str, guidance: str = "") -> str:
+    base = DESCRIBE_PROMPTS.get((mode or "recreate").lower(), DESCRIBE_PROMPTS["recreate"])
+    guidance = (guidance or "").strip()
+    if not guidance:
+        return base
+    # With user guidance, LEAD with the instruction so the model builds the prompt
+    # around it (focus/emphasis or an explicit change) instead of just recreating the
+    # image faithfully. Appending guidance to the end of the long "recreate" prompt
+    # made the model down-weight it, so guidance is front-and-center here.
+    return (
+        "Look at this image and write ONE vivid text-to-image prompt as a single paragraph. "
+        f"The user's instruction about what to focus on or change is: \"{guidance}\". "
+        "Build the prompt primarily around that instruction: strongly emphasise the aspects "
+        "the user mentions, and apply any change they request (for example a different time of "
+        "day, lighting, style, colour, setting, mood, or added/removed elements) even when it "
+        "differs from the image. Keep everything the user did NOT mention consistent with the "
+        "image. Include subject, composition, medium, lighting, colour, texture, and mood. "
+        "Do not add commentary or preamble, and do not mention that you are looking at an image."
+    )
+
+
+def describe_image_transformers(image_b64: str, mode: str = "recreate", guidance: str = "") -> dict[str, str]:
+    tokenizer = processor = model = image = inputs = outputs = None
+    guidance = (guidance or "").strip()
+    logger.info("describe_image_transformers start: mode=%s guidance=%r", mode, guidance)
+    try:
+        from settings import settings
+        with _LOCAL_QWEN_LOCK:
+            tokenizer, processor, model = _load_local_qwen(str(getattr(settings, "local_qwen_model_id", "") or ""))
+            if processor is None:
+                raise RuntimeError("Local Qwen3-VL processor is unavailable.")
+            image = Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")
+            orig_size = image.size
+            # Cap the resolution so a large source doesn't explode the VL vision-token
+            # count (a full 1024px+ image = thousands of vision tokens = very slow /
+            # heavy VRAM). ~1 MP is plenty for accurate captioning.
+            image.thumbnail((1024, 1024))
+            device = getattr(model, "device", "cpu")
+            prompt = _describe_prompt(mode, guidance)
+            logger.info(
+                "describe_image_transformers: image %sx%s -> %sx%s, device=%s, guided=%s",
+                orig_size[0], orig_size[1], image.size[0], image.size[1], device, bool(guidance),
+            )
+            logger.info("describe_image_transformers instruction: %s", prompt)
+            # Use the model's official chat template so the image placeholder is
+            # expanded to the correct number of vision tokens (a hand-built
+            # <|image_pad|> string is fragile across Qwen VL versions).
+            messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}]
+            chat = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = processor(
+                text=[chat],
+                images=[image],
+                return_tensors="pt",
+            ).to(device)
+            input_len = int(getattr(_input_ids(inputs), "shape", [0, 0])[-1])
+            t0 = time.time()
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=420,
+                do_sample=True,
+                temperature=0.6,
+                eos_token_id=getattr(tokenizer, "eos_token_id", None),
+            )
+            gen_tokens = int(getattr(outputs[0], "shape", [0])[-1]) - input_len if outputs is not None else 0
+            text = _decode_generation(tokenizer, outputs, _input_ids(inputs))
+            logger.info(
+                "describe_image_transformers done in %.1fs: input_tokens=%d new_tokens=%d result_chars=%d",
+                time.time() - t0, input_len, gen_tokens, len(text or ""),
+            )
+            logger.info("describe_image_transformers result: %s", (text or "")[:600])
+        if not text:
+            raise RuntimeError("Local Qwen3-VL returned an empty image description.")
+        return {"prompt": text, "backend": "transformers"}
+    except Exception:
+        logger.exception("describe_image_transformers failed (mode=%s guided=%s)", mode, bool(guidance))
+        raise
+    finally:
+        del tokenizer, processor, model, image, inputs, outputs
+        unload_local_qwen_after_use()
+
+
+def describe_image_comfy(image_b64: str, mode: str = "recreate", guidance: str = "") -> dict[str, str]:
+    from comfy_qwen_vl import describe_image_comfy as _comfy_describe
+
+    prompt = _describe_prompt(mode, guidance)
+    logger.info("describe_image_comfy start: mode=%s guidance=%r", mode, guidance)
+    t0 = time.time()
+    text = (_comfy_describe(image_b64, prompt) or "").strip()
+    logger.info("describe_image_comfy done in %.1fs: result_chars=%d", time.time() - t0, len(text))
     if not text:
-        raise RuntimeError("Local Qwen3-VL returned an empty image description.")
-    return {"prompt": text, "backend": "local"}
+        raise RuntimeError("Comfy QwenVL returned an empty image description.")
+    return {"prompt": text, "backend": "comfy"}
+
+
+def describe_image_local(image_b64: str, mode: str = "recreate", guidance: str = "") -> dict[str, str]:
+    """Default local image→prompt: Comfy QwenVL, with Transformers fallback."""
+    from settings import settings
+
+    backend = str(getattr(settings, "local_llm_backend", "comfy") or "comfy")
+    if backend == "transformers":
+        return describe_image_transformers(image_b64, mode, guidance)
+    try:
+        return describe_image_comfy(image_b64, mode, guidance)
+    except Exception as exc:
+        logger.warning("Comfy QwenVL describe failed; falling back to Transformers: %s", exc)
+        result = describe_image_transformers(image_b64, mode, guidance)
+        result["backend"] = "transformers_fallback"
+        return result
 
 
 def coerce_openrouter_model(model: str, free_only: bool) -> str:
@@ -288,7 +464,7 @@ def openrouter_error_hint(exc: Exception) -> str:
     return f"OpenRouter prompt expansion failed: {s}"
 
 
-def describe_image_openrouter(image_b64: str, api_key: str) -> dict[str, str]:
+def describe_image_openrouter(image_b64: str, api_key: str, mode: str = "recreate", guidance: str = "") -> dict[str, str]:
     if not api_key:
         raise RuntimeError("OpenRouter API key is missing. Add it in System settings.")
     resp = requests.post(
@@ -306,16 +482,7 @@ def describe_image_openrouter(image_b64: str, api_key: str) -> dict[str, str]:
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Look at this image and write one vivid text-to-image prompt "
-                                "that could recreate it. Return one paragraph only. Include "
-                                "subject, setting, composition, medium, lighting, color palette, "
-                                "texture, camera/art details, and mood. Do not mention that you "
-                                "are looking at an image."
-                            ),
-                        },
+                        {"type": "text", "text": _describe_prompt(mode, guidance)},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
                     ],
                 }
@@ -565,17 +732,34 @@ def expand_prompt_result(
     gguf_helper_timeout_sec: int = 120,
 ) -> PromptExpansionResult:
     if backend == "ideogram-json":
-        return expand_prompt_ideogram_json(prompt, ideogram_api_key)
-    if backend == "openrouter":
-        return expand_prompt_openrouter(prompt, openrouter_api_key, openrouter_model, openrouter_free_only)
-    if backend in {"gguf", "gguf-server"}:
-        return expand_prompt_gguf_server(
+        result = expand_prompt_ideogram_json(prompt, ideogram_api_key)
+    elif backend == "openrouter":
+        result = expand_prompt_openrouter(prompt, openrouter_api_key, openrouter_model, openrouter_free_only)
+    elif backend in {"gguf", "gguf-server"}:
+        result = expand_prompt_gguf_server(
             prompt,
             base_url=gguf_helper_base_url,
             model=gguf_helper_model,
             timeout=gguf_helper_timeout_sec,
         )
-    return expand_prompt_local(prompt)
+    else:
+        result = expand_prompt_local(prompt)
+
+    # Stage 2: invent quoted copy for readable surfaces when Stage 1 succeeded.
+    if result.error or not (result.expanded or "").strip():
+        return result
+    try:
+        from sign_copy_pass import run_sign_copy_pass
+
+        final, meta = run_sign_copy_pass(result.expanded, stage1_backend=result.backend)
+        result.sign_copy_pass = meta
+        if meta.get("changed") and final.strip():
+            result.expanded = final
+            result.changed = True
+    except Exception as exc:
+        logger.warning("Sign-copy pass failed open; keeping Stage 1 prompt: %s", exc)
+        result.sign_copy_pass = {"ran": False, "changed": False, "skipped_reason": "error", "error": str(exc)}
+    return result
 
 
 def expand_prompt(

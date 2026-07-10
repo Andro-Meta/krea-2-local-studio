@@ -4,14 +4,16 @@ import Layout from './components/Layout'
 import GeneratePanel from './components/GeneratePanel'
 import SystemStatus from './components/SystemStatus'
 import RedrawStudio from './components/RedrawStudio'
-import RealtimeStudio from './components/RealtimeStudio'
+import UpscalePanel from './components/GeneratePanel/UpscalePanel'
 import Lightbox from './components/Gallery/Lightbox'
-import { useStore } from './store'
+import { TAB, useStore } from './store'
 import { apiFetch, type MoodboardDiscovery } from './api'
 
 const SEEN_MOODBOARD_DISCOVERY_KEY = 'krea2_seen_moodboard_discovery_id'
 const GalleryPanel = lazy(() => import('./components/Gallery'))
 const MoodboardsPanel = lazy(() => import('./components/Moodboards'))
+const TestLabsPanel = lazy(() => import('./components/TestLabs'))
+const CharacterEditPanel = lazy(() => import('./components/CharacterEdit'))
 
 function LazyTabFallback() {
   return (
@@ -26,7 +28,7 @@ export default function App() {
   const [moodboardToast, setMoodboardToast] = useState<MoodboardDiscovery | null>(null)
 
   useEffect(() => {
-    if (params.mode !== 'txt2img' && createMode !== 'realtime') setCreateMode('redraw')
+    if (createMode === 'txt2img' && params.mode !== 'txt2img') setCreateMode('redraw')
   }, [createMode, params.mode])
 
   useEffect(() => {
@@ -84,42 +86,62 @@ export default function App() {
               inpaint_method: 'native',
               differential_inpaint: false,
               moodboard_images: [],
+              mrflow: false,
+              god_mode: false,
             })
-            if (v === 'redraw') setParam('mode', 'redraw')
+            if (v === 'upscale') setParams({ mrflow: true, god_mode: false })
+            if (v === 'redraw') setParams({ mode: 'redraw', mrflow: false, god_mode: false })
           }}
           variant="scrollable"
           scrollButtons="auto"
         >
           <Tab label="Text → Image" value="txt2img" />
+          <Tab label="Test Labs" value="test_labs" />
+          <Tab label="Character Edit" value="character_edit" />
+          <Tab label="Upscale" value="upscale" />
           <Tab label="Redraw Studio" value="redraw" />
-          <Tab label="Realtime Studio" value="realtime" />
         </Tabs>
       </Box>
       {createMode === 'txt2img' && <GeneratePanel />}
+      {createMode === 'test_labs' && (
+        <Suspense fallback={<LazyTabFallback />}>
+          <TestLabsPanel />
+        </Suspense>
+      )}
+      {createMode === 'character_edit' && (
+        <Suspense fallback={<LazyTabFallback />}>
+          <CharacterEditPanel />
+        </Suspense>
+      )}
+      {createMode === 'upscale' && (
+        <>
+          <UpscalePanel />
+          <GeneratePanel />
+        </>
+      )}
       {createMode === 'redraw' && (
         <>
           <RedrawStudio />
           <GeneratePanel />
         </>
       )}
-      {createMode === 'realtime' && <RealtimeStudio />}
     </Box>
   )
 
   return (
     <Layout>
-      {tab === 0 && renderCreate()}
-      {tab === 1 && (
+      {tab === TAB.CREATE && renderCreate()}
+      {tab === TAB.GALLERY && (
         <Suspense fallback={<LazyTabFallback />}>
           <GalleryPanel />
         </Suspense>
       )}
-      {tab === 2 && (
+      {tab === TAB.MOODBOARDS && (
         <Suspense fallback={<LazyTabFallback />}>
           <MoodboardsPanel />
         </Suspense>
       )}
-      {tab === 3 && <SystemStatus />}
+      {tab === TAB.SYSTEM && <SystemStatus />}
       {lightbox && <Lightbox />}
       <Snackbar open={!!moodboardToast} autoHideDuration={8000} onClose={() => setMoodboardToast(null)}>
         <Alert
@@ -132,7 +154,7 @@ export default function App() {
               size="small"
               onClick={() => {
                 setMoodboardView('new')
-                setTab(2)
+                setTab(TAB.MOODBOARDS)
                 setMoodboardToast(null)
               }}
             >

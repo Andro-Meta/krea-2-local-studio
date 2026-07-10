@@ -35,19 +35,5 @@ class OptionalLoraAssetTests(unittest.TestCase):
         self.assertFalse(items["k2q_turbo_lora_rank64"]["installed"])
         self.assertIn("inspected after download", items["k2q_turbo_lora_rank64"]["match_info"])
 
-    def test_raw_turbo_benchmark_refuses_raw_bf16_fallback(self) -> None:
-        import importlib.util
-
-        script = ROOT / "scripts" / "benchmark_raw_turbo_lora.py"
-        spec = importlib.util.spec_from_file_location("benchmark_raw_turbo_lora", script)
-        module = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader
-        spec.loader.exec_module(module)
-
-        with patch.object(module, "first_existing", side_effect=RuntimeError("missing")):
-            with self.assertRaisesRegex(RuntimeError, "RAW BF16 is intentionally not used"):
-                module.first_low_ram_raw_checkpoint()
-
-
 if __name__ == "__main__":
     unittest.main()

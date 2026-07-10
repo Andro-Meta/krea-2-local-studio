@@ -22,6 +22,9 @@ from settings import BASE_DIR, DB_PATH
 KREA_BASE_URL = "https://www.krea.ai"
 KREA_MOODBOARD_GALLERY_URL = f"{KREA_BASE_URL}/app?gallery=moodboards"
 MOODBOARD_SEED_PATH = BASE_DIR / "data" / "krea_moodboards_seed.json"
+# uuid -> short style qualifier for official boards that share a title
+# (e.g. sixteen distinct boards all named "Cinematic Chiaroscuro Noir").
+MOODBOARD_TITLE_QUALIFIERS_PATH = BASE_DIR / "data" / "moodboard_title_qualifiers.json"
 CUSTOM_MOODBOARD_DIR = BASE_DIR / "data" / "custom_moodboards"
 MOODBOARD_IMAGE_CACHE_DIR = BASE_DIR / "data" / "moodboard_image_cache"
 SYNC_META_KEY = "last_krea_moodboard_sync_at"
@@ -455,6 +458,17 @@ async def init_moodboard_db(db_path: Path = DB_PATH) -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_moodboards_source ON moodboards(source)")
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS moodboard_favorites (
+                username TEXT NOT NULL,
+                moodboard_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (username, moodboard_id)
+            )
+            """
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_moodboard_favorites_user ON moodboard_favorites(username)")
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS app_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -464,6 +478,66 @@ async def init_moodboard_db(db_path: Path = DB_PATH) -> None:
         await db.commit()
     if db_path == DB_PATH:
         await import_moodboard_seed(MOODBOARD_SEED_PATH, db_path=db_path)
+    await seed_andrometa_moodboards(db_path=db_path)
+
+
+async def seed_andrometa_moodboards(db_path: Path = DB_PATH) -> int:
+    """Seed the curated Andro.Meta Classics (backend/moods.py) into the moodboard
+    catalog as source='andrometa' rows so they're searchable, favoritable, and
+    applied through the same pipeline as official Krea boards. Idempotent: content
+    is refreshed on each boot but user favorites are preserved."""
+    try:
+        from moods import MOODS
+    except Exception:
+        return 0
+
+    def _tags(m: dict) -> list[str]:
+        phrases = [p.strip() for p in str(m.get("keywords", "")).split(",") if p.strip()]
+        ordered = [m["category"], *phrases]
+        seen: set[str] = set()
+        out: list[str] = []
+        for t in ordered:
+            key = t.lower()
+            if key not in seen:
+                seen.add(key)
+                out.append(t)
+        return out[:8]
+
+    now = _now_iso()
+    seeded = 0
+    async with aiosqlite.connect(str(db_path)) as db:
+        for m in MOODS:
+            url = f"andrometa://{m['id']}"
+            tags = _tags(m)
+            guidance = json.dumps({
+                "prompt_guidance": m["keywords"],
+                "negative_guidance": m["avoids"],
+                "style_axes": [m["category"]],
+                "conditioning_notes": tags,
+            }, sort_keys=True)
+            await db.execute(
+                """
+                INSERT INTO moodboards
+                    (url, slug, uuid, title, taste_profile, keywords, primary_image_url,
+                     image_urls, related_urls, favorite, source, first_seen_at, last_seen_at,
+                     updated_at, sync_error, qwen_guidance_json, qwen_guidance_at, qwen_guidance_version)
+                VALUES (?, ?, ?, ?, ?, ?, '', '[]', '[]', 0, 'andrometa', ?, ?, ?, '', ?, ?, 1)
+                ON CONFLICT(url) DO UPDATE SET
+                    title = excluded.title,
+                    taste_profile = excluded.taste_profile,
+                    keywords = excluded.keywords,
+                    source = 'andrometa',
+                    qwen_guidance_json = excluded.qwen_guidance_json,
+                    qwen_guidance_version = 1,
+                    last_seen_at = excluded.last_seen_at,
+                    updated_at = excluded.updated_at
+                """,
+                (url, str(m["id"]), f"andrometa-{m['id']}", f"{m['emoji']} {m['name']}",
+                 m["keywords"], json.dumps(tags), now, now, now, guidance, now),
+            )
+            seeded += 1
+        await db.commit()
+    return seeded
 
 
 async def upsert_moodboard(record: MoodboardRecord, db_path: Path = DB_PATH) -> int:
@@ -509,9 +583,19 @@ async def upsert_moodboard(record: MoodboardRecord, db_path: Path = DB_PATH) -> 
         return int(row[0])
 
 
-async def set_moodboard_favorite(moodboard_id: int, favorite: bool, db_path: Path = DB_PATH) -> None:
+async def set_moodboard_favorite(moodboard_id: int, favorite: bool, db_path: Path = DB_PATH, *, username: str = "") -> None:
     async with aiosqlite.connect(str(db_path)) as db:
-        await db.execute("UPDATE moodboards SET favorite = ? WHERE id = ?", (int(favorite), moodboard_id))
+        user = (username or "__local__").strip() or "__local__"
+        if favorite:
+            await db.execute(
+                "INSERT OR IGNORE INTO moodboard_favorites(username, moodboard_id) VALUES (?, ?)",
+                (user, moodboard_id),
+            )
+        else:
+            await db.execute(
+                "DELETE FROM moodboard_favorites WHERE username = ? AND moodboard_id = ?",
+                (user, moodboard_id),
+            )
         await db.commit()
 
 
@@ -546,10 +630,22 @@ async def generate_and_store_moodboard_qwen_guidance(
     if not item:
         raise ValueError("Moodboard not found.")
 
+    # Sample up to 8 images spread across the whole board (not just the first
+    # few): the leading images often share one subject, and guidance built from
+    # them overfits that subject instead of the board's style.
+    urls = _moodboard_image_urls([item.get("primary_image_url", ""), *item.get("image_urls", [])])
+    if len(urls) > 8:
+        step = len(urls) / 8
+        urls = [urls[int(i * step)] for i in range(8)]
     image_b64s: list[str] = []
-    for url in _moodboard_image_urls([item.get("primary_image_url", ""), *item.get("image_urls", [])])[:4]:
+    for url in urls:
         try:
-            image_b64s.append(fetch_moodboard_image_b64(url))
+            if str(url).startswith("/api/moodboards/custom-images/"):
+                image_b64s.append(fetch_moodboard_image_b64(url))
+            else:
+                # Disk-cached fetch: batch re-enrichment resumes without
+                # re-downloading tens of thousands of CDN images.
+                image_b64s.append(base64.b64encode(fetch_cached_moodboard_image(url).read_bytes()).decode())
         except Exception:
             continue
 
@@ -790,9 +886,21 @@ def _json_dict(value: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _safe_qwen_guidance(value: str) -> dict:
+    guidance = _json_dict(value)
+    if not guidance:
+        return {}
+    try:
+        from moodboard_enrichment import sanitize_transferable_guidance
+
+        return sanitize_transferable_guidance(guidance)
+    except Exception:
+        return guidance
+
+
 def _row_to_item(row: aiosqlite.Row) -> dict:
     item = dict(row)
-    item["favorite"] = bool(item["favorite"])
+    item["favorite"] = bool(item.get("user_favorite", item.get("favorite", 0)))
     item["source"] = str(item.get("source") or "official")
     item["keywords"] = _json_list(item.get("keywords", "[]"))
     item["image_urls"] = _moodboard_image_urls(_json_list(item.get("image_urls", "[]")))
@@ -804,7 +912,7 @@ def _row_to_item(row: aiosqlite.Row) -> dict:
         if preview
     ]
     item["related_urls"] = _json_list(item.get("related_urls", "[]"))
-    item["qwen_guidance"] = _json_dict(item.get("qwen_guidance_json", ""))
+    item["qwen_guidance"] = _safe_qwen_guidance(item.get("qwen_guidance_json", ""))
     item["qwen_guidance_at"] = str(item.get("qwen_guidance_at") or "")
     item["qwen_guidance_version"] = int(item.get("qwen_guidance_version") or 0)
     return item
@@ -812,7 +920,7 @@ def _row_to_item(row: aiosqlite.Row) -> dict:
 
 def _sync_row_to_item(row: sqlite3.Row) -> dict:
     item = dict(row)
-    item["favorite"] = bool(item["favorite"])
+    item["favorite"] = bool(item.get("user_favorite", item.get("favorite", 0)))
     item["source"] = str(item.get("source") or "official")
     item["keywords"] = _json_list(item.get("keywords", "[]"))
     item["image_urls"] = _moodboard_image_urls(_json_list(item.get("image_urls", "[]")))
@@ -824,7 +932,7 @@ def _sync_row_to_item(row: sqlite3.Row) -> dict:
         if preview
     ]
     item["related_urls"] = _json_list(item.get("related_urls", "[]"))
-    item["qwen_guidance"] = _json_dict(item.get("qwen_guidance_json", ""))
+    item["qwen_guidance"] = _safe_qwen_guidance(item.get("qwen_guidance_json", ""))
     item["qwen_guidance_at"] = str(item.get("qwen_guidance_at") or "")
     item["qwen_guidance_version"] = int(item.get("qwen_guidance_version") or 0)
     return item
@@ -876,19 +984,30 @@ async def list_moodboards(
     page: int = 1,
     page_size: int = 50,
     shuffle_seed: str = "",
+    username: str = "",
     db_path: Path = DB_PATH,
 ) -> dict:
+    user = (username or "__local__").strip() or "__local__"
     where_parts: list[str] = []
     params: list[object] = []
     if favorites_only:
-        where_parts.append("favorite = 1")
-    if source in {"official", "custom"}:
-        where_parts.append("source = ?")
+        where_parts.append("mf.username IS NOT NULL")
+    if source in {"official", "custom", "andrometa"}:
+        where_parts.append("m.source = ?")
         params.append(source)
     where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
-        rows = await (await db.execute(f"SELECT * FROM moodboards {where}", params)).fetchall()
+        rows = await (await db.execute(
+            f"""
+            SELECT m.*, CASE WHEN mf.username IS NULL THEN 0 ELSE 1 END AS user_favorite
+            FROM moodboards m
+            LEFT JOIN moodboard_favorites mf
+              ON mf.moodboard_id = m.id AND mf.username = ?
+            {where}
+            """,
+            [user, *params],
+        )).fetchall()
     items = [_row_to_item(row) for row in rows]
     if query.strip():
         scored = [(_score_item(item, query), item) for item in items]
@@ -906,10 +1025,20 @@ async def list_moodboards(
     return {"items": items[start:start + page_size], "total": total}
 
 
-async def get_moodboard(moodboard_id: int, db_path: Path = DB_PATH) -> dict | None:
+async def get_moodboard(moodboard_id: int, db_path: Path = DB_PATH, *, username: str = "") -> dict | None:
+    user = (username or "__local__").strip() or "__local__"
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
-        row = await (await db.execute("SELECT * FROM moodboards WHERE id = ?", (moodboard_id,))).fetchone()
+        row = await (await db.execute(
+            """
+            SELECT m.*, CASE WHEN mf.username IS NULL THEN 0 ELSE 1 END AS user_favorite
+            FROM moodboards m
+            LEFT JOIN moodboard_favorites mf
+              ON mf.moodboard_id = m.id AND mf.username = ?
+            WHERE m.id = ?
+            """,
+            (user, moodboard_id),
+        )).fetchone()
     return _row_to_item(row) if row else None
 
 
@@ -973,24 +1102,40 @@ def moodboard_generation_context(
     negative_parts: list[str] = []
     image_urls: list[str] = []
     seen_images: set[str] = set()
+    try:
+        from moodboard_enrichment import _abstract_subject_locked_prompt, sanitize_style_fragment
+    except Exception:
+        def sanitize_style_fragment(value: str) -> str:  # type: ignore[misc]
+            return str(value or "").strip()
+
+        def _abstract_subject_locked_prompt(value: str) -> str:  # type: ignore[misc]
+            return str(value or "")
+
     for item in items:
         guidance = item.get("qwen_guidance") or {}
-        style_axes = guidance.get("style_axes") or []
-        if isinstance(style_axes, (list, tuple)):
-            style_axes_text = ", ".join(str(a).strip() for a in style_axes if str(a).strip())
-        else:
-            style_axes_text = str(style_axes).strip()
-        conditioning_notes = guidance.get("conditioning_notes") or []
-        if isinstance(conditioning_notes, (list, tuple)):
-            conditioning_notes_text = ", ".join(str(a).strip() for a in conditioning_notes if str(a).strip())
-        else:
-            conditioning_notes_text = str(conditioning_notes).strip()
+        prompt_guidance = str(guidance.get("prompt_guidance") or "").strip()
+        if not prompt_guidance:
+            # Fallback taste profiles are Krea prose and may describe subjects.
+            prompt_guidance = _abstract_subject_locked_prompt(str(item.get("taste_profile") or "")).strip()
+        # Keywords come from the Krea catalog and are not covered by the stored
+        # guidance sanitizer, so sanitize them here. Merge with style axes and
+        # drop entries already present in the prose to keep the prompt compact.
+        guidance_low = prompt_guidance.lower()
+        style_terms: list[str] = []
+        seen_terms: set[str] = set()
+        raw_axes = guidance.get("style_axes") or []
+        raw_terms = [*(item.get("keywords") or []), *(raw_axes if isinstance(raw_axes, (list, tuple)) else [str(raw_axes)])]
+        for raw_term in raw_terms:
+            term = sanitize_style_fragment(str(raw_term))
+            key = term.lower()
+            if not term or key in seen_terms or key in guidance_low:
+                continue
+            seen_terms.add(key)
+            style_terms.append(term)
         style_bits = [
             item.get("title", ""),
-            str(guidance.get("prompt_guidance") or item.get("taste_profile", "")),
-            f"Style keywords: {', '.join(item.get('keywords', []))}" if item.get("keywords") else "",
-            f"Style axes: {style_axes_text}" if style_axes_text else "",
-            f"Conditioning notes: {conditioning_notes_text}" if conditioning_notes_text else "",
+            prompt_guidance,
+            f"Style keywords: {', '.join(style_terms)}" if style_terms else "",
         ]
         text = ". ".join(bit.strip().rstrip(".") for bit in style_bits if bit.strip())
         if text:
@@ -1007,7 +1152,13 @@ def moodboard_generation_context(
                 break
         if len(image_urls) >= max_images:
             break
-    style_text = "Apply these Krea moodboard styles: " + " | ".join(parts) if parts else ""
+    style_text = (
+        "Style-only Krea moodboard guidance: Apply the following only to the visual treatment of the user-requested subject and scene. "
+        "Do not add, remove, replace, or change the subject matter requested above. "
+        "Do not introduce people, faces, figures, animals, vehicles, architecture, text, or objects unless they are explicitly requested in the user prompt. "
+        + " | ".join(parts)
+        if parts else ""
+    )
     negative_text = ", ".join(negative_parts)
     return {
         "items": items,
@@ -1151,6 +1302,53 @@ async def should_sync_moodboards(
     return due
 
 
+def _load_title_qualifiers(path: Path = MOODBOARD_TITLE_QUALIFIERS_PATH) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(uuid): str(qualifier).strip() for uuid, qualifier in data.items() if str(qualifier).strip()}
+
+
+def qualified_title(title: str, uuid: str, qualifiers: dict[str, str]) -> str:
+    qualifier = qualifiers.get(str(uuid or ""), "")
+    base = str(title or "").split(" \u2014 ", 1)[0].strip()
+    return f"{base} \u2014 {qualifier}" if qualifier else base
+
+
+async def apply_title_qualifiers(
+    *,
+    db_path: Path = DB_PATH,
+    qualifiers_path: Path = MOODBOARD_TITLE_QUALIFIERS_PATH,
+) -> int:
+    """Append style qualifiers to duplicate-titled official boards.
+
+    Idempotent, keyed by Krea uuid, and re-run after every crawl/import so a
+    Krea re-sync (which rewrites titles from the page) cannot undo them.
+    """
+    qualifiers = _load_title_qualifiers(qualifiers_path)
+    if not qualifiers:
+        return 0
+    updated = 0
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            f"SELECT id, uuid, title FROM moodboards WHERE uuid IN ({','.join('?' for _ in qualifiers)})",
+            list(qualifiers),
+        )).fetchall()
+        for row in rows:
+            new_title = qualified_title(str(row["title"]), str(row["uuid"]), qualifiers)
+            if new_title != str(row["title"]):
+                await db.execute("UPDATE moodboards SET title = ? WHERE id = ?", (new_title, int(row["id"])))
+                updated += 1
+        await db.commit()
+    return updated
+
+
 async def import_moodboard_urls(
     urls: list[str],
     *,
@@ -1174,4 +1372,6 @@ async def import_moodboard_urls(
             new_ids.append(board_id)
             seen_new_urls.add(record.url)
     await _record_moodboard_discovery(new_ids, db_path=db_path)
+    # Crawled pages carry Krea's raw titles; re-apply duplicate-title qualifiers.
+    await apply_title_qualifiers(db_path=db_path)
     return {"imported": len(ids), "ids": ids, "new_count": len(new_ids), "new_ids": new_ids}

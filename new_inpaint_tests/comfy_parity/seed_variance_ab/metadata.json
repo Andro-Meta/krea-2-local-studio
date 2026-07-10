@@ -1,9 +1,9 @@
 [
   {
-    "schema_version": 1,
+    "schema_version": 2,
     "app": "Krea 2 Studio",
-    "created_at": "2026-06-27T06:44:18Z",
-    "filename": "1782542658289_4164c9f7.png",
+    "created_at": "2026-07-02T14:35:18Z",
+    "filename": "1783002918413_284d9ff8.png",
     "prompt": "a misty forest shrine at sunrise",
     "original_prompt": "a misty forest shrine at sunrise",
     "negative_prompt": "",
@@ -11,27 +11,78 @@
     "base_seed": 104,
     "image_index": 0,
     "mode": "txt2img",
+    "diffusion_engine": "native_int8_convrot",
+    "model_profile": "",
     "checkpoint": "turbo",
     "checkpoint_path": "",
-    "quantization": "fp8",
+    "quantization": "int8",
+    "engine": {
+      "id": "native_int8_convrot",
+      "requested": "native_int8_convrot",
+      "resolved_provider": "comfyui",
+      "quantization": "int8"
+    },
+    "model": {
+      "profile": "",
+      "checkpoint": "turbo",
+      "checkpoint_path": "",
+      "quantization": "int8",
+      "unet": "krea2_turbo_int8_convrot.safetensors",
+      "clip": "Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors",
+      "vae": "qwen_image_vae.safetensors",
+      "engine": "native_int8_convrot"
+    },
+    "source": {
+      "kind": "text_to_image",
+      "mode": "txt2img",
+      "init_image_count": 0,
+      "init_image_hash": "",
+      "mask_hash": "",
+      "moodboard_image_count": 0,
+      "legacy_ref_image_count": 0,
+      "style_reference_count": 0
+    },
+    "runtime": {
+      "provider": "comfyui",
+      "sampler": "euler",
+      "scheduler": "simple"
+    },
     "steps": 8,
     "cfg": 0.0,
     "width": 1024,
     "height": 1024,
+    "batch": {
+      "mode": "safe_queue",
+      "index": 0,
+      "count": 1,
+      "parallel": false
+    },
     "denoise": 1.0,
     "sampler": "euler_flow",
+    "scheduler": "simple",
+    "cfg_zero_star": false,
+    "cfg_zero_init_steps": 1,
     "inpaint": {
       "method": "native",
+      "differential_inpaint": false,
+      "differential_strength": 1.0,
       "lanpaint_inner_steps": 3,
-      "lanpaint_strength": 1.0
+      "lanpaint_strength": 1.0,
+      "lanpaint_lambda": 16.0,
+      "lanpaint_step_size": 0.2,
+      "lanpaint_beta": 1.0,
+      "lanpaint_friction": 15.0,
+      "lanpaint_early_stop": 1,
+      "lanpaint_prompt_mode": "Image First"
     },
-    "mu": 1.15,
+    "mu": null,
     "y1": 0.5,
     "y2": 1.15,
     "edit_provider": "auto",
-    "resolved_provider": "",
+    "resolved_provider": "comfyui",
     "quality_preset": "balanced",
     "creativity": "medium",
+    "conditioning_mode": "auto",
     "loras": [],
     "mood": "",
     "moodboard_ids": [],
@@ -41,24 +92,47 @@
       "moodboard_count": 0,
       "ref_image_count": 0,
       "style_reference_count": 0,
+      "style_fusion_mode": "semantic_fusion",
       "style_references": [],
       "hashes": []
     },
+    "regional_prompts": {
+      "base_prompt_strength": 0.3,
+      "normalize_masks": true,
+      "regions": []
+    },
     "seed_variance": {
+      "algorithm": "legacy",
       "preset": "balanced",
       "strength": 0.0,
-      "protection": "first_half"
+      "model_type": "krea2",
+      "randomize_percent": 0.0,
+      "shift_strength": 100,
+      "protection": "first_half",
+      "direction": "none",
+      "fade_curve": "linear",
+      "injection_start": 0.0,
+      "injection_end": 1.0,
+      "schedule": "constant",
+      "cutoff_step": 8,
+      "total_steps": 20,
+      "cutoff_strength": 0.0
     },
     "rebalance": {
       "enabled": true,
-      "multiplier": 4.0,
+      "mode": "rms_renorm",
+      "preset": "balanced",
+      "renormalize": true,
+      "multiplier": 1.0,
       "weights": "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0",
       "edit_enabled": true,
       "edit_profile": "conservative"
     },
     "krea_enhancer": {
       "enabled": false,
-      "strength": 1.0
+      "variant": "off",
+      "strength": 1.0,
+      "delta_cap": 0.75
     },
     "refine": {
       "enabled": false,
@@ -66,6 +140,17 @@
       "steps": 6
     },
     "bboxes": [],
-    "use_prompt_expander": false
+    "prompt_planner": {
+      "enabled": false,
+      "max_tokens": 700,
+      "lock_original": false,
+      "use_regions": false,
+      "output": {}
+    },
+    "use_prompt_expander": false,
+    "think_steering": {
+      "enabled": false,
+      "text": ""
+    }
   }
 ]

@@ -43,6 +43,33 @@ class StyleReferenceSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             GenerationRequest(prompt="x", style_fusion_mode="invalid")
 
+    def test_generation_request_accepts_image_prompt_modes(self) -> None:
+        from schemas import GenerationRequest
+
+        req = GenerationRequest(prompt="x")
+        self.assertFalse(req.image_prompt_enabled)
+        self.assertEqual(req.image_prompt_mode, "match_style")
+        self.assertEqual(req.image_prompt_strength, 0.2)
+
+        for mode in ("match_style", "copy_composition"):
+            with self.subTest(mode=mode):
+                self.assertEqual(GenerationRequest(prompt="x", image_prompt_mode=mode).image_prompt_mode, mode)
+
+        with self.assertRaises(ValidationError):
+            GenerationRequest(prompt="x", image_prompt_mode="invalid")
+
+    def test_image_prompt_strength_rejects_node_invalid_values(self) -> None:
+        from schemas import GenerationRequest
+
+        for value in (0.1, 0.2, 1.0):
+            with self.subTest(value=value):
+                self.assertEqual(GenerationRequest(prompt="x", image_prompt_strength=value).image_prompt_strength, value)
+
+        for value in (0.05, 1.05):
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    GenerationRequest(prompt="x", image_prompt_strength=value)
+
     def test_style_reference_strength_accepts_comfy_range(self) -> None:
         from schemas import StyleReferenceInput
 
@@ -68,38 +95,6 @@ class StyleReferenceSchemaTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             GenerationRequest(prompt="a quiet forest", style_references=refs + [StyleReferenceInput(image_b64="extra")])
-
-    def test_legacy_reference_images_convert_to_style_references(self) -> None:
-        from inference import resolve_style_references
-
-        req = SimpleNamespace(
-            style_references=[],
-            ref_image1_b64="one",
-            ref_image2_b64="",
-            ref_image3_b64="three",
-        )
-
-        refs = resolve_style_references(req)
-
-        self.assertEqual([ref["image_b64"] for ref in refs], ["one", "three"])
-        self.assertEqual([ref["strength"] for ref in refs], [1.0, 1.0])
-        self.assertEqual([ref["token_size"] for ref in refs], ["normal", "normal"])
-
-    def test_structured_and_legacy_references_are_capped_to_ten(self) -> None:
-        from inference import resolve_style_references
-        from schemas import StyleReferenceInput
-
-        req = SimpleNamespace(
-            style_references=[StyleReferenceInput(image_b64=str(i), strength=0.5) for i in range(9)],
-            ref_image1_b64="legacy-one",
-            ref_image2_b64="legacy-two",
-            ref_image3_b64="legacy-three",
-        )
-
-        refs = resolve_style_references(req)
-
-        self.assertEqual(len(refs), 10)
-        self.assertEqual(refs[-1]["image_b64"], "legacy-one")
 
     def test_generation_metadata_round_trips_style_reference_settings(self) -> None:
         from generation_metadata import build_generation_metadata
@@ -131,6 +126,69 @@ class StyleReferenceSchemaTests(unittest.TestCase):
         metadata = build_generation_metadata(req, base_seed=123)
 
         self.assertEqual(metadata["image_references"]["style_fusion_mode"], "preserve_structure")
+
+    def test_match_style_mode_averages_separate_ref_encodes(self) -> None:
+        import comfy_workflows
+        from comfy_workflows import GraphBuilder, _build_positive
+        from schemas import GenerationRequest, StyleReferenceInput
+
+        req = GenerationRequest(
+            prompt="a quiet forest",
+            image_prompt_enabled=True,
+            image_prompt_mode="match_style",
+            image_prompt_strength=0.2,
+            style_references=[
+                StyleReferenceInput(image_b64="a"),
+                StyleReferenceInput(image_b64="b"),
+                StyleReferenceInput(image_b64="c"),
+            ],
+            seed_variance_preset="off",
+        )
+        g = GraphBuilder()
+
+        original = comfy_workflows._b64_to_loadimage
+        comfy_workflows._b64_to_loadimage = lambda graph, b64: graph.add("LoadImage", {"image": f"{b64}.png"})
+        try:
+            _build_positive(g, req, ["clip", 0], seed=123)
+        finally:
+            comfy_workflows._b64_to_loadimage = original
+        graph = g.graph()
+
+        self.assertEqual(
+            sum(1 for node in graph.values() if node["class_type"] == "TextEncodeKrea2"),
+            3,
+        )
+        self.assertGreaterEqual(
+            sum(1 for node in graph.values() if node["class_type"] == "ConditioningAverage"),
+            2,
+        )
+        self.assertFalse(any(node["class_type"] == "Krea2EncodeRebalance" for node in graph.values()))
+
+    def test_copy_composition_mode_uses_multi_image_encoder(self) -> None:
+        import comfy_workflows
+        from comfy_workflows import GraphBuilder, _build_positive
+        from schemas import GenerationRequest, StyleReferenceInput
+
+        req = GenerationRequest(
+            prompt="a quiet forest",
+            image_prompt_enabled=True,
+            image_prompt_mode="copy_composition",
+            style_references=[
+                StyleReferenceInput(image_b64="a"),
+                StyleReferenceInput(image_b64="b"),
+            ],
+            seed_variance_preset="off",
+        )
+        g = GraphBuilder()
+
+        original = comfy_workflows._b64_to_loadimage
+        comfy_workflows._b64_to_loadimage = lambda graph, b64: graph.add("LoadImage", {"image": f"{b64}.png"})
+        try:
+            _build_positive(g, req, ["clip", 0], seed=123)
+        finally:
+            comfy_workflows._b64_to_loadimage = original
+
+        self.assertTrue(any(node["class_type"] == "Krea2EncodeRebalance" for node in g.graph().values()))
 
 
 if __name__ == "__main__":

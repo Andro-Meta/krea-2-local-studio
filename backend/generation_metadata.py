@@ -160,6 +160,18 @@ def build_generation_metadata(
         "y2": float(getattr(req, "y2", 0.0)),
         "edit_provider": str(getattr(req, "edit_provider", "")),
         "resolved_provider": resolved_provider,
+        "turbo_int8_variant": str(getattr(req, "turbo_int8_variant", "") or ""),
+        "pipeline": {
+            "god_mode": bool(getattr(req, "god_mode", False)),
+            "mrflow": bool(getattr(req, "mrflow", False)),
+            "depth_control": bool(getattr(req, "depth_control", False)),
+            "style_transfer": bool((getattr(req, "style_transfer_image_b64", "") or "").strip()),
+        },
+        "character_edit": {
+            "task": str(getattr(req, "character_edit_task", "") or ""),
+            "grounding_px": int(getattr(req, "character_edit_grounding_px", 0) or 0),
+            "lora_strength": float(getattr(req, "character_edit_lora_strength", 0.0) or 0.0),
+        },
         "quality_preset": str(getattr(req, "quality_preset", "")),
         "creativity": str(getattr(req, "creativity", "medium")),
         "conditioning_mode": str(getattr(req, "conditioning_mode", "auto")),
@@ -218,6 +230,7 @@ def build_generation_metadata(
             "strength": float(getattr(req, "krea_enhancer_strength", 1.0)),
             "delta_cap": float(getattr(req, "krea_enhancer_delta_cap", 0.75)),
         },
+        "vae_degrid": bool(getattr(req, "vae_degrid", True)),
         "refine": {
             "enabled": bool(getattr(req, "refine", False)),
             "denoise": float(getattr(req, "refine_denoise", 0.0)),

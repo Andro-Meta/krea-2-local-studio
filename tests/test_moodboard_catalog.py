@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from moodboards_catalog import (  # noqa: E402
     KREA_MOODBOARD_GALLERY_URL,
     KreaMoodboardCrawler,
     MoodboardRecord,
+    apply_title_qualifiers,
     create_custom_moodboard,
     delete_custom_moodboard,
     fetch_moodboard_image_b64,
@@ -103,7 +105,7 @@ class MoodboardCatalogTests(unittest.TestCase):
                     related_urls=[],
                 )
                 board_id = await upsert_moodboard(record, db_path)
-                await set_moodboard_favorite(board_id, True, db_path)
+                await set_moodboard_favorite(board_id, True, db_path, username="admin")
                 await upsert_moodboard(
                     MoodboardRecord(
                         **{
@@ -115,12 +117,42 @@ class MoodboardCatalogTests(unittest.TestCase):
                     db_path,
                 )
 
-                data = await list_moodboards(query="urban texture", favorites_only=True, db_path=db_path)
+                data = await list_moodboards(query="urban texture", favorites_only=True, db_path=db_path, username="admin")
 
                 self.assertEqual(data["total"], 1)
                 self.assertTrue(data["items"][0]["favorite"])
                 self.assertEqual(data["items"][0]["keywords"], ["cinematic realism", "tactile textures"])
                 self.assertIn("Updated tactile", data["items"][0]["taste_profile"])
+
+            asyncio.run(run())
+
+    def test_moodboard_favorites_are_per_user(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def run() -> None:
+                await init_moodboard_db(db_path)
+                record = MoodboardRecord(
+                    url="https://www.krea.ai/moodboard-feed/per-user-style-11111111-1111-5111-9111-111111111111",
+                    slug="per-user-style-11111111-1111-5111-9111-111111111111",
+                    uuid="11111111-1111-5111-9111-111111111111",
+                    title="Per User Style",
+                    taste_profile="Moody personal favorite.",
+                    keywords=["personal"],
+                    primary_image_url="https://optim-images.krea.ai/primary.webp",
+                    image_urls=[],
+                    related_urls=[],
+                )
+                board_id = await upsert_moodboard(record, db_path)
+                await set_moodboard_favorite(board_id, True, db_path, username="alice")
+
+                alice = await list_moodboards(favorites_only=True, db_path=db_path, username="alice")
+                bob = await list_moodboards(favorites_only=True, db_path=db_path, username="bob")
+                all_for_bob = await list_moodboards(db_path=db_path, username="bob")
+
+                self.assertEqual(alice["total"], 1)
+                self.assertEqual(bob["total"], 0)
+                self.assertFalse(all_for_bob["items"][0]["favorite"])
 
             asyncio.run(run())
 
@@ -222,7 +254,9 @@ class MoodboardCatalogTests(unittest.TestCase):
 
                 await init_moodboard_db(target_db)
                 imported = await import_moodboard_seed(seed_path, db_path=target_db)
-                data = await list_moodboards(db_path=target_db)
+                # Filter to official boards: init also seeds the built-in
+                # Andro.Meta Classics (source='andrometa') into fresh DBs.
+                data = await list_moodboards(source="official", db_path=target_db)
 
                 self.assertEqual(imported, 1)
                 self.assertEqual(data["total"], 1)
@@ -342,6 +376,8 @@ class MoodboardCatalogTests(unittest.TestCase):
             board_id = asyncio.run(seed())
             context = moodboard_generation_context([board_id], db_path=db_path)
 
+            self.assertIn("Style-only Krea moodboard guidance", context["style_text"])
+            self.assertIn("Do not introduce people", context["style_text"])
             self.assertIn("Gritty Cinematic Realism", context["style_text"])
             self.assertIn("Somber urban documentary", context["style_text"])
             self.assertIn("cinematic realism", context["style_text"])
@@ -354,6 +390,50 @@ class MoodboardCatalogTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(context["uuids"], ["4e938f5c-ff17-539b-bdb2-ad7884cdb369"])
+
+    def test_generation_context_sanitizes_stored_subject_locked_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def seed() -> int:
+                await init_moodboard_db(db_path)
+                board_id = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/glitch-woman-11111111-1111-5111-9111-111111111111",
+                        slug="glitch-woman-11111111-1111-5111-9111-111111111111",
+                        uuid="11111111-1111-5111-9111-111111111111",
+                        title="Glitch Woman Style",
+                        taste_profile="Glitchy halftone texture.",
+                        keywords=["glitch", "halftone"],
+                        primary_image_url="",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                await set_moodboard_qwen_guidance(
+                    board_id,
+                    {
+                        "prompt_guidance": "A black and white portrait of a young woman with short hair. Use acid green glitch and halftone texture.",
+                        "negative_guidance": "Avoid human faces, crowds, text, buildings. Avoid flat lighting.",
+                        "style_axes": ["young woman", "halftone"],
+                        "conditioning_notes": [],
+                        "source_summary": "portrait of a young woman",
+                        "guidance_version": 1,
+                    },
+                    db_path=db_path,
+                )
+                return board_id
+
+            board_id = asyncio.run(seed())
+            context = moodboard_generation_context([board_id], db_path=db_path)
+
+            blob = f"{context['style_text']} {context['negative_text']}".lower()
+            for forbidden in ("young woman", "human faces", "crowds", "buildings"):
+                self.assertIsNone(re.search(rf"\b{re.escape(forbidden)}\b", blob), forbidden)
+            self.assertIn("user-requested subject", blob)
+            self.assertIn("acid green glitch", context["style_text"])
+            self.assertIn("halftone", context["style_text"])
 
     def test_generation_context_filters_krea_ui_icon_images(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -435,8 +515,55 @@ class MoodboardCatalogTests(unittest.TestCase):
             self.assertEqual(item["qwen_guidance"]["prompt_guidance"], "Translate this board into candid urban realism.")
             self.assertIn("Translate this board", context["style_text"])
             self.assertIn("gritty realism", context["style_text"])
-            self.assertIn("Use references for texture", context["style_text"])
+            # Conditioning notes duplicate the guardrail preamble and are kept
+            # out of the generation prompt to preserve user-prompt attention.
+            self.assertNotIn("Use references for texture", context["style_text"])
             self.assertIn("Avoid glossy studio light", context["negative_text"])
+
+    def test_generation_context_sanitizes_catalog_keywords_and_dedupes_style_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def seed() -> int:
+                await init_moodboard_db(db_path)
+                board_id = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/silhouette-board-11111111-1111-5111-9111-111111111111",
+                        slug="silhouette-board-11111111-1111-5111-9111-111111111111",
+                        uuid="11111111-1111-5111-9111-111111111111",
+                        title="Abyssal Gothic Surrealism",
+                        taste_profile="Deep teal gothic atmosphere.",
+                        keywords=["solitary silhouette", "deep teal and indigo", "painterly oil texture", "lone figure"],
+                        primary_image_url="",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                await set_moodboard_qwen_guidance(
+                    board_id,
+                    {
+                        "prompt_guidance": "Palette: deep teal and navy. Medium and texture: painterly oil texture.",
+                        "negative_guidance": "Avoid flat lighting.",
+                        "style_axes": ["chiaroscuro lighting", "painterly oil texture"],
+                        "conditioning_notes": ["Apply as transferable style."],
+                        "source_summary": "Gothic surrealist treatment.",
+                        "guidance_version": 2,
+                    },
+                    db_path=db_path,
+                )
+                return board_id
+
+            board_id = asyncio.run(seed())
+            context = moodboard_generation_context([board_id], db_path=db_path)
+            style_text = context["style_text"]
+
+            self.assertNotIn("solitary silhouette", style_text.lower())
+            self.assertNotIn("lone figure", style_text.lower())
+            self.assertIn("deep teal and indigo", style_text)
+            self.assertIn("chiaroscuro lighting", style_text)
+            # Terms already covered by the prose guidance are deduped out.
+            self.assertEqual(style_text.lower().count("painterly oil texture"), 1)
 
     def test_search_uses_qwen_guidance_fields(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -718,6 +845,44 @@ class MoodboardCatalogTests(unittest.TestCase):
             self.assertIn("gritty neon", created["keywords"])
             self.assertIn("Blend gritty realism", created["qwen_guidance"]["prompt_guidance"])
             self.assertEqual(len(created["image_urls"]), 2)
+
+    def test_title_qualifiers_disambiguate_duplicates_idempotently(self) -> None:
+        import json as jsonlib
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            qualifiers_path = Path(td) / "qualifiers.json"
+
+            async def run() -> list[str]:
+                await init_moodboard_db(db_path)
+                for index, uuid in enumerate(["11111111-1111-5111-9111-111111111111", "22222222-2222-5222-9222-222222222222"]):
+                    await upsert_moodboard(
+                        MoodboardRecord(
+                            url=f"https://www.krea.ai/moodboard-feed/cinematic-noir-{uuid}",
+                            slug=f"cinematic-noir-{uuid}",
+                            uuid=uuid,
+                            title="Cinematic Noir",
+                            taste_profile=f"Variant {index}.",
+                            keywords=[],
+                            primary_image_url="",
+                            image_urls=[],
+                            related_urls=[],
+                        ),
+                        db_path,
+                    )
+                qualifiers_path.write_text(jsonlib.dumps({
+                    "11111111-1111-5111-9111-111111111111": "Silver Grain",
+                    "22222222-2222-5222-9222-222222222222": "Amber Rain",
+                }), encoding="utf-8")
+                first = await apply_title_qualifiers(db_path=db_path, qualifiers_path=qualifiers_path)
+                second = await apply_title_qualifiers(db_path=db_path, qualifiers_path=qualifiers_path)
+                assert first == 2
+                assert second == 0  # idempotent
+                data = await list_moodboards(source="official", db_path=db_path)
+                return sorted(item["title"] for item in data["items"])
+
+            titles = asyncio.run(run())
+            self.assertEqual(titles, ["Cinematic Noir \u2014 Amber Rain", "Cinematic Noir \u2014 Silver Grain"])
 
     def test_sync_throttle_uses_daily_interval(self) -> None:
         with tempfile.TemporaryDirectory() as td:

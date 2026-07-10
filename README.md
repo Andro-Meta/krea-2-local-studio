@@ -1,31 +1,37 @@
 # Krea 2 Local Studio
 
-Local, web-based Krea 2 Studio for Windows. It runs Krea 2 Turbo locally, supports Krea 2 RAW when the machine has enough RAM/VRAM, and provides a browser UI for text-to-image, redraw, img2img, inpaint, outpaint, moodboards, LoRAs, gallery review, and optional Tailscale sharing.
+Local, web-based Krea 2 Studio for Windows, built on **ComfyUI as the generation engine**. The FastAPI backend composes ComfyUI graphs for every image operation; the React frontend provides a friendly, login-gated studio UI for text-to-image, redraw, img2img, inpaint/outpaint, character edit, depth control, upscaling, moodboards, LoRAs, gallery review, and optional Tailscale sharing.
 
 This is an unofficial local studio. It is not affiliated with Krea AI.
 
+## Architecture
+
+**ComfyUI is the backend.** One `run.bat` brings up a hidden ComfyUI engine (port 8188) and the Studio server together. Every diffusion feature — generation in all modes, ControlNet, upscalers, seed variance, the Qwen3-VL helper LLM — executes as a ComfyUI graph built by `backend/comfy_workflows.py`. This keeps the project on the fastest, best-supported runtime with the largest node/developer ecosystem, so new community workflows can be adopted quickly.
+
+The Studio layer adds what raw ComfyUI does not have: a task-oriented UI, a generation queue, moodboards, per-user galleries and auth, child safety moderation, metadata-reproducible outputs, and public sharing.
+
+The legacy in-process PyTorch pipeline has been removed. Non-diffusion helpers that remain in-process are intentionally lightweight: CLIPSeg automask, CivitAI browsing, gallery/auth/moderation, and a RealESRGAN fallback used only if ComfyUI is unreachable.
+
 ## Current Capabilities
 
-- **Text to image:** Krea 2 Turbo fp8 by default, RAW optionally.
-- **Image workflows:** redraw, img2img, inpaint, outpaint, prompt-from-image, and metadata import from gallery images.
-- **Samplers and schedulers:** native flow Euler, Euler ancestral, CFG++, ER-SDE, RES 2S, beta scheduler, SGM uniform, and RES4LYF-style bong tangent.
-- **Prompt adherence tools:** local prompt planner, official Krea-style prompt expansion, regional prompts, CFG-Zero*, seed variance, expression steering, and Krea2T-style text-fusion enhancement.
-- **Moodboards:** original local style-stack presets, Krea catalog moodboards, custom boards, Qwen-authored custom boards, Qwen-synthesized mashups, favorites, discovery notices, and a portable enriched seed.
-- **Reference conditioning:** Qwen3-VL multimodal conditioning for moodboard and style reference images.
-- **Low-VRAM runtime:** dynamic fp8 loading, block swap, encoder offload, tiled VAE decode, OOM recovery, GPU capability detection, and quality guard checks.
-- **Upscaling:** RealESRGAN fallback, tiled VAE, Ultimate-style tiled refine, and a 2-pass low-denoise refine preset.
-- **Sharing:** optional login-gated Tailscale Funnel at `/krea`, with admin/user/child roles and private per-user galleries.
-- **Child safety:** child accounts get prompt moderation, image moderation via an optional local Transformers NSFW classifier, and admin-visible safety audit events.
+- **Text to image:** Krea 2 Turbo (INT8 ConvRot default, fp8/bf16/GGUF selectable), Krea 2 RAW with auto-4K SeedVR2 post-pass.
+- **Image workflows:** redraw (incl. NK2E preset), img2img, inpaint (incl. LanPaint), outpaint with seam harmonize, character edit (Krea2Edit identity nodes), depth ControlNet, style transfer, in-context vision edit, turbo 4X template.
+- **Quality modes:** God Mode, Mr. Flow SR pipeline, RBG smart seed variance, CFG-Zero*, regional prompts, expression steering.
+- **Helper AI:** Magic Wand prompt expansion, prompt planner, and image describe via Comfy QwenVL (abliterated Qwen3-VL), with Transformers/GGUF-server/OpenRouter alternatives.
+- **Moodboards:** the full public Krea catalog (3,549 boards) with subject-safe v2 style guidance and unique titles, the Andro.Meta curated set, custom boards, Qwen-synthesized mashups, favorites, and a portable seed. Also published as a standalone ComfyUI node pack: [ComfyUI-Krea-Moodboards](https://github.com/Andro-Meta/ComfyUI-Krea-Moodboards).
+- **Upscaling:** SeedVR2 (3B/7B), Ultimate tiled refine, 2-pass refine, tiled VAE, ESRGAN/Remacri — all as Comfy graphs.
+- **Batch:** safe queued batch by default, true parallel batch when it fits, INT8 variant sweep.
+- **Sharing:** login-gated Tailscale Funnel at `/krea` with self-healing startup, admin/user/child roles, private per-user galleries.
+- **Child safety:** prompt moderation before generation, local NSFW image classification after, admin-visible audit events.
 
 ## What This Repo Contains
 
-- FastAPI backend for local generation, queues, gallery, sharing, moderation, and admin APIs.
-- React/MUI frontend for Create, Redraw Studio, Realtime Studio, Gallery, Moodboards, and System controls.
-- Windows install/run scripts.
-- Local helper AI integration using `Qwen/Qwen3-VL-4B-Instruct`.
+- FastAPI backend that orchestrates ComfyUI graphs plus queues, gallery, sharing, moderation, and admin APIs.
+- React/MUI frontend for Create, Redraw Studio, Character Edit, Test Labs, Gallery, Moodboards, and System controls.
+- Windows install/run scripts that manage the bundled ComfyUI engine.
 - Portable Krea moodboard seed data in `data/krea_moodboards_seed.json`.
 
-This repo does **not** include generated images, user credentials, local passwords, local logs, `.env`, model cache folders, or the Python/Node dependency directories.
+This repo does **not** include generated images, user credentials, local passwords, local logs, `.env`, model caches, the ComfyUI checkout, or dependency directories.
 
 ## Setup
 
@@ -35,9 +41,9 @@ Install Python 3.12+ and Node.js 18+, then run:
 install.bat
 ```
 
-`install.bat` creates the Python venv, installs PyTorch CUDA wheels, installs Python dependencies, downloads local helper assets, downloads the default Krea 2 Turbo fp8 checkpoint, and builds the frontend.
+`install.bat` creates the Python venv, installs dependencies, sets up the ComfyUI engine with the required custom nodes (Krea2 nodes, QwenVL, RES4LYF, LanPaint, Ultimate SD Upscale, SeedVR2, RBG seed variance, Krea2Edit), downloads the default assets (Turbo INT8 ConvRot checkpoint, abliterated Qwen3-VL text encoder, Qwen VAE), and builds the frontend.
 
-Then start the normal login-gated sharing app:
+Then start the login-gated sharing app (ComfyUI comes up automatically, hidden):
 
 ```bat
 run.bat
@@ -49,158 +55,82 @@ For local-only LAN mode without share auth:
 run.bat local
 ```
 
+Closing the terminal (X button or Ctrl+C) shuts down both the Studio server and the ComfyUI engine; a detached janitor guarantees VRAM/RAM is freed.
+
 ## Models and Assets
 
-The default install prepares:
+The default install prepares, under the ComfyUI model folders:
 
-- `Qwen/Qwen3-VL-4B-Instruct` in `models/local_ai/qwen3_vl_4b_instruct`
-- `Qwen/Qwen-Image` VAE in `models/local_ai/qwen_image`
-- Krea 2 source helper files under `backend/krea2/`
-- official Krea LoRAs in `models/loras`
-- Krea 2 Turbo fp8 checkpoint at `models/krea2/diffusion_models/krea2_turbo_fp8_scaled.safetensors`
+- Krea 2 Turbo INT8 ConvRot at `ComfyUI/models/diffusion_models/`
+- abliterated Qwen3-VL fp8 text encoder at `ComfyUI/models/text_encoders/`
+- Qwen-Image VAE at `ComfyUI/models/vae/`
+- SR models (RealESRGAN x2, Remacri x4) at `ComfyUI/models/upscale_models/`
+- official Krea LoRAs at `models/loras/`
+- helper Qwen3-VL for the QwenVL nodes
 
-Krea 2 RAW is not downloaded by default because it is large and not required for the Turbo workflow. Download RAW separately, then set `KREA2_RAW_PATH` in `.env` or load it from the System tab.
-
-If helper assets are missing, use System > Local AI Assets or run:
-
-```bat
-venv\Scripts\python.exe scripts\download_support_models.py
-```
+Krea 2 RAW and the SeedVR2 DiTs are optional downloads from the System tab (RAW is large and not required for the Turbo workflow). Engine/quantization variants (fp8, bf16, GGUF) are selectable per generation; they choose the matching ComfyUI UNET loader.
 
 ## Moodboards
 
 There are three moodboard layers:
 
-1. **Local style-stack presets** from `backend/moods.py`.
-   - These are curated text taste profiles.
-   - They add keywords to the prompt and avoids to the negative prompt.
-   - They are fast, deterministic, and useful for quick T2I direction.
+1. **Andro.Meta curated moods** from `backend/moods.py` — fast local taste profiles.
+2. **Krea catalog moodboards** — the complete public catalog (3,549 boards), each with structured, subject-safe style guidance (palette / lighting / medium / composition / atmosphere) generated to transfer *style only*, never subjects. Boards sharing an official title carry unique style qualifiers (e.g. "Cinematic Chiaroscuro Noir — Candle Smoke Indigo").
+3. **Custom and mashup moodboards** — local reference images and Qwen-synthesized blends.
 
-2. **Krea catalog moodboards** imported from public Krea moodboard pages.
-   - The catalog stores official title, taste profile, tags, image URLs, and optional Qwen guidance.
-   - Krea images are referenced by URL; the repo does not vendor thousands of images.
-
-3. **Custom and mashup moodboards**.
-   - Custom boards store local reference images.
-   - Mashups are synthesized with local Qwen from multiple source boards.
-
-Qwen moodboard enrichment stores structured guidance:
-
-- `prompt_guidance`
-- `negative_guidance`
-- `style_axes`
-- `conditioning_notes`
-- `source_summary`
-
-Generation uses these as transferable style guidance, not as fixed scene recreation. The enrichment prompt and sanitizer are designed to preserve a board's mood, lighting, palette, texture, and presentation while still honoring the user's requested subject count/content.
-
-The portable seed is:
-
-```text
-data/krea_moodboards_seed.json
-```
-
-To enrich missing catalog guidance in batches:
+The portable seed is `data/krea_moodboards_seed.json`; duplicate-title qualifiers persist via `data/moodboard_title_qualifiers.json` across catalog re-syncs. To enrich newly imported boards:
 
 ```bat
-venv\Scripts\python.exe scripts\enrich_krea_moodboard_seed.py --limit 100 --export-seed --export-every 10
+venv\Scripts\python.exe scripts\enrich_krea_moodboard_seed.py --upgrade --limit 100 --export-seed
 ```
-
-Use small batches first. The script writes guidance into `app.db` immediately and exports the seed periodically.
 
 ## Public Sharing and Users
 
-`run.bat` starts share mode under the `/krea` path. This lets other Tailscale Funnel routes keep their own root path.
+`run.bat` starts share mode under the `/krea` path so other Tailscale Funnel routes on the machine keep their own paths. Startup rebinds the Funnel to the session port, probes the public URL, and automatically re-registers the Tailscale connection if the ingress went stale — without touching other apps' serve entries.
 
 Roles:
 
-- **admin:** settings, model loading, users, all galleries, moderation review, Tailscale sharing controls.
-- **user:** generation and private gallery.
-- **child:** generation with child safety moderation and private gallery.
-
-Admins can manage users and Tailscale sharing from the System tab.
-
-The app includes:
-
-- `/krea` Funnel start/stop controls
-- `Repair /krea Sharing`
-- local target checks
-- login-gate checks
-- public Funnel reachability checks
-
-If Krea is reachable locally and on the tailnet, but the public `ts.net` URL fails before reaching Krea, that is a Tailscale service/Funnel issue. The GUI will tell the admin to restart the Tailscale Windows service as Administrator.
+- **admin:** settings, users, all galleries, moderation review, Tailscale sharing controls.
+- **user:** generation and a private gallery.
+- **child:** generation with safety moderation and a private gallery.
 
 ## Child Safety
 
-Child accounts are moderated differently from normal users and admins:
-
 - prompt moderation runs before generation;
 - generated images are checked after generation;
-- unsafe child outputs are not shown to the child;
+- unsafe child outputs are not shown to the child and fail closed if the classifier is missing;
 - blocked attempts are visible to admins in System > Child Safety Review.
-
-Child image moderation uses an optional local Transformers image classifier. It is installed from the GUI, not from `install.bat`.
-
-If the image classifier is not installed, child image outputs fail closed after generation instead of being shown unreviewed.
-
-## Realtime Studio
-
-Realtime Studio is for composition and direction, not true 60 FPS live diffusion. Krea 2 Turbo still takes multiple inference steps.
-
-The realtime preview path uses:
-
-- conservative defaults;
-- auto-preview off by default;
-- a backend single-slot drop-frame buffer so quick canvas edits do not build stale FIFO lag;
-- final render as the quality pass.
-
-## Batch and Accelerators
-
-Batch generation and optional attention accelerators are planned separately. The intended direction is:
-
-- **Safe queued batch:** generate images one at a time through the FIFO queue. This should remain the default.
-- **Parallel batch:** true batched sampling only when the runtime estimator says it fits.
-- **Accelerators:** PyTorch SDPA remains the default. Triton-Windows and SageAttention should be optional, experimental, admin-installed, and visually A/B verified before use.
-
-The project currently uses PyTorch CUDA wheels. The system CUDA toolkit is not normally used for inference unless building custom CUDA extensions.
 
 ## Performance
 
-The recommended starting point for a 24 GB GPU is:
+The recommended starting point for a 24 GB GPU is Krea 2 Turbo INT8 ConvRot at 1K with the safe queued batch mode. The ComfyUI engine starts with `--disable-pinned-memory`, a VRAM reserve, and SageAttention when available; tune via `KREA_COMFY_ARGS`, `KREA_COMFY_HIGHVRAM`, `KREA_COMFY_RESERVE_VRAM`, `KREA_COMFY_SAGE` in `.env`.
 
-- Krea 2 Turbo fp8
-- 1K resolution
-- safe queued batch mode when generating multiple images
-
-For measured efficiency notes and what was tested but not adopted, see:
-
-```text
-docs/performance.md
-```
+For measured efficiency notes see `docs/performance.md`.
 
 ## Credits and Acknowledgements
 
-This project builds on a lot of open work and community testing.
-
 Core upstream work:
 
+- **ComfyUI** — the generation engine this Studio is built on, and its node ecosystem.
 - **Krea AI** for releasing Krea 2 open-source components and prompting guidance.
-- **Qwen** for `Qwen3-VL-4B-Instruct` and `Qwen-Image` assets used for local prompt/image/moodboard conditioning.
+- **Qwen** for `Qwen3-VL` and `Qwen-Image` assets used for conditioning and helper AI.
 - **PyTorch**, **FastAPI**, **React**, **Vite**, and **MUI** for the core app stack.
 - **Tailscale** for private/public sharing infrastructure.
 
-Ported or adapted techniques:
+Node packs and techniques this Studio depends on or adapted:
 
-- **ComfyUI** for KSampler semantics, scheduler references, memory-management patterns, tiled decode ideas, model loading patterns, and the broader Krea 2 workflow ecosystem.
-- **ComfyUI Krea 2 community nodes** and workflow authors whose experiments helped validate Krea 2 settings.
-- **KiJai** for major ComfyUI ecosystem contributions and practical Krea/Qwen workflow findings that informed this Studio, including low-VRAM/block-swap patterns seen in WanVideoWrapper-style workflows, Qwen image/VAE asset references, outpaint mask conventions, and Krea 2 sampling details discussed by the community.
-- **LanPaint** by scraed for the inpainting method research direction.
-- **ComfyUI-Krea2T-Enhancer** by `capitan01R` for the Krea2T prompt-adherence text-fusion enhancement approach.
-- **RES4LYF** by ClownsharkBatwing and contributors for `res_2s` and `bong_tangent` sampler/scheduler ideas.
+- **Comfy-Org Krea 2 nodes and workflows**, plus community Krea 2 workflow authors.
+- **KiJai** for major ComfyUI ecosystem contributions and practical Krea/Qwen findings.
+- **RES4LYF** by ClownsharkBatwing and contributors (`res_2s`, `bong_tangent`, ClownsharKSampler).
+- **LanPaint** by scraed for the inpainting method.
+- **Ultimate SD Upscale** (Coyote-A lineage) for the tiled refine approach.
+- **SeedVR2** for the restoration-grade upscaler.
+- **RBG Smart Seed Variance** for the seed variance node.
+- **ComfyUI-QwenVL** (1038lab) for the helper LLM nodes.
+- **Krea2Edit** (lbouaraba) for identity-preserving character edit nodes.
 - **CFG-Zero*** paper/authors for the flow-matching guidance improvement.
-- **NudeNet**, **Falconsai NSFW image detection**, and related open safety tooling for child-safety research; this project currently uses the Transformers-classifier direction.
+- **NudeNet**, **Falconsai NSFW image detection**, and related open safety tooling.
 
 Community thanks:
 
-- The **Banodoco community** deserves special credit for persistent Krea 2 experimentation, Discord testing, sampler/scheduler comparisons, low-VRAM findings, visual A/B testing, and practical workflow reports. Many of the most useful defaults in this local studio were informed by that community's consistent hard work.
-
+- The **Banodoco community** for persistent Krea 2 experimentation, sampler/scheduler comparisons, low-VRAM findings, and visual A/B testing that informed many defaults in this Studio.

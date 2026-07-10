@@ -13,10 +13,10 @@ if str(BACKEND) not in sys.path:
 from prompt_expander import (
     _decode_generation,
     _strip_think_blocks,
-    describe_image_local,
     describe_image_openrouter,
-    expand_prompt_local,
+    describe_image_transformers,
     expand_prompt_result,
+    expand_prompt_transformers,
     ideogram_json_to_krea_prompt,
 )
 
@@ -55,10 +55,10 @@ class PromptExpanderTests(unittest.TestCase):
                 return [[1, 2, 3]]
 
         with patch("prompt_expander._load_local_qwen", return_value=(FakeTokenizer(), None, FakeModel())):
-            result = expand_prompt_local("a small chapel")
+            result = expand_prompt_transformers("a small chapel")
 
         self.assertTrue(result.changed)
-        self.assertEqual(result.backend, "local")
+        self.assertEqual(result.backend, "transformers")
         self.assertIn("cinematic", result.expanded)
 
     def test_local_qwen_expands_prompt_with_batch_encoding(self) -> None:
@@ -86,10 +86,10 @@ class PromptExpanderTests(unittest.TestCase):
 
         model = FakeModel()
         with patch("prompt_expander._load_local_qwen", return_value=(FakeTokenizer(), None, model)):
-            result = expand_prompt_local("a small chapel")
+            result = expand_prompt_transformers("a small chapel")
 
         self.assertTrue(result.changed)
-        self.assertEqual(result.backend, "local")
+        self.assertEqual(result.backend, "transformers")
         self.assertIn("v5-compatible", result.expanded)
 
     def test_decode_generation_accepts_tensor_like_outputs(self) -> None:
@@ -124,6 +124,9 @@ class PromptExpanderTests(unittest.TestCase):
                 return "A moody local image prompt."
 
         class FakeProcessor:
+            def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+                return "<chat>"
+
             def __call__(self, **_kwargs):
                 return FakeInputs()
 
@@ -135,9 +138,9 @@ class PromptExpanderTests(unittest.TestCase):
 
         with patch("prompt_expander._load_local_qwen", return_value=(FakeTokenizer(), FakeProcessor(), FakeModel())):
             tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
-            result = describe_image_local(tiny_png)
+            result = describe_image_transformers(tiny_png)
 
-        self.assertEqual(result["backend"], "local")
+        self.assertEqual(result["backend"], "transformers")
         self.assertIn("local image", result["prompt"])
 
     def test_openrouter_expands_with_free_fallback_models(self) -> None:

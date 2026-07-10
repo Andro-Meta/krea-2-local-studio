@@ -95,28 +95,69 @@ def plan_prompt_heuristic(prompt: str, *, max_tokens: int = 700) -> PromptPlanRe
     )
 
 
-def plan_prompt_local(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult:
-    try:
-        from prompt_expander import _LOCAL_QWEN_LOCK, _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen
+def plan_prompt_comfy(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult:
+    """Plan via ComfyUI QwenVL (same engine as Magic Wand/describe).
 
-        with _LOCAL_QWEN_LOCK:
-            tokenizer, _processor, model = _load_local_qwen()
-            messages = [
-                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ]
-            inputs = tokenizer.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                return_tensors="pt",
-            ).to(getattr(model, "device", "cpu"))
-            outputs = model.generate(
-                **_generation_kwargs(inputs),
-                max_new_tokens=max(128, min(int(max_tokens), 1600)),
-                do_sample=False,
-                eos_token_id=getattr(tokenizer, "eos_token_id", None),
-            )
-            parsed = parse_planner_response(_decode_generation(tokenizer, outputs, _input_ids(inputs)))
+    Keeps the helper LLM inside ComfyUI's VRAM management instead of loading a
+    second in-process Transformers Qwen next to the Comfy generation stack.
+    Falls back to the Transformers path (which itself falls back to heuristic).
+    """
+    try:
+        from comfy_qwen_vl import expand_prompt_comfy
+
+        text = expand_prompt_comfy(
+            prompt,
+            PLANNER_SYSTEM_PROMPT,
+            max_tokens=max(128, min(int(max_tokens), 1600)),
+            temperature=0.1,
+        )
+        parsed = parse_planner_response(text)
+        planned = parsed.get("planned_prompt") or prompt
+        return PromptPlanResult(
+            original_prompt=prompt,
+            planned_prompt=planned,
+            negative_prompt=parsed.get("negative_prompt", ""),
+            subject=parsed.get("subject", ""),
+            composition=parsed.get("composition", ""),
+            style=parsed.get("style", ""),
+            lighting=parsed.get("lighting", ""),
+            materials=parsed.get("materials", ""),
+            text_rendering=parsed.get("text_rendering", ""),
+            regions=parsed.get("regions", []),
+            backend="comfy",
+            changed=planned.strip() != prompt.strip(),
+        )
+    except Exception:
+        return plan_prompt_local(prompt, max_tokens=max_tokens)
+
+
+def plan_prompt_local(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult:
+    tokenizer = _processor = model = inputs = outputs = None
+    try:
+        from prompt_expander import _LOCAL_QWEN_LOCK, _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen, unload_local_qwen_after_use
+
+        try:
+            with _LOCAL_QWEN_LOCK:
+                tokenizer, _processor, model = _load_local_qwen()
+                messages = [
+                    {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+                inputs = tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                ).to(getattr(model, "device", "cpu"))
+                outputs = model.generate(
+                    **_generation_kwargs(inputs),
+                    max_new_tokens=max(128, min(int(max_tokens), 1600)),
+                    do_sample=False,
+                    eos_token_id=getattr(tokenizer, "eos_token_id", None),
+                )
+                parsed = parse_planner_response(_decode_generation(tokenizer, outputs, _input_ids(inputs)))
+        finally:
+            del tokenizer, _processor, model, inputs, outputs
+            unload_local_qwen_after_use()
         planned = parsed.get("planned_prompt") or prompt
         return PromptPlanResult(
             original_prompt=prompt,
@@ -206,4 +247,14 @@ def plan_prompt(
             gguf_helper_model=gguf_helper_model,
             gguf_helper_timeout_sec=gguf_helper_timeout_sec,
         )
-    return plan_prompt_local(prompt, max_tokens=max_tokens)
+    # Match the Magic Wand/describe routing: Comfy QwenVL by default,
+    # Transformers only when explicitly configured.
+    try:
+        from settings import settings
+
+        llm_backend = str(getattr(settings, "local_llm_backend", "comfy") or "comfy")
+    except Exception:
+        llm_backend = "comfy"
+    if llm_backend == "transformers":
+        return plan_prompt_local(prompt, max_tokens=max_tokens)
+    return plan_prompt_comfy(prompt, max_tokens=max_tokens)

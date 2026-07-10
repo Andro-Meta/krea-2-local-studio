@@ -16,7 +16,8 @@ const api = axios.create({ baseURL: publicBasePath() })
 export interface GenerationRequest {
   prompt: string
   negative_prompt?: string
-  mode?: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw'
+  mode?: 'txt2img' | 'img2img' | 'inpaint' | 'outpaint' | 'redraw' | 'character_edit' | 'turbo_4x'
+  turbo_int8_variant?: string
   model_profile?: 'krea_turbo' | 'krea_raw' | 'qwen_image_edit' | 'lens_turbo' | 'ernie_turbo' | 'z_image_turbo' | ''
   diffusion_engine?: 'native_pytorch' | 'native_gguf' | 'native_int8_convrot'
   checkpoint?: 'turbo' | 'raw'
@@ -32,15 +33,37 @@ export interface GenerationRequest {
   num_images?: number
   batch_mode?: 'safe_queue' | 'parallel'
   parallel_batch_confirmed?: boolean
+  batch_int8_all?: boolean
   seed?: number
   denoise?: number
-  sampler?: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
-  scheduler?: 'simple' | 'normal' | 'beta' | 'beta57' | 'sgm_uniform' | 'bong_tangent' | 'karras' | 'exponential'
-  inpaint_method?: 'native' | 'lanpaint_experimental' | 'flux_fill'
+  sampler?: 'euler' | 'euler_flow' | 'euler_ancestral' | 'euler_ancestral_cfg_pp' | 'euler_cfg_pp' | 'er_sde' | 'res_2s' | 'res_3s' | 'exp_heun_2_x0_sde' | 'lcm' | 'dpmpp_2m' | 'ddim' | 'uni_pc'
+  scheduler?: 'simple' | 'normal' | 'beta' | 'beta57' | 'sgm_uniform' | 'bong_tangent' | 'kl_optimal' | 'karras' | 'exponential'
+  inpaint_method?: 'native' | 'lanpaint_experimental'
   differential_inpaint?: boolean
   differential_strength?: number
   cfg_zero_star?: boolean
   cfg_zero_init_steps?: number
+  res4lyf_sampler?: string
+  res4lyf_eta?: number
+  res4lyf_bongmath?: boolean
+  actual_denoise?: boolean
+  incontext_edit?: boolean
+  incontext_image_b64?: string
+  incontext_mask_b64?: string
+  incontext_vision_position?: 'before' | 'after'
+  incontext_vision_megapixels?: number
+  incontext_encoder?: 'krea2' | 'qwen_edit_plus'
+  incontext_system_prompt?: string
+  character_edit_source_b64?: string
+  character_edit_reference_b64?: string
+  character_edit_regions?: Array<{ x: number; y: number; w: number; h: number; prompt: string; reference_b64?: string; strength?: number; feather?: number }>
+  character_edit_grounding_px?: number
+  character_edit_task?: 'restage' | 'local_edit' | 'replace' | 'restyle' | 'removal' | 'two_reference'
+  character_edit_lora_strength?: number
+  style_transfer_image_b64?: string
+  style_transfer_method?: 'AdaIN' | 'WCT' | 'WCT2' | 'scattersort'
+  style_transfer_weight?: number
+  style_transfer_apply_to?: 'denoised' | 'positive' | 'negative'
   lanpaint_inner_steps?: number
   lanpaint_strength?: number
   lanpaint_lambda?: number
@@ -49,7 +72,7 @@ export interface GenerationRequest {
   lanpaint_friction?: number
   lanpaint_early_stop?: number
   lanpaint_prompt_mode?: 'Image First' | 'Prompt First'
-  edit_provider?: 'auto' | 'krea_native' | 'flux_fill'
+  edit_provider?: 'auto' | 'krea_native'
   quality_preset?: 'fast' | 'balanced' | 'best' | 'raw_benchmark'
   creativity?: 'raw' | 'low' | 'medium' | 'high'
   style_references?: Array<{
@@ -64,6 +87,9 @@ export interface GenerationRequest {
     vision_position?: 'before_prompt' | 'after_prompt'
   }>
   style_fusion_mode?: 'style_only' | 'preserve_structure' | 'semantic_fusion'
+  image_prompt_enabled?: boolean
+  image_prompt_mode?: 'match_style' | 'copy_composition'
+  image_prompt_strength?: number
   regional_prompts?: Array<{
     prompt: string
     negative_prompt?: string
@@ -114,6 +140,8 @@ export interface GenerationRequest {
   refine?: boolean
   refine_denoise?: number
   refine_steps?: number
+  /** Strip the 2px Qwen/Wan VAE grid after decode (default on). */
+  vae_degrid?: boolean
   mood?: string
   moodboard_ids?: number[]
   moodboard_uuids?: string[]
@@ -130,8 +158,19 @@ export interface GenerationRequest {
   seed_variance_fade_curve?: 'instant' | 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out' | 'smoothstep' | 'burst'
   seed_variance_injection_start?: number
   seed_variance_injection_end?: number
-  seed_variance_schedule?: 'constant' | 'decreasing' | 'step_cutoff'
+  seed_variance_schedule?: 'constant' | 'decreasing' | 'step_cutoff' | 'hard_lock' | 'tiered_release'
   seed_variance_cutoff_step?: number
+  depth_control?: boolean
+  depth_control_strength?: number
+  depth_estimator?: 'da3' | 'depth_anything_v2' | 'zoe' | 'midas'
+  depth_resolution?: number
+  depth_invert?: boolean
+  god_mode?: boolean
+  mrflow?: boolean
+  mrflow_upscaler?: 'esrgan_x2' | 'remacri_x4'
+  mrflow_preset?: string
+  mrflow_refine_denoise?: number
+  mrflow_refine_steps?: number
   seed_variance_total_steps?: number
   seed_variance_cutoff_strength?: number
 }
@@ -149,6 +188,21 @@ export interface GenerationJob {
   moderation_event_id?: number
   batch_id?: string
   child_job_ids?: string[]
+}
+
+export interface QueueJob {
+  job_id: string
+  status: string
+  progress: number
+  queue_position?: number | null
+  queue_length?: number | null
+  seed?: number | null
+  error?: string | null
+  summary: string
+  thumb: string
+  is_batch: boolean
+  batch_count?: number | null
+  num_images: number
 }
 
 export interface BatchPlan {
@@ -182,7 +236,6 @@ export interface EngineCapabilities {
   supports_cfg: boolean
   supports_img2img: boolean
   supports_inpaint: boolean
-  supports_realtime: boolean
   supports_parallel_batch: boolean
   max_batch: number
   max_resolution: number
@@ -231,35 +284,6 @@ export interface PromptRecipe {
   updated_at: string
 }
 
-export interface RealtimePreviewRequest {
-  session_id: string
-  prompt: string
-  negative_prompt?: string
-  canvas_image_b64: string
-  width: number
-  height: number
-  preview_steps?: number
-  moodboard_strength?: number
-  mood?: string
-  moodboard_ids?: number[]
-  moodboard_uuids?: string[]
-  moodboard_images?: string[]
-  loras?: GenerationRequest['loras']
-  seed?: number
-}
-
-export interface RealtimePreviewJob {
-  job_id: string
-  session_id: string
-  revision: number
-  status: 'queued' | 'running' | 'done' | 'stale' | 'cancelled' | 'error'
-  progress: number
-  image_b64?: string
-  seed?: number | null
-  metadata?: Record<string, any> | null
-  error?: string | null
-}
-
 export interface Mood {
   id: string
   name: string
@@ -282,7 +306,7 @@ export interface MoodboardItem {
   preview_image_urls: string[]
   related_urls: string[]
   favorite: boolean
-  source: 'official' | 'custom'
+  source: 'official' | 'custom' | 'andrometa'
   first_seen_at: string
   last_seen_at: string
   updated_at: string
@@ -313,6 +337,7 @@ export interface GalleryItem {
   thumbnail_b64?: string
   metadata?: Record<string, any>
   owner_username?: string | null
+  filesystem_only?: boolean
 }
 
 export interface LoraInfo {
@@ -326,7 +351,48 @@ export interface LoraInfo {
   compatible?: boolean
   match_info?: string
   download_enabled?: boolean
+  // Civitai enrichment (from /api/loras after a scan)
+  preview_url?: string
+  base_model?: string
+  description?: string
+  civitai_url?: string
+  civitai?: {
+    civitai_name?: string
+    version_name?: string
+    description?: string
+    trigger_words?: string[]
+    base_model?: string
+    preview_url?: string
+    civitai_url?: string
+    model_id?: number
+    version_id?: number
+    nsfw?: boolean
+  }
 }
+
+export interface CivitaiLoraItem {
+  model_id: number
+  version_id: number
+  name: string
+  type: string
+  creator: string
+  base_model: string
+  version_name: string
+  trigger_words: string[]
+  description: string
+  nsfw: boolean
+  preview_url: string
+  download_url: string
+  file_name: string
+  file_size_kb?: number
+  downloads?: number
+  thumbsUp?: number
+  civitai_url: string
+  installed?: boolean
+  installed_filename?: string
+}
+
+export interface CivitaiScanStatus { scanning: boolean; total: number; done: number; updated: number }
 
 export interface SystemReport {
   gpu_name?: string
@@ -342,7 +408,7 @@ export interface SystemReport {
   gpu_capabilities?: { name: string; arch: string; compute_capability: string | null; vram_total_gb: number | null; supports_bf16: boolean; supports_fp8_compute: boolean; supports_nvfp4: boolean; fp8_storage_only: boolean; fp8_note: string }
   recommended_runtime?: { quantization: string; blocks_to_swap: number; max_tier: string; notes: string }
   runnability?: { can_run: boolean; tier: string; compute_dtype: string; blocks_to_swap: number; max_tier: string; reason: string }
-  support_models?: Array<{ id: string; label: string; repo_id: string; purpose: string; installed: boolean; optional?: boolean; cache_dir: string }>
+  support_models?: Array<{ id: string; label: string; repo_id: string; purpose: string; installed: boolean; optional?: boolean; cache_dir: string; legacy_cache_installed?: boolean; path?: string; download_enabled?: boolean; disabled_reason?: string }>
   variants: Array<{ id: string; label: string; vram_gb: number; ram_gb: number; blockers: string[]; warnings: string[]; ok: boolean }>
 }
 
@@ -364,6 +430,17 @@ export interface AuthSession {
 export interface ShareUser {
   username: string
   role: 'admin' | 'user' | 'child'
+  online?: boolean
+  active?: boolean
+  last_seen?: number | null
+}
+
+export interface MoodboardSuggestion {
+  id: number
+  uuid?: string
+  title: string
+  reason?: string
+  preview_image_urls?: string[]
 }
 
 export interface SharingStatus {
@@ -402,7 +479,8 @@ export interface AppSettings {
   krea2_raw_int8_path: string
   output_dir: string
   prompt_expander_backend: 'local' | 'openrouter' | 'ideogram-json'
-  local_llm_backend: 'transformers' | 'gguf_server'
+  local_llm_backend: 'comfy' | 'transformers' | 'gguf_server'
+  comfy_qwen_model: string
   local_qwen_model_id: string
   local_qwen_device: 'auto' | 'cuda' | 'cpu'
   gguf_helper_base_url: string
@@ -419,6 +497,7 @@ export interface AppSettings {
   krea2_vae_blend_radius: number
   krea2_vae_blend_strength: number
   krea_attention_backend: 'sdpa' | 'sage'
+  seedvr2_model: '3b' | '7b'
   has_hf_token: boolean
   has_civitai_token: boolean
   has_ideogram_api_key: boolean
@@ -427,6 +506,8 @@ export interface AppSettings {
 
 export interface AcceleratorStatus {
   sdpa: { available: boolean; default: boolean }
+  studio_python?: string
+  comfyui_venv?: { available: boolean; python: string; triton: boolean; sageattention: boolean; comfy_kitchen: boolean }
   triton_windows: { installed: boolean; compatible: boolean; recommendation: string }
   sageattention: { installed: boolean; compatible: boolean; recommendation: string }
   xformers: { installed: boolean; compatible: boolean; recommendation: string }
@@ -455,9 +536,11 @@ export interface XperimentSetupResult {
   diffusion_engine?: 'native_pytorch' | 'native_gguf' | 'native_int8_convrot'
   quantization?: 'bf16' | 'fp8' | 'gguf' | 'fp16' | 'int8'
   sampler: { sampler: string; scheduler: string; steps: number; cfg: number }
+  res4lyf?: { sampler_name: string; eta: number; bongmath: boolean }
   use_prompt_expander?: boolean
   prompt_expander_backend?: 'local' | 'openrouter' | 'ideogram-json'
-  local_llm_backend?: 'transformers' | 'gguf_server'
+  local_llm_backend?: 'comfy' | 'transformers' | 'gguf_server'
+  comfy_qwen_model?: string
   local_qwen_model_id?: string
   benchmark_note?: string
   manual_only: QualityAsset[]
@@ -506,14 +589,11 @@ export const apiFetch = {
   jobStatus: (jobId: string) =>
     api.get<GenerationJob>(`/api/generate/${jobId}`).then(r => r.data),
 
-  realtimePreview: (req: RealtimePreviewRequest) =>
-    api.post<RealtimePreviewJob>('/api/realtime/preview', req, { timeout: 120000 }).then(r => r.data),
+  jobs: (limit = 24) =>
+    api.get<{ jobs: QueueJob[] }>(`/api/jobs`, { params: { limit } }).then(r => r.data.jobs),
 
-  realtimePreviewStatus: (jobId: string) =>
-    api.get<RealtimePreviewJob>(`/api/realtime/preview/${jobId}`).then(r => r.data),
-
-  cancelRealtimePreview: (jobId: string) =>
-    api.post<{ ok: boolean; job_id: string; status: string }>(`/api/realtime/cancel/${jobId}`).then(r => r.data),
+  cancelJob: (jobId: string) =>
+    api.post<{ ok: boolean; job_id: string; status: string; cancelled: number }>(`/api/generate/${jobId}/cancel`).then(r => r.data),
 
   loadModel: (path: string, quant: string, blocksToSwap = 0, fp8FastMatmul = false, torchCompile = false) =>
     api.post('/api/load-model', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap, fp8_fast_matmul: fp8FastMatmul, torch_compile: torchCompile }).then(r => r.data),
@@ -554,9 +634,18 @@ export const apiFetch = {
 
   loras: () => api.get<LoraInfo[]>('/api/loras').then(r => r.data),
 
+  lorasCivitaiScan: () => api.post<CivitaiScanStatus>('/api/loras/civitai-scan').then(r => r.data),
+  lorasCivitaiScanStatus: () => api.get<CivitaiScanStatus>('/api/loras/civitai-scan/status').then(r => r.data),
+  civitaiLoras: (params: { query?: string; page?: number; sort?: string; nsfw?: boolean } = {}) =>
+    api.get<{ items: CivitaiLoraItem[]; metadata: any }>('/api/civitai/loras', { params }).then(r => r.data),
+  civitaiInstall: (versionId: number, filename?: string) =>
+    api.post<{ ok: boolean; filename: string; path: string; trigger_words?: string[] }>(
+      '/api/civitai/install', { version_id: versionId, filename }
+    ).then(r => r.data),
+
   moods: () => api.get<Mood[]>('/api/moods').then(r => r.data),
 
-  moodboards: (opts?: { q?: string; page?: number; pageSize?: number; favorites?: boolean; source?: 'official' | 'custom'; shuffleSeed?: string }) => {
+  moodboards: (opts?: { q?: string; page?: number; pageSize?: number; favorites?: boolean; source?: 'official' | 'custom' | 'andrometa'; shuffleSeed?: string }) => {
     const params = new URLSearchParams()
     if (opts?.q) params.set('q', opts.q)
     params.set('page', String(opts?.page ?? 1))
@@ -658,8 +747,12 @@ export const apiFetch = {
       high_threshold: opts?.high_threshold ?? 160,
     }).then(r => r.data),
 
-  describeImage: (image_b64: string) =>
-    api.post<{ prompt: string; backend: 'local' | 'openrouter' }>('/api/describe-image', { image_b64 })
+  describeImage: (image_b64: string, mode: 'recreate' | 'style' | 'character' = 'recreate', guidance = '') =>
+    api.post<{ prompt: string; backend: 'local' | 'openrouter' }>('/api/describe-image', { image_b64, mode, guidance })
+      .then(r => r.data),
+
+  depthPreview: (image_b64: string, estimator: 'da3' | 'depth_anything_v2' | 'zoe' | 'midas' = 'da3', resolution = 504, invert = false) =>
+    api.post<{ image_b64: string }>('/api/depth-preview', { image_b64, estimator, resolution, invert }, { timeout: 120000 })
       .then(r => r.data),
 
   system: () => api.get<SystemReport>('/api/system').then(r => r.data),
@@ -697,13 +790,12 @@ export const apiFetch = {
 
   ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; configured: boolean }> }>('/api/gguf/status').then(r => r.data),
   int8Status: () => api.get<{ ok: boolean; torch: string; cuda?: string | null; torch_int_mm: boolean; comfy_kitchen: boolean; triton: boolean; diffusion_engine: string; assets: Record<string, QualityAsset & { configured_path: string; inspection?: Record<string, any>; inspection_error?: string }> }>('/api/int8/status').then(r => r.data),
-  pidStatus: () => api.get<{ available: boolean; enabled: boolean; estimated_vram_gb: number; blocked_reasons: string[]; assets: Record<string, { path: string; installed: boolean }>; accelerators: Record<string, any> }>('/api/pid/status').then(r => r.data),
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
   installTritonWindows: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-triton-windows', {}, { timeout: 600000 }).then(r => r.data),
   installSageAttention: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-sageattention', {}, { timeout: 600000 }).then(r => r.data),
 
   expandPrompt: (prompt: string) =>
-    api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' | 'gguf-server' }>('/api/expand-prompt', { prompt }).then(r => r.data),
+    api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' | 'gguf-server'; suggested_moodboards?: MoodboardSuggestion[] }>('/api/expand-prompt', { prompt, suggest_moodboards: true }).then(r => r.data),
   planPrompt: (prompt: string, max_tokens = 700) =>
     api.post<PromptPlan>('/api/plan-prompt', { prompt, max_tokens }).then(r => r.data),
   promptingGuide: () =>

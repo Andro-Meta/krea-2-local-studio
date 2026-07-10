@@ -31,15 +31,30 @@ class RegionalPromptInput(BaseModel):
     lora_filter: str = ""
 
 
+class CharacterEditRegion(BaseModel):
+    """A rectangular placement box for Character Edit. Coordinates are normalized
+    (0..1) relative to the output canvas. Each region can carry its own reference
+    image (e.g. person A in the left box, person B in the right)."""
+    x: float = Field(default=0.0, ge=0.0, le=1.0)
+    y: float = Field(default=0.0, ge=0.0, le=1.0)
+    w: float = Field(default=1.0, ge=0.0, le=1.0)
+    h: float = Field(default=1.0, ge=0.0, le=1.0)
+    prompt: str = ""
+    reference_b64: str = ""
+    strength: float = Field(default=1.0, ge=0.0, le=2.0)
+    feather: int = Field(default=24, ge=0, le=256)
+
+
 class GenerationRequest(BaseModel):
     prompt: str
     negative_prompt: str = ""
-    mode: str = "txt2img"           # txt2img | redraw | img2img | inpaint | outpaint
+    mode: str = "txt2img"           # txt2img | redraw | img2img | inpaint | outpaint | character_edit
     model_profile: str = ""         # krea_turbo | krea_raw | future gated profiles
     diffusion_engine: Literal["native_pytorch", "native_gguf", "native_int8_convrot", "gguf_external", "int8_convrot_external"] = "native_pytorch"
     checkpoint: str = "turbo"       # turbo | raw | custom
     checkpoint_path: str = ""       # custom path override
     quantization: str = "fp8"       # bf16 | fp16 | fp8 | gguf | int8
+    turbo_int8_variant: str = "redcraft"  # swappable Turbo INT8 ConvRot checkpoint (see _TURBO_INT8_VARIANTS)
     steps: int = 8
     cfg: float = 0.0
     mu: Optional[float] = None  # None → inference resolves (turbo=1.15, RAW=adaptive)
@@ -50,6 +65,7 @@ class GenerationRequest(BaseModel):
     num_images: int = 1
     batch_mode: Literal["safe_queue", "parallel"] = "safe_queue"
     parallel_batch_confirmed: bool = False
+    batch_int8_all: bool = False  # sweep the batch across every Turbo INT8 ConvRot variant
     seed: int = -1
     denoise: float = 1.0
     sampler: str = "euler_flow"       # euler | euler_flow | exp_heun_2_x0_sde | guarded Comfy names
@@ -59,7 +75,67 @@ class GenerationRequest(BaseModel):
     # active when guidance (cfg) > 0 and a non-CFG++ sampler is used.
     cfg_zero_star: bool = False
     cfg_zero_init_steps: int = Field(default=1, ge=0, le=4)
-    inpaint_method: str = "native"    # native | lanpaint_experimental | flux_fill
+    # RES4LYF ClownsharKSampler_Beta. When res4lyf_sampler is a non-empty
+    # ClownsharK sampler_name (e.g. "exponential/ddim"), the txt2img/img2img
+    # sampler is replaced by ClownsharKSampler_Beta (the Xperiment/uncensored
+    # reference recipe). Empty => use the stock KSampler path.
+    res4lyf_sampler: str = ""
+    res4lyf_eta: float = Field(default=0.5, ge=-100.0, le=100.0)
+    res4lyf_bongmath: bool = False
+    # Actual-Denoise (mozhaa/ComfyUI-Actual-Denoise): make img2img/edit denoise
+    # behave identically across schedulers by injecting the true noise amount.
+    actual_denoise: bool = False
+    # In-context vision edit (the community "QwenEdit text-encode for Krea 2"):
+    # feed a reference image straight into TextEncodeKrea2's Qwen3-VL vision path
+    # so an instruction prompt edits it. Empty incontext_image_b64 -> use init image.
+    incontext_edit: bool = False
+    incontext_image_b64: str = ""
+    incontext_mask_b64: str = ""
+    incontext_vision_position: str = "before"   # before | after
+    incontext_vision_megapixels: float = Field(default=1.0, ge=0.1, le=4.0)
+    # Encoder for in-context edit: "krea2" = TextEncodeKrea2 (Qwen3-VL vision +
+    # optional style-extraction system prompt), "qwen_edit_plus" =
+    # TextEncodeQwenImageEditPlus (stronger multi-image in-context edit encode).
+    incontext_encoder: str = "krea2"
+    # Optional system prompt fed to TextEncodeKrea2 (krea2 encoder only). Empty
+    # while incontext_edit is on -> a built-in style-extract+edit instruction.
+    incontext_system_prompt: str = ""
+    # Character Edit (conradlocke/krea2-identity-edit via Ostris edit nodes).
+    character_edit_source_b64: str = ""
+    # Optional second reference for two-input edits. Per the lbouaraba/comfyui-krea2edit
+    # model card this is the SCENE/background image (wired as RoPE frame 1 / primary),
+    # while character_edit_source_b64 (the subject) becomes frame 2.
+    character_edit_reference_b64: str = ""
+    character_edit_regions: List[CharacterEditRegion] = Field(default_factory=list, max_length=6)
+    character_edit_grounding_px: int = Field(default=768, ge=512, le=1536)
+    character_edit_task: Literal["restage", "local_edit", "replace", "restyle", "removal", "two_reference"] = "restage"
+    character_edit_lora_strength: float = Field(default=1.0, ge=0.0, le=2.0)
+    # RES4LYF training-free style transfer (ClownGuide_Style_Beta -> ClownsharK
+    # guides). When style_transfer_image_b64 is set, the render adopts that image's
+    # style (statistics injected into the denoised latent) — no model download.
+    style_transfer_image_b64: str = ""
+    style_transfer_method: str = "AdaIN"        # AdaIN | WCT | WCT2 | scattersort
+    style_transfer_weight: float = Field(default=0.8, ge=0.0, le=2.0)
+    style_transfer_apply_to: str = "denoised"   # denoised | positive | negative
+    # Krea 2 Depth ControlNet (facok/comfyui-krea2-controlnet + Depth-Anything-3).
+    # When depth_control is on, the source image (init_image_b64) is turned into a
+    # depth map (DA3) and injected as a control latent through the depth Control
+    # LoRA, so the generated image follows the source's depth/composition.
+    depth_control: bool = False
+    depth_control_strength: float = Field(default=1.2, ge=0.0, le=2.0)  # "Balanced" preset (tracks depth well; >1.5 starts to break)
+    depth_estimator: Literal["da3", "depth_anything_v2", "zoe", "midas"] = "da3"
+    depth_resolution: int = Field(default=504, ge=256, le=2048)
+    depth_invert: bool = False
+    # Mr. Flow (training-free staged sampling): render the composition at low res,
+    # SR-upscale in pixel space, re-encode, then a short model-native refine at the
+    # target size. width/height are the TARGET; low res = target / SR factor.
+    god_mode: bool = False  # 4-stage: Krea2 base -> Z-Image Turbo refine -> SeedVR2 upscale -> FaceDetailer
+    mrflow: bool = False
+    mrflow_upscaler: Literal["esrgan_x2", "remacri_x4"] = "esrgan_x2"
+    mrflow_preset: str = ""           # base_12plus1 | base_20plus1 | turbo_8plus1 (auto if empty)
+    mrflow_refine_denoise: float = Field(default=0.0, ge=0.0, le=0.6)  # 0 = use preset default
+    mrflow_refine_steps: int = Field(default=0, ge=0, le=3)  # 0 = preset default (1)
+    inpaint_method: str = "native"    # native | lanpaint_experimental
     # Differential diffusion (soft masks): grayscale mask values join the denoise
     # at different timesteps, so feathered edits blend seamlessly into the keep
     # region. strength<1 keeps some of the raw soft mask each step.
@@ -73,11 +149,14 @@ class GenerationRequest(BaseModel):
     lanpaint_friction: float = 15.0
     lanpaint_early_stop: int = 1
     lanpaint_prompt_mode: Literal["Image First", "Prompt First"] = "Image First"
-    edit_provider: str = "auto"       # auto | krea_native | flux_fill
+    edit_provider: str = "auto"       # auto | krea_native
     quality_preset: str = "balanced"  # fast | balanced | best | raw_benchmark
     creativity: Literal["raw", "low", "medium", "high"] = "medium"
     style_references: List[StyleReferenceInput] = Field(default_factory=list, max_length=10)
     style_fusion_mode: Literal["style_only", "preserve_structure", "semantic_fusion"] = "semantic_fusion"
+    image_prompt_enabled: bool = False
+    image_prompt_mode: Literal["match_style", "copy_composition"] = "match_style"
+    image_prompt_strength: float = Field(default=0.2, ge=0.1, le=1.0)
     regional_prompts: List[RegionalPromptInput] = Field(default_factory=list, max_length=8)
     regional_base_prompt_strength: float = Field(default=0.3, ge=0.0, le=1.0)
     regional_normalize_masks: bool = True
@@ -116,6 +195,9 @@ class GenerationRequest(BaseModel):
     refine: bool = False
     refine_denoise: float = 0.3
     refine_steps: int = 6
+    # VAE DeGrid (lunaaispace-eng/ComfyUI-DeGrid): remove the 2px Qwen/Wan VAE
+    # pixel grid after decode, before any later sharpen/upscale. Default on.
+    vae_degrid: bool = True
     # Moodboard: preset mood id + custom reference-image board + influence strength
     mood: str = ""
     moodboard_ids: List[int] = []
@@ -138,27 +220,10 @@ class GenerationRequest(BaseModel):
     seed_variance_fade_curve: Literal["instant", "linear", "ease_in", "ease_out", "ease_in_out", "smoothstep", "burst"] = "linear"
     seed_variance_injection_start: float = Field(default=0.0, ge=0.0, le=1.0)
     seed_variance_injection_end: float = Field(default=1.0, ge=0.0, le=1.0)
-    seed_variance_schedule: Literal["constant", "decreasing", "step_cutoff"] = "constant"
+    seed_variance_schedule: Literal["constant", "decreasing", "step_cutoff", "hard_lock", "tiered_release"] = "constant"
     seed_variance_cutoff_step: int = Field(default=8, ge=0, le=100)
     seed_variance_total_steps: int = Field(default=20, ge=1, le=100)
     seed_variance_cutoff_strength: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
-class RealtimePreviewRequest(BaseModel):
-    session_id: str
-    prompt: str
-    negative_prompt: str = ""
-    canvas_image_b64: str
-    width: int = 512
-    height: int = 512
-    preview_steps: int = 5
-    moodboard_strength: float = 0.75
-    mood: str = ""
-    moodboard_ids: List[int] = []
-    moodboard_uuids: List[str] = []
-    moodboard_images: List[str] = []
-    loras: List[dict] = []
-    seed: int = -1
 
 
 class GalleryItem(BaseModel):
@@ -221,6 +286,15 @@ class PreprocessorPreviewRequest(BaseModel):
 
 class DescribeImageRequest(BaseModel):
     image_b64: str
+    mode: str = "recreate"   # recreate | style | character
+    guidance: str = ""       # optional: what to focus on / change (blank = full auto prompt)
+
+
+class DepthPreviewRequest(BaseModel):
+    image_b64: str
+    estimator: Literal["da3", "depth_anything_v2", "zoe", "midas"] = "da3"
+    resolution: int = Field(default=504, ge=256, le=2048)
+    invert: bool = False
 
 
 class DescribeImageResponse(BaseModel):
@@ -278,6 +352,15 @@ class MemoryStopProcessRequest(BaseModel):
 class ExpandPromptRequest(BaseModel):
     prompt: str
     backend: Optional[str] = None
+    suggest_moodboards: bool = True
+
+
+class MoodboardSuggestion(BaseModel):
+    id: int
+    uuid: str = ""
+    title: str
+    reason: str = ""
+    preview_image_urls: List[str] = []
 
 
 class ExpandPromptResponse(BaseModel):
@@ -285,6 +368,8 @@ class ExpandPromptResponse(BaseModel):
     changed: bool = False
     error: Optional[str] = None
     backend: str = "local"
+    suggested_moodboards: List[MoodboardSuggestion] = []
+    sign_copy_pass: Optional[dict] = None
 
 
 class PlanPromptRequest(BaseModel):
@@ -441,7 +526,8 @@ class SettingsUpdate(BaseModel):
     krea2_raw_int8_path: Optional[str] = None
     output_dir: Optional[str] = None
     prompt_expander_backend: Optional[str] = None
-    local_llm_backend: Optional[Literal["transformers", "gguf_server"]] = None
+    local_llm_backend: Optional[Literal["comfy", "transformers", "gguf_server"]] = None
+    comfy_qwen_model: Optional[str] = None
     local_qwen_model_id: Optional[str] = None
     local_qwen_device: Optional[Literal["auto", "cuda", "cpu"]] = None
     gguf_helper_base_url: Optional[str] = None
@@ -460,3 +546,4 @@ class SettingsUpdate(BaseModel):
     krea2_vae_blend_radius: Optional[int] = None
     krea2_vae_blend_strength: Optional[float] = None
     krea_attention_backend: Optional[Literal["sdpa", "sage"]] = None
+    seedvr2_model: Optional[Literal["3b", "7b"]] = None

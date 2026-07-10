@@ -11,8 +11,14 @@ import { downloadImage } from '../../lib/imageActions'
 
 const UPSCALE_METHODS = [
   {
+    key: 'seedvr2',
+    label: 'SeedVR2 2× (community best)',
+    sub: 'dedicated restorer · frees ComfyUI first · 3B fp8 · faithful detail',
+    opts: { upscale_by: 2 },
+  },
+  {
     key: 'refine_2pass',
-    label: '2× refine (recommended)',
+    label: '2× refine (fast)',
     sub: 'pre-upscale + 2 low-denoise refine passes · quick',
     opts: { upscale_by: 2, steps: 8, cfg: 1, denoise: 0.25, sampler: 'euler', scheduler: 'beta' },
   },
@@ -29,8 +35,7 @@ const UPSCALE_METHODS = [
     opts: { upscale_by: 2, steps: 8, cfg: 1, denoise: 0.24, tile_size: 1280, tile_padding: 128, mask_blur: 16, seam_mode: 'half_tile_intersections', tile_mode: 'chess', sampler: 'euler', scheduler: 'simple', tiled_decode: true },
   },
   { key: 'realesrgan', label: 'RealESRGAN 4×', sub: 'fast, no diffusion' },
-  { key: 'pid_upscale', label: 'PiD 4× native (experimental)', sub: 'loads native PiD runtime · unloads Krea first · needs ~15GB VRAM', opts: { upscale_by: 4 } },
-  { key: 'wan_vae_2x', label: 'Wan/Qwen VAE 2× decoder (experimental)', sub: 'Spacepxl image-only decoder · pixel shuffle · needs model loaded', opts: { upscale_by: 2 } },
+  { key: 'wan_vae_2x', label: 'Wan/Qwen VAE 2× (experimental)', sub: 'Qwen-VAE tiled 2× fallback', opts: { upscale_by: 2 } },
   { key: 'tiled_vae', label: 'Tiled VAE 2×', sub: 'lossless re-decode' },
   { key: 'model_refine', label: 'Detail refine 1×', sub: 'sharpen, no resize' },
 ]

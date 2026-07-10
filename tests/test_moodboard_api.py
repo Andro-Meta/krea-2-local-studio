@@ -73,10 +73,10 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
         async def fake_list(**_: object) -> dict:
             return {"items": [MOODBOARD_ITEM], "total": 1}
 
-        async def fake_detail(_: int) -> dict:
+        async def fake_detail(_: int, **__: object) -> dict:
             return MOODBOARD_ITEM
 
-        async def fake_favorite(_: int, __: bool) -> None:
+        async def fake_favorite(_: int, __: bool, **___: object) -> None:
             return None
 
         async def fake_import(_: list[str], max_pages: int = 200, use_browser_discovery: bool = False) -> dict:

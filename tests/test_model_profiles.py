@@ -73,7 +73,6 @@ class ModelProfileTests(unittest.TestCase):
         self.assertTrue(engines["native_gguf"]["supports_img2img"])
         self.assertEqual(engines["native_gguf"]["quantization"], "gguf")
         self.assertTrue(engines["native_int8_convrot"]["supports_moodboards"])
-        self.assertTrue(engines["native_int8_convrot"]["supports_realtime"])
         self.assertEqual(engines["native_int8_convrot"]["quantization"], "int8")
         self.assertNotIn("sidecar", engines["native_int8_convrot"]["label"].lower())
 

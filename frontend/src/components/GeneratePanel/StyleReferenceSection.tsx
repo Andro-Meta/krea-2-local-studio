@@ -1,57 +1,56 @@
 import React, { useRef, useState } from 'react'
 import {
-  Box, Button, Collapse, IconButton, MenuItem, Slider, Stack, TextField, Tooltip, Typography,
+  Box, Button, Collapse, FormControlLabel, IconButton, MenuItem, Slider, Stack, Switch, TextField, Tooltip, Typography,
 } from '@mui/material'
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate'
 import CloseIcon from '@mui/icons-material/Close'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { useStore, type StyleReference } from '../../store'
 
-const MAX_STYLE_REFS = 10
-const TOKEN_SIZES: StyleReference['token_size'][] = ['low', 'normal', 'high', 'max']
-const ROLES = ['style', 'layout', 'subject', 'mood', 'texture'] as const
+// Opt-in image prompting. Moodboard text guidance remains the default/primary path.
+// "Match style" averages separate style-only image encodes; "Copy composition"
+// uses the older multi-image Krea2 encode that can intentionally copy/compose refs.
+const MAX_REFS = 4
 
-function move<T>(items: T[], from: number, to: number) {
-  const next = [...items]
-  const [item] = next.splice(from, 1)
-  next.splice(to, 0, item)
-  return next
-}
+const INFLUENCE: Array<{ value: StyleReference['token_size']; label: string }> = [
+  { value: 'low', label: 'Subtle' },
+  { value: 'normal', label: 'Balanced' },
+  { value: 'high', label: 'Strong' },
+  { value: 'max', label: 'Max' },
+]
 
 export default function StyleReferenceSection() {
   const { params, setParam } = useStore()
   const fileRef = useRef<HTMLInputElement>(null)
-  const [open, setOpen] = useState(false)
   const refs = params.style_references
-  const active = refs.length > 0
+  const active = refs.length > 0 || params.image_prompt_enabled
+  const [open, setOpen] = useState(active)
+  const hasSelectedMoodboard = params.selected_moodboard_ids.length > 0 || params.moodboard_uuids.length > 0
+  const mode = params.image_prompt_mode
+  const strengthLabel = params.image_prompt_strength <= 0.12
+    ? 'Strong'
+    : params.image_prompt_strength <= 0.25 ? 'Balanced' : 'Subtle'
 
   const updateRef = (index: number, patch: Partial<StyleReference>) => {
-    setParam('style_references', refs.map((ref, i) => i === index ? { ...ref, ...patch } : ref))
+    setParam('style_references', refs.map((ref, i) => (i === index ? { ...ref, ...patch } : ref)))
   }
 
   const removeRef = (index: number) => {
     setParam('style_references', refs.filter((_, i) => i !== index))
   }
 
-  const addMask = (index: number, file?: File) => {
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = ev => {
-      const b64 = String(ev.target?.result || '').split(',')[1]
-      if (b64) updateRef(index, { mask_b64: b64 })
-    }
-    reader.readAsDataURL(file)
-  }
-
   const addImages = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []).slice(0, Math.max(0, MAX_STYLE_REFS - refs.length))
+    const remaining = Math.max(0, MAX_REFS - refs.length)
+    const files = Array.from(e.target.files ?? []).slice(0, remaining)
     files.forEach(file => {
       const reader = new FileReader()
       reader.onload = ev => {
         const b64 = String(ev.target?.result || '').split(',')[1]
         if (!b64) return
         const current = useStore.getState().params.style_references
-        if (current.length >= MAX_STYLE_REFS) return
+        if (current.length >= MAX_REFS) return
+        setParam('image_prompt_enabled', true)
         setParam('style_references', [
           ...current,
           { image_b64: b64, strength: 1.0, role: 'style', token_size: 'normal', vision_position: 'before_prompt' },
@@ -67,38 +66,77 @@ export default function StyleReferenceSection() {
       <Stack direction="row" alignItems="center" justifyContent="space-between"
         sx={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <Typography variant="caption" sx={{ color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 1 }}>
-          Style References{active ? ` · ${refs.length}/10` : ''}
+          Image Prompt{active ? ` · ${params.image_prompt_enabled ? mode === 'match_style' ? 'match style' : 'copy composition' : 'off'}${refs.length ? ` · ${refs.length}/${MAX_REFS} upload` : ''}` : ''}
+          <Tooltip title="Moodboard text remains the default. Turn this on only when you also want selected moodboard images or uploaded images to influence generation. Match style transfers feel/texture; Copy composition may copy subjects/layout.">
+            <InfoOutlinedIcon sx={{ fontSize: 14, color: 'text.disabled', ml: 0.5, verticalAlign: 'middle' }} />
+          </Tooltip>
         </Typography>
         <ExpandMoreIcon sx={{ color: 'text.secondary', transform: open ? 'rotate(180deg)' : 'none', transition: '0.2s' }} />
       </Stack>
 
       <Collapse in={open}>
         <Box sx={{ pt: 1 }}>
-          <Typography variant="caption" sx={{ color: 'text.disabled', mb: 1, display: 'block' }}>
-            Native Krea reference images accept up to 10 images. Strength ranges from -2.0 to 2.0; negative values are advanced and push away from a reference.
+          <Typography variant="caption" sx={{ color: 'text.disabled', mb: 1.25, display: 'block' }}>
+            Text guidance from selected moodboards is still the default. Enable images when you want the board's
+            pictures or your uploads to affect the generation directly. Use Match style for feel/medium; use Copy
+            composition only when you want reference content/layout.
           </Typography>
 
-          <TextField
-            select
-            size="small"
-            label="Reference fusion"
-            value={params.style_fusion_mode}
-            onChange={e => setParam('style_fusion_mode', e.target.value as typeof params.style_fusion_mode)}
-            fullWidth
-            helperText="Style only ignores layout/target refs. Preserve structure keeps source composition in edit modes. Semantic fusion blends prompt and references."
+          <FormControlLabel
+            control={<Switch checked={params.image_prompt_enabled} onChange={e => setParam('image_prompt_enabled', e.target.checked)} />}
+            label={hasSelectedMoodboard ? 'Use selected moodboard images / uploaded refs' : 'Use uploaded reference images'}
             sx={{ mb: 1 }}
-          >
-            <MenuItem value="semantic_fusion">Semantic fusion</MenuItem>
-            <MenuItem value="style_only">Style transfer only</MenuItem>
-            <MenuItem value="preserve_structure">Preserve structure</MenuItem>
-          </TextField>
+          />
+
+          {params.image_prompt_enabled && (
+            <Stack spacing={1.5} sx={{ mb: 1.5 }}>
+              <TextField
+                select
+                size="small"
+                label="Image mode"
+                value={params.image_prompt_mode}
+                onChange={e => setParam('image_prompt_mode', e.target.value as typeof params.image_prompt_mode)}
+                fullWidth
+                helperText={mode === 'match_style'
+                  ? 'Averages images separately to transfer shared feel without collage. Best for neutral subjects.'
+                  : 'Uses the old multi-image path. Can copy subjects/layout or collage distinct refs.'}
+              >
+                <MenuItem value="match_style">Match style (recommended)</MenuItem>
+                <MenuItem value="copy_composition">Copy composition / subject</MenuItem>
+              </TextField>
+
+              {mode === 'match_style' && (
+                <Box>
+                  <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+                    <Typography variant="body2" sx={{ color: 'text.secondary' }}>Style strength</Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', fontSize: 12 }}>
+                      {strengthLabel} · MP {params.image_prompt_strength.toFixed(2)}
+                    </Typography>
+                  </Stack>
+                  <Slider
+                    value={params.image_prompt_strength}
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    size="small"
+                    marks={[{ value: 0.1, label: 'Strong' }, { value: 0.2, label: 'Balanced' }, { value: 0.5, label: 'Subtle' }]}
+                    onChange={(_, v) => setParam('image_prompt_strength', v as number)}
+                  />
+                  <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                    Lower values transfer more mood/medium. 0.20 is the tested balanced default.
+                  </Typography>
+                </Box>
+              )}
+            </Stack>
+          )}
 
           <Stack spacing={1}>
             {refs.map((ref, index) => (
-              <Box key={`${index}-${ref.image_b64.slice(0, 12)}`} sx={{ border: '1px solid rgba(202,196,208,0.16)', borderRadius: 1, p: 1 }}>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
-                  <Box sx={{ position: 'relative', width: 64, height: 64, borderRadius: 1, overflow: 'hidden', flex: '0 0 auto' }}>
-                    <img src={`data:image/png;base64,${ref.image_b64}`} alt={`style ref ${index + 1}`}
+              <Box key={`${index}-${ref.image_b64.slice(0, 12)}`}
+                sx={{ border: '1px solid rgba(202,196,208,0.16)', borderRadius: 1, p: 1 }}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Box sx={{ position: 'relative', width: 56, height: 56, borderRadius: 1, overflow: 'hidden', flex: '0 0 auto' }}>
+                    <img src={`data:image/png;base64,${ref.image_b64}`} alt={`reference ${index + 1}`}
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     <IconButton size="small" onClick={() => removeRef(index)}
                       sx={{ position: 'absolute', top: -2, right: -2, p: '1px', bgcolor: 'rgba(0,0,0,0.6)' }}>
@@ -106,126 +144,64 @@ export default function StyleReferenceSection() {
                     </IconButton>
                   </Box>
 
-                  <Box sx={{ flex: 1, minWidth: 180 }}>
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                      <Typography variant="body2" sx={{ color: 'text.secondary' }}>Strength</Typography>
-                      <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', fontSize: 12 }}>
-                        {ref.strength.toFixed(2)}
-                      </Typography>
-                    </Stack>
-                    <Slider
-                      value={ref.strength}
-                      min={-2}
-                      max={2}
-                      step={0.05}
-                      size="small"
-                      onChange={(_, value) => updateRef(index, { strength: value as number })}
-                    />
-                  </Box>
-
                   <TextField
                     select
                     size="small"
-                    label="Role"
-                    value={ref.role}
-                    onChange={e => updateRef(index, { role: e.target.value })}
-                    sx={{ minWidth: 120 }}
-                  >
-                    {ROLES.map(role => <MenuItem key={role} value={role}>{role}</MenuItem>)}
-                  </TextField>
-
-                  <Stack direction="row" spacing={0.5}>
-                    <Button size="small" disabled={index === 0} onClick={() => setParam('style_references', move(refs, index, index - 1))}>
-                      Up
-                    </Button>
-                    <Button size="small" disabled={index === refs.length - 1} onClick={() => setParam('style_references', move(refs, index, index + 1))}>
-                      Down
-                    </Button>
-                  </Stack>
-                </Stack>
-
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
-                  <TextField
-                    select
-                    size="small"
-                    label="Token budget"
+                    label={mode === 'copy_composition' ? `Image ${index + 1} influence` : `Image ${index + 1}`}
                     value={ref.token_size}
                     onChange={e => updateRef(index, { token_size: e.target.value as StyleReference['token_size'] })}
-                    sx={{ minWidth: 130 }}
+                    helperText={mode === 'copy_composition' ? 'Only used by Copy composition.' : 'Included in averaged style.'}
+                    fullWidth
                   >
-                    {TOKEN_SIZES.map(size => <MenuItem key={size} value={size}>{size}</MenuItem>)}
+                    {INFLUENCE.map(o => <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>)}
                   </TextField>
-                  <TextField
-                    size="small"
-                    type="number"
-                    label="Vision MP"
-                    value={ref.vision_megapixels ?? ''}
-                    onChange={e => updateRef(index, { vision_megapixels: e.target.value ? Number(e.target.value) : null })}
-                    inputProps={{ min: 0.1, max: 4, step: 0.1 }}
-                    sx={{ minWidth: 110 }}
-                  />
-                  <TextField
-                    size="small"
-                    type="number"
-                    label="Mask padding"
-                    value={ref.mask_padding ?? 0}
-                    onChange={e => updateRef(index, { mask_padding: Math.max(0, Number(e.target.value) || 0) })}
-                    inputProps={{ min: 0, max: 512, step: 8 }}
-                    sx={{ minWidth: 125 }}
-                  />
-                  <TextField
-                    select
-                    size="small"
-                    label="Image position"
-                    value={ref.vision_position ?? 'before_prompt'}
-                    onChange={e => updateRef(index, { vision_position: e.target.value as StyleReference['vision_position'] })}
-                    sx={{ minWidth: 150 }}
-                  >
-                    <MenuItem value="before_prompt">Image before prompt</MenuItem>
-                    <MenuItem value="after_prompt">Image after prompt</MenuItem>
-                  </TextField>
-                  <Button size="small" component="label" variant={ref.mask_b64 ? 'contained' : 'outlined'}>
-                    {ref.mask_b64 ? 'Mask set' : 'Add mask'}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      hidden
-                      onChange={e => {
-                        addMask(index, e.target.files?.[0])
-                        e.currentTarget.value = ''
-                      }}
-                    />
-                  </Button>
                 </Stack>
-                <TextField
-                  size="small"
-                  label="Reference instruction"
-                  value={ref.system_prompt ?? ''}
-                  onChange={e => updateRef(index, { system_prompt: e.target.value.slice(0, 512) })}
-                  fullWidth
-                  multiline
-                  maxRows={2}
-                  sx={{ mt: 1 }}
-                  helperText="Optional Qwen system prompt override for this reference, max 512 characters."
-                />
               </Box>
             ))}
 
-            <Tooltip title={refs.length >= MAX_STYLE_REFS ? 'Maximum 10 style references' : 'Add style reference image(s)'}>
+            <Tooltip title={refs.length >= MAX_REFS ? `Maximum ${MAX_REFS} reference images` : 'Add reference image(s)'}>
               <span>
                 <Button
                   variant="outlined"
                   startIcon={<AddPhotoAlternateIcon />}
                   onClick={() => fileRef.current?.click()}
-                  disabled={refs.length >= MAX_STYLE_REFS}
+                  disabled={refs.length >= MAX_REFS}
+                  sx={{ borderStyle: 'dashed' }}
                   fullWidth
                 >
-                  Add Style Reference
+                  {refs.length ? 'Add another reference' : 'Add reference image'}
                 </Button>
               </span>
             </Tooltip>
             <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={addImages} />
           </Stack>
+
+          {active && (
+            <>
+              {mode === 'copy_composition' && (
+              <Box sx={{ mt: 1.75 }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>Overall strength</Typography>
+                  <Typography variant="body2" sx={{ fontFamily: 'Roboto Mono', fontSize: 12 }}>
+                    {params.rebalance_multiplier.toFixed(2)}
+                  </Typography>
+                </Stack>
+                <Slider
+                  value={params.rebalance_multiplier}
+                  min={0.25}
+                  max={2}
+                  step={0.05}
+                  size="small"
+                  marks={[{ value: 1, label: '1.0' }]}
+                  onChange={(_, v) => setParam('rebalance_multiplier', v as number)}
+                />
+                <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                  1.0 = default · higher pulls harder toward the references · lower loosens their grip.
+                </Typography>
+              </Box>
+              )}
+            </>
+          )}
         </Box>
       </Collapse>
     </Box>

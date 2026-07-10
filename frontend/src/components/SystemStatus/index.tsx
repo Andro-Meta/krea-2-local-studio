@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, MenuItem, Paper, Stack, Switch, TextField, Typography } from '@mui/material'
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Link, MenuItem, Paper, Stack, Switch, TextField, Tooltip, Typography } from '@mui/material'
 import GpuIcon from '@mui/icons-material/Memory'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { apiFetch, publicUrl, type AcceleratorStatus, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type ModerationStatus, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
 import { useStore } from '../../store'
 
@@ -17,6 +18,44 @@ function GBBar({ label, used, total }: { label: string; used?: number; total?: n
       </Stack>
       <LinearProgress variant="determinate" value={pct} sx={{ height: 6, borderRadius: 100 }} />
     </Box>
+  )
+}
+
+function SettingsAccordion({
+  title,
+  summary,
+  defaultExpanded = false,
+  children,
+}: {
+  title: string
+  summary?: React.ReactNode
+  defaultExpanded?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <Accordion
+      defaultExpanded={defaultExpanded}
+      disableGutters
+      sx={{ bgcolor: 'background.paper', borderRadius: 2, '&:before': { display: 'none' } }}
+    >
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ width: '100%', pr: 1 }}>
+          <Typography variant="h6">{title}</Typography>
+          {summary}
+        </Stack>
+      </AccordionSummary>
+      <AccordionDetails sx={{ pt: 0 }}>
+        {children}
+      </AccordionDetails>
+    </Accordion>
+  )
+}
+
+function GroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <Typography variant="overline" sx={{ display: 'block', color: 'text.disabled', letterSpacing: 1.5, mt: 1.5, mb: -0.5, fontWeight: 700 }}>
+      {children}
+    </Typography>
   )
 }
 
@@ -41,11 +80,14 @@ export default function SystemStatus() {
     prompt_expander_backend: 'local' as 'local' | 'openrouter' | 'ideogram-json',
     ideogram_api_key: '',
     hf_token: '',
+    civitai_token: '',
     openrouter_api_key: '',
     openrouter_model: 'google/gemma-4-31b-it:free',
     openrouter_free_only: true,
     krea_attention_backend: 'sdpa' as 'sdpa' | 'sage',
-    local_llm_backend: 'transformers' as 'transformers' | 'gguf_server',
+    seedvr2_model: '3b' as '3b' | '7b',
+    local_llm_backend: 'comfy' as 'comfy' | 'transformers' | 'gguf_server',
+    comfy_qwen_model: '2b',
     local_qwen_model_id: '',
     local_qwen_device: 'auto' as 'auto' | 'cuda' | 'cpu',
     gguf_helper_base_url: 'http://127.0.0.1:1234/v1',
@@ -92,6 +134,20 @@ export default function SystemStatus() {
     : /Huihui-Qwen3-VL-4B-Instruct-abliterated|qwen3_vl_4b_abliterated/i.test(settingsDraft.local_qwen_model_id)
       ? 'abliterated'
       : 'custom'
+  const comfyQwenChoice = /4b|Huihui-Qwen3-VL-4B/i.test(settingsDraft.comfy_qwen_model || '')
+    ? '4b'
+    : '2b'
+  const requiredSupportModels = report?.support_models?.filter(model => !model.optional) ?? []
+  const supportReady = requiredSupportModels.length > 0 && requiredSupportModels.every(model => model.installed)
+  const supportCachedOnly = !supportReady && requiredSupportModels.some(model => !model.installed && model.legacy_cache_installed)
+  const qualityItems = qualityAssets?.items ?? []
+  const qualityInstalled = qualityItems.filter(asset => asset.installed).length
+  const qualityDownloadableMissing = qualityItems.filter(asset => !asset.installed && asset.download_enabled).length
+  const sageInstalled = !!accelerators?.sageattention.installed
+  const tritonInstalled = !!accelerators?.triton_windows.installed
+  const comfyAccel = accelerators?.comfyui_venv
+  const comfyHasAccelerators = !!(comfyAccel?.triton || comfyAccel?.sageattention || comfyAccel?.comfy_kitchen)
+  const sageActive = settingsDraft.krea_attention_backend === 'sage'
 
   const refresh = async () => {
     setLoading(true); setFetchError('')
@@ -132,11 +188,14 @@ export default function SystemStatus() {
         prompt_expander_backend: s.prompt_expander_backend,
         ideogram_api_key: '',
         hf_token: '',
+        civitai_token: '',
         openrouter_api_key: '',
         openrouter_model: s.openrouter_model,
         openrouter_free_only: s.openrouter_free_only,
         krea_attention_backend: s.krea_attention_backend ?? 'sdpa',
-        local_llm_backend: s.local_llm_backend ?? 'transformers',
+        seedvr2_model: (s.seedvr2_model === '7b' ? '7b' : '3b'),
+        local_llm_backend: s.local_llm_backend ?? 'comfy',
+        comfy_qwen_model: s.comfy_qwen_model ?? '2b',
         local_qwen_model_id: s.local_qwen_model_id ?? '',
         local_qwen_device: s.local_qwen_device ?? 'auto',
         gguf_helper_base_url: s.gguf_helper_base_url ?? 'http://127.0.0.1:1234/v1',
@@ -214,6 +273,7 @@ export default function SystemStatus() {
   }
 
   useEffect(() => {
+    let presenceTimer: number | undefined
     loadAuth().then(session => {
       if (session?.role === 'admin') {
         loadSettings()
@@ -222,8 +282,11 @@ export default function SystemStatus() {
         loadQualityAssets()
         loadModerationEvents()
         loadAccelerators()
+        // Refresh the user list periodically so the online/working presence stays current.
+        presenceTimer = window.setInterval(() => { loadUsers().catch(() => {}) }, 20000)
       }
     })
+    return () => { if (presenceTimer) window.clearInterval(presenceTimer) }
   }, [])
 
   const saveHfToken = async () => {
@@ -236,11 +299,31 @@ export default function SystemStatus() {
       setSettingsDraft(d => ({ ...d, hf_token: '' }))
       await loadSettings()
       await loadQualityAssets()
-      setQualityMessage({ severity: 'success', text: 'Hugging Face token saved for this server session. You can now download gated assets.' })
+      setQualityMessage({ severity: 'success', text: 'Hugging Face token saved to .env — it now persists across restarts and speeds up model downloads.' })
     } catch (e: any) {
       setQualityMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not save Hugging Face token.' })
     } finally {
       setSavingSettings(false)
+    }
+  }
+
+  const [savingCivitai, setSavingCivitai] = useState(false)
+  const [civitaiMessage, setCivitaiMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
+  const saveCivitaiToken = async () => {
+    setSavingCivitai(true)
+    setCivitaiMessage(null)
+    try {
+      await apiFetch.updateSettings({ civitai_token: settingsDraft.civitai_token.trim() })
+      setSettingsDraft(d => ({ ...d, civitai_token: '' }))
+      await loadSettings()
+      setCivitaiMessage({
+        severity: 'success',
+        text: 'Civitai API key saved to .env — it now persists across restarts.',
+      })
+    } catch (e: any) {
+      setCivitaiMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not save Civitai API key.' })
+    } finally {
+      setSavingCivitai(false)
     }
   }
 
@@ -266,6 +349,7 @@ export default function SystemStatus() {
       await apiFetch.updateSettings({
         prompt_expander_backend: settingsDraft.prompt_expander_backend,
         local_llm_backend: settingsDraft.local_llm_backend,
+        comfy_qwen_model: settingsDraft.comfy_qwen_model,
         local_qwen_model_id: settingsDraft.local_qwen_model_id,
         local_qwen_device: settingsDraft.local_qwen_device,
         gguf_helper_base_url: settingsDraft.gguf_helper_base_url,
@@ -414,6 +498,26 @@ export default function SystemStatus() {
       })
     } catch (e: any) {
       setAcceleratorMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not save attention backend.' })
+    } finally {
+      setAcceleratorBusy(null)
+    }
+  }
+
+  const saveSeedvr2Model = async (model: '3b' | '7b') => {
+    setAcceleratorBusy('save')
+    setAcceleratorMessage(null)
+    try {
+      await apiFetch.updateSettings({ seedvr2_model: model })
+      setSettingsDraft(d => ({ ...d, seedvr2_model: model }))
+      await loadSettings()
+      setAcceleratorMessage({
+        severity: model === '7b' ? 'warning' : 'success',
+        text: model === '7b'
+          ? 'SeedVR2 7B fp16 selected (max quality). First 4K upscale streams blocks to RAM — slower but sharper.'
+          : 'SeedVR2 3B fp8 restored (fast default).',
+      })
+    } catch (e: any) {
+      setAcceleratorMessage({ severity: 'error', text: e?.response?.data?.detail ?? e.message ?? 'Could not save SeedVR2 model.' })
     } finally {
       setAcceleratorBusy(null)
     }
@@ -636,6 +740,7 @@ export default function SystemStatus() {
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 700, mx: 'auto' }}>
       <Stack spacing={2}>
+        <GroupLabel>System</GroupLabel>
         {/* GPU info */}
         <Paper sx={{ p: 2 }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.5}>
@@ -694,63 +799,75 @@ export default function SystemStatus() {
           </Stack>
         </Paper>
 
-        {isAdmin && <Paper sx={{ p: 2 }}>
+        {isAdmin && <SettingsAccordion
+          title="Experimental Accelerators"
+          summary={
+            <Stack direction="row" spacing={0.75}>
+              <Chip size="small" color={comfyHasAccelerators ? 'success' : 'default'} label={comfyHasAccelerators ? 'ComfyUI: Triton+Sage' : 'ComfyUI accel missing'} />
+              <Chip size="small" color="info" label="Image gens use ComfyUI" />
+            </Stack>
+          }
+        >
           <Stack spacing={1.25}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Experimental Accelerators</Typography>
               <Button size="small" variant="text" onClick={loadAccelerators}>Refresh</Button>
             </Stack>
+            <Alert severity={comfyHasAccelerators ? 'success' : 'warning'} sx={{ py: 0 }}>
+              {comfyHasAccelerators
+                ? 'ComfyUI has Triton + SageAttention and uses them automatically for image generation (including INT8 OTU). No Studio toggle needed.'
+                : 'ComfyUI is missing Triton/SageAttention wheels — re-run the ComfyUI installer scripts to restore acceleration.'}
+            </Alert>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              PyTorch SDPA is the stable default. Triton/SageAttention are opt-in experiments; they may cause black/noisy outputs, so verify visually before keeping them enabled.
+              The Studio Python venv no longer runs the image model (native DiT is deprecated). Install buttons below only affect the Studio helper venv (moodboard Qwen / magic wand), not ComfyUI.
             </Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              <Chip size="small" color="success" label="SDPA default" />
-              <Chip size="small" color={accelerators?.triton_windows.installed ? 'success' : 'default'} label={`Triton ${accelerators?.triton_windows.installed ? 'installed' : 'not installed'}`} />
-              <Chip size="small" color={accelerators?.sageattention.installed ? 'success' : 'default'} label={`Sage ${accelerators?.sageattention.installed ? 'installed' : 'not installed'}`} />
+              <Chip size="small" color={comfyAccel?.triton ? 'success' : 'default'} label={`Comfy Triton ${comfyAccel?.triton ? 'ok' : 'missing'}`} />
+              <Chip size="small" color={comfyAccel?.sageattention ? 'success' : 'default'} label={`Comfy Sage ${comfyAccel?.sageattention ? 'ok' : 'missing'}`} />
+              <Chip size="small" color={tritonInstalled ? 'success' : 'default'} label={`Studio Triton ${tritonInstalled ? 'ok' : 'n/a'}`} />
+              <Chip size="small" color={sageInstalled ? 'success' : 'default'} label={`Studio Sage ${sageInstalled ? 'ok' : 'n/a'}`} />
             </Stack>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Button
                 size="small"
                 variant="outlined"
-                disabled={!!acceleratorBusy}
+                disabled={!!acceleratorBusy || tritonInstalled}
                 startIcon={acceleratorBusy === 'triton' ? <CircularProgress size={14} /> : undefined}
                 onClick={() => installAccelerator('triton')}
               >
-                Install Triton for Windows
+                {tritonInstalled ? 'Studio Triton Present' : 'Install Triton into Studio venv'}
               </Button>
               <Button
                 size="small"
                 variant="outlined"
-                disabled={!!acceleratorBusy}
+                disabled={!!acceleratorBusy || sageInstalled}
                 startIcon={acceleratorBusy === 'sage' ? <CircularProgress size={14} /> : undefined}
                 onClick={() => installAccelerator('sage')}
               >
-                Install SageAttention
+                {sageInstalled ? 'Studio Sage Present' : 'Install Sage into Studio venv'}
               </Button>
             </Stack>
             <FormControlLabel
               control={
                 <Switch
                   size="small"
-                  checked={settingsDraft.krea_attention_backend === 'sage'}
-                  disabled={!!acceleratorBusy || !accelerators?.sageattention.installed}
-                  onChange={e => saveAttentionBackend(e.target.checked ? 'sage' : 'sdpa')}
+                  checked={settingsDraft.seedvr2_model === '7b'}
+                  disabled={!!acceleratorBusy}
+                  onChange={e => saveSeedvr2Model(e.target.checked ? '7b' : '3b')}
                 />
               }
               label={
                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                  Enable SageAttention for A/B test{!accelerators?.sageattention.installed ? ' — install SageAttention first' : ''}
+                  SeedVR2 upscaler: {settingsDraft.seedvr2_model === '7b' ? '7B fp16 (max quality)' : '3B fp8 (fast default)'} — used for RAW-4K auto-upscale
                 </Typography>
               }
             />
             {acceleratorMessage && <Alert severity={acceleratorMessage.severity} sx={{ py: 0 }}>{acceleratorMessage.text}</Alert>}
           </Stack>
-        </Paper>}
+        </SettingsAccordion>}
 
         {/* GPU profile + per-system recommendation */}
         {report?.gpu_capabilities && (
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="h6" mb={1}>GPU Profile</Typography>
+          <SettingsAccordion title="GPU Profile">
             <Stack spacing={0.5}>
               {report.runnability && (
                 <Alert severity={report.runnability.can_run ? (report.runnability.tier === 'minimum' ? 'warning' : 'success') : 'error'} sx={{ py: 0, mb: 0.5 }}>
@@ -779,12 +896,12 @@ export default function SystemStatus() {
                 </Alert>
               )}
             </Stack>
-          </Paper>
+          </SettingsAccordion>
         )}
 
+        <GroupLabel>Models &amp; Generation</GroupLabel>
         {/* Model status */}
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6" mb={1.5}>Model</Typography>
+        <SettingsAccordion title="Model" defaultExpanded>
           {!isAdmin && <Alert severity="info" sx={{ py: 0, mb: 1 }}>Only admins can load or unload models.</Alert>}
           {memoryMessage && <Alert severity={memoryMessage.severity} sx={{ py: 0, mb: 1 }}>{memoryMessage.text}</Alert>}
           {report?.model_status.loading ? (
@@ -980,11 +1097,10 @@ export default function SystemStatus() {
               </Stack>
             </Stack>
           )}
-        </Paper>
+        </SettingsAccordion>
 
-        <Paper sx={{ p: 2 }}>
+        <SettingsAccordion title="Memory Tools">
           <Stack spacing={1.5}>
-            <Typography variant="h6">Memory Tools</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               Free transient encoder/cache memory or inspect duplicate Krea servers before loading the model.
             </Typography>
@@ -1035,25 +1151,27 @@ export default function SystemStatus() {
               </Stack>
             )}
           </Stack>
-        </Paper>
+        </SettingsAccordion>
 
         {/* Krea conditioning assets */}
-        <Paper sx={{ p: 2 }}>
+        <SettingsAccordion
+          title="Krea Moodboard Conditioning"
+          defaultExpanded={!supportReady}
+          summary={
+            <Chip
+              size="small"
+              label={supportReady ? 'Ready' : supportCachedOnly ? 'Cached, repair local copy' : 'Needs download'}
+              color={supportReady ? 'success' : supportCachedOnly ? 'info' : 'warning'}
+            />
+          }
+        >
           <Stack spacing={1.5}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Krea Moodboard Conditioning</Typography>
-              <Chip
-                size="small"
-                label={report?.support_models?.filter(m => !m.optional).every(m => m.installed) ? 'Ready' : 'Needs download'}
-                color={report?.support_models?.filter(m => !m.optional).every(m => m.installed) ? 'success' : 'warning'}
-              />
-            </Stack>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               Moodboard reference images use the local Krea/Qwen3-VL encoder to create conditioning tensors.
-              This does not call Krea's servers. These assets are large and are normally downloaded during install or first model load.
+              This does not call Krea's servers. If an item is cached but not local, the repair button copies it into the app's expected folder.
             </Typography>
             <Stack spacing={1}>
-              {(report?.support_models?.filter(model => !model.optional) ?? []).map(model => (
+              {requiredSupportModels.map(model => (
                 <Box key={model.id}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1}>
                     <Box>
@@ -1061,8 +1179,15 @@ export default function SystemStatus() {
                       <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
                         {model.repo_id} · {model.purpose}
                       </Typography>
+                      <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', wordBreak: 'break-all' }}>
+                        Local: {model.path || model.cache_dir}
+                      </Typography>
                     </Box>
-                    <Chip size="small" label={model.installed ? 'Installed' : 'Missing'} color={model.installed ? 'success' : 'warning'} />
+                    <Chip
+                      size="small"
+                      label={model.installed ? 'Local' : model.legacy_cache_installed ? 'Cached' : 'Missing'}
+                      color={model.installed ? 'success' : model.legacy_cache_installed ? 'info' : 'warning'}
+                    />
                   </Stack>
                 </Box>
               ))}
@@ -1079,57 +1204,19 @@ export default function SystemStatus() {
               {downloadingSupport ? 'Downloading...' : 'Download / Repair Conditioning Assets'}
             </Button>
           </Stack>
-        </Paper>
+        </SettingsAccordion>
 
-        {/* Precision editing assets */}
-        {isAdmin && <Paper sx={{ p: 2 }}>
+        <GroupLabel>API Keys &amp; Helpers</GroupLabel>
+        {/* Hugging Face access token (higher download rate limits + gated models) */}
+        {isAdmin && <SettingsAccordion
+          title="Hugging Face access token"
+          defaultExpanded={!(settings?.has_hf_token || qualityAssets?.has_hf_token)}
+          summary={(settings?.has_hf_token || qualityAssets?.has_hf_token) ? <Chip label="Token saved" color="success" size="small" /> : <Chip label="Not set" size="small" variant="outlined" />}
+        >
           <Stack spacing={1.5}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Precision Editing / FLUX Fill</Typography>
-              <Chip
-                size="small"
-                label={qualityAssets?.items.find(asset => asset.id === 'flux_fill')?.installed ? 'Ready' : 'Setup needed'}
-                color={qualityAssets?.items.find(asset => asset.id === 'flux_fill')?.installed ? 'success' : 'warning'}
-              />
-            </Stack>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Strict inpaint and preserve-source outpaint use FLUX Fill when installed. This model is gated on Hugging Face:
-              open the model page, accept access, paste a Hugging Face token here, then download the asset.
+              Optional. A Hugging Face token gives the server higher download rate limits and access to gated models you've been granted. Keys saved here are written to .env, so they persist across restarts and speed up model downloads.
             </Typography>
-            <Alert severity="info" sx={{ py: 0 }}>
-              Browser login is not enough for local Python downloads. The server needs a Hugging Face access token with permission for black-forest-labs/FLUX.1-Fill-dev.
-            </Alert>
-            <Stack spacing={1}>
-              {(qualityAssets?.items.filter(asset => asset.id === 'flux_fill') ?? []).map(asset => (
-                <Box key={asset.id}>
-                  <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1}>
-                    <Box>
-                      <Typography variant="body2">{asset.purpose}</Typography>
-                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', wordBreak: 'break-all' }}>
-                        {asset.repo_id} · {asset.local_path}
-                      </Typography>
-                    </Box>
-                    <Chip size="small" label={asset.installed ? 'Installed' : asset.needs_token ? 'Needs HF token' : 'Missing'} color={asset.installed ? 'success' : 'warning'} />
-                  </Stack>
-                  {!asset.installed && (
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
-                      <Button size="small" variant="outlined" href={asset.setup_url} target="_blank" rel="noreferrer">
-                        Open HF model page
-                      </Button>
-                      <Button
-                        size="small"
-                        variant="contained"
-                        onClick={() => downloadQualityAsset(asset.id)}
-                        disabled={qualityBusy === asset.id || asset.needs_token}
-                        startIcon={qualityBusy === asset.id ? <CircularProgress size={14} color="inherit" /> : undefined}
-                      >
-                        {qualityBusy === asset.id ? 'Downloading...' : 'Download FLUX Fill'}
-                      </Button>
-                    </Stack>
-                  )}
-                </Box>
-              ))}
-            </Stack>
             <TextField
               label="Hugging Face access token"
               value={settingsDraft.hf_token}
@@ -1137,8 +1224,7 @@ export default function SystemStatus() {
               size="small"
               fullWidth
               type="password"
-              placeholder={settings?.has_hf_token || qualityAssets?.has_hf_token ? 'Token saved for this server session. Paste a new token to replace it.' : 'hf_...'}
-              helperText="Use a token from Hugging Face Settings > Access Tokens after accepting the FLUX Fill model access terms."
+              placeholder={settings?.has_hf_token || qualityAssets?.has_hf_token ? 'Token available. Paste a new token to replace it.' : 'hf_...'}
             />
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Button
@@ -1156,26 +1242,62 @@ export default function SystemStatus() {
             </Stack>
             {qualityMessage && <Alert severity={qualityMessage.severity} sx={{ py: 0 }}>{qualityMessage.text}</Alert>}
           </Stack>
-        </Paper>}
+        </SettingsAccordion>}
+
+        {/* Civitai API key */}
+        {isAdmin && <SettingsAccordion
+          title="Civitai API key"
+          defaultExpanded={!settings?.has_civitai_token}
+          summary={settings?.has_civitai_token ? <Chip label="Key saved" color="success" size="small" /> : <Chip label="Not set" size="small" variant="outlined" />}
+        >
+          <Stack spacing={1.5}>
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              A free Civitai API key lets the LoRA browser download login-gated models. Keys saved here are written to .env, so they persist across restarts. Create one at{' '}
+              <Link href="https://civitai.com/user/account" target="_blank" rel="noreferrer">civitai.com → Account → API Keys</Link>. It's free — Civitai downloads don't cost anything.
+            </Typography>
+            <TextField
+              label="Civitai API key"
+              value={settingsDraft.civitai_token}
+              onChange={e => setSettingsDraft(d => ({ ...d, civitai_token: e.target.value }))}
+              size="small"
+              fullWidth
+              type="password"
+              placeholder={settings?.has_civitai_token ? 'Key available. Paste a new key to replace it.' : 'Paste your Civitai API key...'}
+            />
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={saveCivitaiToken}
+                disabled={savingCivitai || !settingsDraft.civitai_token.trim()}
+                startIcon={savingCivitai ? <CircularProgress size={14} color="inherit" /> : undefined}
+              >
+                Save Civitai Key
+              </Button>
+            </Stack>
+            {civitaiMessage && <Alert severity={civitaiMessage.severity} sx={{ py: 0 }}>{civitaiMessage.text}</Alert>}
+          </Stack>
+        </SettingsAccordion>}
 
         {/* Magic wand settings */}
-        {isAdmin && <Paper sx={{ p: 2 }}>
-          <Stack spacing={1.5}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Magic Wand</Typography>
-              <Stack direction="row" spacing={0.75}>
-                {settings?.has_ideogram_api_key && <Chip label="Ideogram key saved" color="success" size="small" />}
-                {settings?.has_openrouter_api_key && <Chip label="OpenRouter key saved" color="success" size="small" />}
-              </Stack>
+        {isAdmin && <SettingsAccordion
+          title="Magic Wand"
+          summary={
+            <Stack direction="row" spacing={0.75}>
+              {settings?.has_ideogram_api_key && <Chip label="Ideogram key saved" color="success" size="small" />}
+              {settings?.has_openrouter_api_key && <Chip label="OpenRouter key saved" color="success" size="small" />}
             </Stack>
+          }
+        >
+          <Stack spacing={1.5}>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Local Qwen3-VL is the self-contained helper for prompt expansion and image-to-prompt. GGUF helper is text-only and can use LM Studio or llama.cpp. OpenRouter and Ideogram remain optional hosted helpers.
+              ComfyUI QwenVL is the default helper for prompt expansion, image-to-prompt, and moodboard enrich. Default model is Huihui 2B abliterated (faster); switch to 4B for richer prose. Transformers remains a Studio fallback. GGUF helper is text-only. OpenRouter and Ideogram remain optional hosted helpers.
             </Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              {(['transformers', 'gguf_server'] as const).map(b => (
+              {(['comfy', 'transformers', 'gguf_server'] as const).map(b => (
                 <Chip
                   key={b}
-                  label={b === 'transformers' ? 'Transformers Qwen3-VL' : 'GGUF server'}
+                  label={b === 'comfy' ? 'ComfyUI QwenVL' : b === 'transformers' ? 'Transformers Qwen3-VL' : 'GGUF server'}
                   clickable
                   variant={settingsDraft.local_llm_backend === b ? 'filled' : 'outlined'}
                   color={settingsDraft.local_llm_backend === b ? 'secondary' : 'default'}
@@ -1183,6 +1305,26 @@ export default function SystemStatus() {
                 />
               ))}
             </Stack>
+            {settingsDraft.local_llm_backend === 'comfy' && (
+              <Stack spacing={0.75}>
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Comfy helper model</Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {([
+                    { id: '2b', label: '2B abliterated (default)' },
+                    { id: '4b', label: '4B abliterated' },
+                  ] as const).map(opt => (
+                    <Chip
+                      key={opt.id}
+                      label={opt.label}
+                      clickable
+                      variant={comfyQwenChoice === opt.id ? 'filled' : 'outlined'}
+                      color={comfyQwenChoice === opt.id ? 'secondary' : 'default'}
+                      onClick={() => setSettingsDraft(d => ({ ...d, comfy_qwen_model: opt.id }))}
+                    />
+                  ))}
+                </Stack>
+              </Stack>
+            )}
             {settingsDraft.local_llm_backend === 'transformers' && (
               <Stack spacing={1}>
                 <TextField
@@ -1202,10 +1344,10 @@ export default function SystemStatus() {
                   }}
                   size="small"
                   fullWidth
-                  helperText="Xperiment selects Abliterated Qwen by default. The Comfy FP8 abliterated file is not Transformers-loadable; this uses the BF16 Transformers repo or a local downloaded copy."
+                  helperText="Transformers fallback only. Comfy FP8 abliterated CLIP is separate (generation path)."
                 >
                   <MenuItem value="default">Default installed Qwen3-VL</MenuItem>
-                  <MenuItem value="abliterated">Abliterated Qwen3-VL (Xperiment)</MenuItem>
+                  <MenuItem value="abliterated">Abliterated Qwen3-VL 4B</MenuItem>
                   <MenuItem value="custom">Custom repo/path</MenuItem>
                 </TextField>
                 {localQwenChoice === 'custom' && (
@@ -1225,10 +1367,10 @@ export default function SystemStatus() {
                   onChange={e => setSettingsDraft(d => ({ ...d, local_qwen_device: e.target.value as typeof d.local_qwen_device }))}
                   size="small"
                   fullWidth
-                  helperText="Auto uses CUDA only when VRAM is safe; otherwise CPU to avoid native crashes."
+                  helperText="Auto uses CUDA only when safe; otherwise warns fast. CPU is explicit because it can be very slow."
                 >
-                  <MenuItem value="auto">Auto safe</MenuItem>
-                  <MenuItem value="cpu">CPU</MenuItem>
+                  <MenuItem value="auto">Auto safe / fast fail</MenuItem>
+                  <MenuItem value="cpu">CPU slow</MenuItem>
                   <MenuItem value="cuda">CUDA</MenuItem>
                 </TextField>
               </Stack>
@@ -1294,8 +1436,8 @@ export default function SystemStatus() {
               size="small"
               fullWidth
               type="password"
-              placeholder={settings?.has_ideogram_api_key ? 'Saved. Paste a new key to replace it.' : 'Ideogram API key'}
-              helperText="Used only when Magic Wand backend is Ideogram JSON."
+              placeholder={settings?.has_ideogram_api_key ? 'Key available. Paste a new key to replace it for this session.' : 'Ideogram API key'}
+              helperText="Used only when Magic Wand backend is Ideogram JSON. For persistence, set IDEOGRAM_API_KEY in .env."
             />
             <TextField
               label="OpenRouter API key"
@@ -1304,8 +1446,8 @@ export default function SystemStatus() {
               size="small"
               fullWidth
               type="password"
-              placeholder={settings?.has_openrouter_api_key ? 'Saved. Paste a new key to replace it.' : 'sk-or-v1-...'}
-              helperText="Applied to this server session. For persistent keys, set them manually in your local .env."
+              placeholder={settings?.has_openrouter_api_key ? 'Key available. Paste a new key to replace it for this session.' : 'sk-or-v1-...'}
+              helperText="For persistence, set OPENROUTER_API_KEY in .env. Saving other settings will not remove it."
             />
             <TextField
               label="OpenRouter model"
@@ -1336,16 +1478,24 @@ export default function SystemStatus() {
               Save Magic Wand Settings
             </Button>
           </Stack>
-        </Paper>}
+        </SettingsAccordion>}
 
-        {isAdmin && <Paper sx={{ p: 2 }}>
+        <GroupLabel>Assets &amp; Engines</GroupLabel>
+        {isAdmin && <SettingsAccordion
+          title="Optional Krea / GGUF Assets"
+          summary={
+            <Stack direction="row" spacing={0.75}>
+              <Chip size="small" color="success" label={`${qualityInstalled}/${qualityItems.length || 0} local`} />
+              {qualityDownloadableMissing > 0 && <Chip size="small" color="default" label={`${qualityDownloadableMissing} optional missing`} />}
+            </Stack>
+          }
+        >
           <Stack spacing={1.5}>
-            <Typography variant="h6">Optional Krea / GGUF Assets</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Download workflow companion files only when you choose to use them. These are not required for the default native Turbo workflow.
+              Download workflow companion files only when you choose to use them. Missing optional items are not blockers for the default native Turbo workflow.
             </Typography>
             <Stack spacing={1}>
-              {(qualityAssets?.items.filter(asset => asset.id !== 'flux_fill') ?? []).map(asset => (
+              {(qualityAssets?.items ?? []).map(asset => (
                 <Box key={asset.id} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, p: 1 }}>
                   <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1}>
                     <Box>
@@ -1365,10 +1515,10 @@ export default function SystemStatus() {
                         size="small"
                         variant="outlined"
                         onClick={() => downloadQualityAsset(asset.id)}
-                        disabled={qualityBusy === asset.id || !asset.download_enabled}
+                        disabled={qualityBusy === asset.id || !asset.download_enabled || asset.installed}
                         startIcon={qualityBusy === asset.id ? <CircularProgress size={14} color="inherit" /> : undefined}
                       >
-                        {qualityBusy === asset.id ? 'Downloading...' : 'Download'}
+                        {qualityBusy === asset.id ? 'Downloading...' : asset.installed ? 'Present' : 'Download'}
                       </Button>
                     </Stack>
                   </Stack>
@@ -1377,11 +1527,13 @@ export default function SystemStatus() {
             </Stack>
             {qualityMessage && <Alert severity={qualityMessage.severity} sx={{ py: 0 }}>{qualityMessage.text}</Alert>}
           </Stack>
-        </Paper>}
+        </SettingsAccordion>}
 
-        {isAdmin && <Paper sx={{ p: 2 }}>
+        {isAdmin && <SettingsAccordion
+          title="Native Low-VRAM Diffusion"
+          summary={<Chip size="small" color={settingsDraft.diffusion_engine === 'native_pytorch' ? 'default' : 'primary'} label={settingsDraft.diffusion_engine === 'native_pytorch' ? 'Native PyTorch active' : settingsDraft.diffusion_engine === 'native_gguf' ? 'Native GGUF active' : 'Native INT8 active'} />}
+        >
           <Stack spacing={1.25}>
-            <Typography variant="h6">Native Low-VRAM Diffusion</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               GGUF and INT8 are loaded in-process through Krea's native sampler, Qwen conditioning, LoRA, moodboards, and the selected native VAE mode. No stable-diffusion.cpp sidecar is used.
             </Typography>
@@ -1428,18 +1580,30 @@ export default function SystemStatus() {
               Setup Native INT8
             </Button>
           </Stack>
-        </Paper>}
+        </SettingsAccordion>}
 
-        {isAdmin && <Paper sx={{ p: 2 }}>
+        <GroupLabel>Sharing &amp; Admin</GroupLabel>
+        {isAdmin && <SettingsAccordion
+          title="Users"
+          summary={<Chip size="small" label={`${users.length} account${users.length === 1 ? '' : 's'}`} />}
+        >
           <Stack spacing={1.5}>
-            <Typography variant="h6">Users</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Admins can manage sharing, settings, models, passwords, safety review, and all galleries. Users can generate normally. Child accounts generate with safety moderation and a private gallery.
+              Admins can manage sharing, settings, models, passwords, safety review, and all galleries. Users can generate normally. Child accounts generate with safety moderation and a private gallery. Only admins can see this list; the dot shows who's online (green) or generating (amber).
             </Typography>
             <Stack spacing={1}>
               {users.map(user => (
                 <Stack key={user.username} direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1}>
-                  <Typography variant="body2">{user.username}</Typography>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Tooltip title={user.active ? 'Generating now' : user.online ? 'Online (active in last 2 min)' : 'Offline'}>
+                      <Box sx={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0,
+                        bgcolor: user.active ? '#ffb300' : user.online ? '#66bb6a' : 'rgba(202,196,208,0.35)',
+                        boxShadow: user.active ? '0 0 6px #ffb300' : user.online ? '0 0 5px #66bb6a' : 'none' }} />
+                    </Tooltip>
+                    <Typography variant="body2">{user.username}</Typography>
+                    {user.active && <Chip size="small" label="working" sx={{ height: 18, fontSize: 10 }} color="warning" variant="outlined" />}
+                    {!user.active && user.online && <Chip size="small" label="online" sx={{ height: 18, fontSize: 10 }} color="success" variant="outlined" />}
+                  </Stack>
                   <Stack direction="row" spacing={1}>
                     {(['child', 'user', 'admin'] as const).map(role => (
                       <Chip
@@ -1476,12 +1640,14 @@ export default function SystemStatus() {
             </Stack>
             {userMessage && <Alert severity={userMessage.severity} sx={{ py: 0 }}>{userMessage.text}</Alert>}
           </Stack>
-        </Paper>}
+        </SettingsAccordion>}
 
-        {isAdmin && <Paper sx={{ p: 2 }}>
+        {isAdmin && <SettingsAccordion
+          title="Child Safety Review"
+          summary={<Chip size="small" color={moderationStatus?.image_classifier_available ? 'success' : 'warning'} label={moderationStatus?.image_classifier_available ? 'Classifier ready' : 'Classifier missing'} />}
+        >
           <Stack spacing={1.5}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Child Safety Review</Typography>
               <Button size="small" variant="outlined" onClick={loadModerationEvents} disabled={moderationBusy}>
                 {moderationBusy ? 'Refreshing…' : 'Refresh'}
               </Button>
@@ -1544,18 +1710,13 @@ export default function SystemStatus() {
               </Stack>
             )}
           </Stack>
-        </Paper>}
+        </SettingsAccordion>}
 
-        {isAdmin && <Paper sx={{ p: 2 }}>
+        {isAdmin && <SettingsAccordion
+          title="Tailscale Sharing"
+          summary={<Chip size="small" label={sharing?.funnel.running ? 'Sharing' : 'Stopped'} color={sharing?.funnel.running ? 'success' : 'default'} />}
+        >
           <Stack spacing={1.5}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h6">Tailscale Sharing</Typography>
-              <Chip
-                size="small"
-                label={sharing?.funnel.running ? 'Sharing' : 'Stopped'}
-                color={sharing?.funnel.running ? 'success' : 'default'}
-              />
-            </Stack>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               Public sharing always uses the `/krea` path so other Tailscale funnels can keep their own root URLs.
             </Typography>
@@ -1599,38 +1760,45 @@ export default function SystemStatus() {
               </Button>
             </Stack>
           </Stack>
-        </Paper>}
+        </SettingsAccordion>}
 
-        {report?.attention_acceleration && (
-          <Paper sx={{ p: 1.5, border: '1px solid rgba(255,255,255,0.08)' }}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-              <Typography variant="body2">Attention acceleration</Typography>
-              <Chip
-                size="small"
-                label={report.attention_acceleration.status.replace(/_/g, ' ')}
-                color={report.attention_acceleration.status === 'available_but_off' ? 'info' : 'default'}
-              />
+        {(report?.attention_acceleration || report?.variants.length) && (
+          <SettingsAccordion
+            title="Runtime Diagnostics"
+            summary={<Chip size="small" label={`${report?.variants.filter(v => v.ok).length ?? 0}/${report?.variants.length ?? 0} variants OK`} color={report?.variants.every(v => v.ok) ? 'success' : 'warning'} />}
+          >
+            <Stack spacing={1}>
+              {report?.attention_acceleration && (
+                <Paper sx={{ p: 1.5, border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                    <Typography variant="body2">Attention acceleration</Typography>
+                    <Chip
+                      size="small"
+                      label={report.attention_acceleration.status.replace(/_/g, ' ')}
+                      color={report.attention_acceleration.status === 'available_but_off' ? 'info' : 'default'}
+                    />
+                  </Stack>
+                  <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.5 }}>
+                    {report.attention_acceleration.reason}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block' }}>
+                    {report.attention_acceleration.recommendation}
+                  </Typography>
+                </Paper>
+              )}
+              {report?.variants.map(v => (
+                <Paper key={v.id} sx={{ p: 1.5, border: v.ok ? '1px solid rgba(102,187,106,0.3)' : '1px solid rgba(239,83,80,0.2)' }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography variant="body2">{v.label}</Typography>
+                    <Chip size="small" label={v.ok ? 'OK' : 'Blocked'} color={v.ok ? 'success' : 'error'} />
+                  </Stack>
+                  {v.blockers.map((b, i) => <Typography key={i} variant="caption" sx={{ color: 'error.light', display: 'block', mt: 0.5 }}>{b}</Typography>)}
+                  {v.warnings.map((w, i) => <Typography key={i} variant="caption" sx={{ color: 'warning.main', display: 'block' }}>{w}</Typography>)}
+                </Paper>
+              ))}
             </Stack>
-            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.5 }}>
-              {report.attention_acceleration.reason}
-            </Typography>
-            <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block' }}>
-              {report.attention_acceleration.recommendation}
-            </Typography>
-          </Paper>
+          </SettingsAccordion>
         )}
-
-        {/* Variants */}
-        {report?.variants.map(v => (
-          <Paper key={v.id} sx={{ p: 1.5, border: v.ok ? '1px solid rgba(102,187,106,0.3)' : '1px solid rgba(239,83,80,0.2)' }}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="body2">{v.label}</Typography>
-              <Chip size="small" label={v.ok ? 'OK' : 'Blocked'} color={v.ok ? 'success' : 'error'} />
-            </Stack>
-            {v.blockers.map((b, i) => <Typography key={i} variant="caption" sx={{ color: 'error.light', display: 'block', mt: 0.5 }}>{b}</Typography>)}
-            {v.warnings.map((w, i) => <Typography key={i} variant="caption" sx={{ color: 'warning.main', display: 'block' }}>{w}</Typography>)}
-          </Paper>
-        ))}
       </Stack>
     </Box>
   )

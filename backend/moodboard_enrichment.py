@@ -3,14 +3,18 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from PIL import Image
 
-GUIDANCE_VERSION = 1
+logger = logging.getLogger(__name__)
+
+GUIDANCE_VERSION = 2
 GuidanceMode = Literal["official", "custom", "mashup"]
+MAX_GUIDANCE_ATTEMPTS = 3
 
 
 @dataclass
@@ -28,10 +32,60 @@ SUBJECT_LOCK_TERMS = (
     "figure", "figures", "man", "woman", "men", "women", "child", "children",
     "animal", "animals", "text", "lettering", "building", "buildings",
     "architecture", "architectural", "vehicle", "vehicles", "face", "faces",
-    "subject", "subjects",
     "populated", "unpopulated", "empty scene", "empty scenes",
 )
 DESOLATION_TERMS = ("apocalyptic", "desolate", "desolation", "isolation", "solitude", "wasteland", "empty", "sparse")
+SUBJECT_STYLE_REPLACEMENTS = (
+    (
+        re.compile(r"\b(?:a|an|the)\s+(?:black and white|high-contrast|glitchy|cinematic|close-up)?\s*portrait of\s+(?:a|an|the)?\s*[^.]+", re.I),
+        "portrait-style framing for the user-requested subject",
+    ),
+    (
+        re.compile(r"\baerial\s+top-down\s+view\s+of\s+[^.]+", re.I),
+        "aerial top-down perspective with graphic scale, clean composition, and environmental texture",
+    ),
+    (
+        re.compile(r"\b(?:a|an|the)\s+(?:(?:single|lone|solitary|young|old|elderly)\s+){0,3}(?:woman|man|girl|boy|person|figure|child|kayaker|face|subject|creature|animal)\b[^.]*", re.I),
+        "the user-requested subject with the board's palette, lighting, texture, and spatial mood",
+    ),
+)
+
+# Style-typed schema (guidance_version 2): every field only describes HOW things
+# are rendered, so subject nouns are validated out before storage.
+STYLE_SCHEMA_FIELDS = (
+    ("palette", "Palette"),
+    ("lighting", "Lighting"),
+    ("medium_texture", "Medium and texture"),
+    ("composition", "Composition"),
+    ("atmosphere", "Atmosphere"),
+    ("era_or_movement", "Era or movement"),
+)
+
+# Subject nouns that must never appear in transferable style guidance.
+# Legitimate style vocabulary is carved out: "figure-ground" (design term),
+# "first/third-person" (camera framing), "children's (story)book" (genre).
+SUBJECT_VIOLATION_RE = re.compile(
+    r"\b(?:"
+    r"woman|women|man|men|girl|girls|boy|boys|(?<!first-)(?<!third-)persons?|people|human|humans|"
+    r"figures?(?!-ground)|face|faces|child|children(?!'s\s+(?:story)?book)|crowd|crowds|body|bodies|"
+    r"animal|animals|creature|creatures|kayaker|dancer|dancers|astronaut|warrior|"
+    r"portrait\s+of"
+    r")\b"
+    r"|\b(?:lone|solitary|single|isolated)\s+(?:silhouette|subject)s?\b",
+    re.I,
+)
+
+# Negative-prompt clauses that would fight image quality or the user's own
+# rendering intent (e.g. "avoid detail", "avoid photorealism") are dropped.
+NEGATIVE_QUALITY_BAN_RE = re.compile(
+    r"\b(?:"
+    r"photorealism|photorealistic|photo-realistic|realism|realistic|"
+    r"sharp|sharpness|crisp|clarity|clear|"
+    r"high[- ]resolution|resolution|"
+    r"detail|detailed|details|quality|anatomical|anatomy"
+    r")\b",
+    re.I,
+)
 
 
 def _strip_fence(text: str) -> str:
@@ -67,27 +121,6 @@ def _string_list(value: object, *, limit: int = 12) -> list[str]:
     return cleaned
 
 
-def parse_qwen_guidance_json(text: str, *, allow_catalog_metadata: bool = False) -> dict:
-    data = _json_object(text)
-    guidance = {
-        "prompt_guidance": str(data.get("prompt_guidance") or "").strip(),
-        "negative_guidance": str(data.get("negative_guidance") or "").strip(),
-        "style_axes": _string_list(data.get("style_axes")),
-        "conditioning_notes": _string_list(data.get("conditioning_notes")),
-        "source_summary": str(data.get("source_summary") or "").strip(),
-        "guidance_version": int(data.get("guidance_version") or GUIDANCE_VERSION),
-    }
-    if not guidance["prompt_guidance"]:
-        raise ValueError("Qwen guidance requires prompt_guidance.")
-
-    if allow_catalog_metadata:
-        guidance["title"] = str(data.get("title") or "").strip()
-        guidance["taste_profile"] = str(data.get("taste_profile") or "").strip()
-        guidance["keywords"] = _string_list(data.get("keywords"))
-
-    return sanitize_transferable_guidance(guidance)
-
-
 def _strip_subject_locked_negative(text: str) -> str:
     clauses = re.split(r"(?<=[.;])\s+|,\s+and\s+|,\s+or\s+", str(text or ""))
     kept: list[str] = []
@@ -96,10 +129,65 @@ def _strip_subject_locked_negative(text: str) -> str:
         # Keep style-quality clauses, remove clauses that ban subject categories.
         if any(term in low for term in SUBJECT_LOCK_TERMS):
             continue
+        # Remove clauses that ban detail/sharpness/photorealism: they degrade
+        # quality globally and fight user prompts that ask for those qualities.
+        if NEGATIVE_QUALITY_BAN_RE.search(clause):
+            continue
         cleaned = clause.strip(" ,;.")
         if cleaned:
             kept.append(cleaned)
     return ". ".join(kept)
+
+
+def find_subject_violations(guidance: dict) -> list[str]:
+    """List subject-noun leaks in style guidance, as 'field: term' strings."""
+    checks: list[tuple[str, str]] = [
+        ("prompt_guidance", str(guidance.get("prompt_guidance") or "")),
+        ("source_summary", str(guidance.get("source_summary") or "")),
+    ]
+    for key, _label in STYLE_SCHEMA_FIELDS:
+        if key in guidance:
+            checks.append((key, str(guidance.get(key) or "")))
+    for axis in guidance.get("style_axes") or []:
+        checks.append(("style_axes", str(axis)))
+    violations: list[str] = []
+    for field_name, text in checks:
+        for match in SUBJECT_VIOLATION_RE.finditer(text):
+            entry = f"{field_name}: '{match.group(0)}'"
+            if entry not in violations:
+                violations.append(entry)
+    return violations
+
+
+def sanitize_style_fragment(text: str) -> str:
+    """Sanitize a short style fragment (keyword/axis) for prompt injection.
+
+    Rewrites known subject-locked phrasings; drops the fragment entirely when a
+    subject noun survives the rewrite.
+    """
+    return _sanitize_style_axis(text)
+
+
+def _assemble_prompt_guidance(schema: dict) -> str:
+    parts: list[str] = []
+    for key, label in STYLE_SCHEMA_FIELDS:
+        value = str(schema.get(key) or "").strip().strip(".")
+        if value:
+            parts.append(f"{label}: {value}.")
+    return " ".join(parts)
+
+
+def _filtered_negative_terms(values: object) -> str:
+    kept: list[str] = []
+    for term in _string_list(values, limit=8):
+        low = term.lower()
+        if NEGATIVE_QUALITY_BAN_RE.search(term):
+            continue
+        if any(lock in low for lock in SUBJECT_LOCK_TERMS):
+            continue
+        if term not in kept:
+            kept.append(term)
+    return ", ".join(kept[:6])
 
 
 def _abstract_subject_locked_prompt(text: str) -> str:
@@ -115,7 +203,17 @@ def _abstract_subject_locked_prompt(text: str) -> str:
     result = str(text or "")
     for pattern, repl in replacements:
         result = re.sub(pattern, repl, result, flags=re.I)
+    for pattern, repl in SUBJECT_STYLE_REPLACEMENTS:
+        result = pattern.sub(repl, result)
     return result
+
+
+def _sanitize_style_axis(text: str) -> str:
+    value = _abstract_subject_locked_prompt(str(text or "")).strip()
+    low = value.lower()
+    if any(term in low for term in SUBJECT_LOCK_TERMS):
+        return ""
+    return value
 
 
 def sanitize_transferable_guidance(guidance: dict) -> dict:
@@ -128,6 +226,7 @@ def sanitize_transferable_guidance(guidance: dict) -> dict:
     cleaned = dict(guidance)
     cleaned["prompt_guidance"] = _abstract_subject_locked_prompt(str(cleaned.get("prompt_guidance") or ""))
     cleaned["negative_guidance"] = _strip_subject_locked_negative(str(cleaned.get("negative_guidance") or ""))
+    cleaned["style_axes"] = [axis for axis in (_sanitize_style_axis(axis) for axis in cleaned.get("style_axes", []) or []) if axis][:12]
     notes = _string_list(cleaned.get("conditioning_notes"))
     transfer_note = "Apply the moodboard as transferable style; do not override the user's requested subject count or content."
     if transfer_note not in notes:
@@ -157,7 +256,12 @@ def _source_block(source: MoodboardSource, index: int) -> str:
     )
 
 
-def build_moodboard_guidance_prompt(sources: list[MoodboardSource], mode: GuidanceMode) -> str:
+def build_moodboard_guidance_prompt(
+    sources: list[MoodboardSource],
+    mode: GuidanceMode,
+    *,
+    violations: list[str] | None = None,
+) -> str:
     if not sources:
         raise ValueError("At least one moodboard source is required.")
     source_text = "\n\n".join(_source_block(source, idx + 1) for idx, source in enumerate(sources))
@@ -165,25 +269,83 @@ def build_moodboard_guidance_prompt(sources: list[MoodboardSource], mode: Guidan
         "For official mode, do not output title, taste_profile, or keywords. "
         "Those official Krea catalog fields are authoritative and must not be rewritten."
         if mode == "official"
-        else "For custom or mashup mode, output title, taste_profile, and keywords when useful."
+        else "For custom or mashup mode, also include \"title\", \"taste_profile\", and \"keywords\" (style words only, no subjects)."
     )
+    retry_feedback = ""
+    if violations:
+        listed = "; ".join(violations[:8])
+        retry_feedback = (
+            "\n\nYour previous answer leaked subject matter and was rejected. "
+            f"Offending fields: {listed}. "
+            "Rewrite so no field names any subject. Describe the rendering treatment only "
+            "(e.g. instead of 'a lone figure in fog' write 'heavy fog with a single strong "
+            "backlit contrast point').\n"
+        )
     return (
-        "You are the local Krea 2 moodboard implementation model. Convert moodboard ingredients into "
-        "generation-ready guidance for the local Krea/Qwen conditioning pipeline.\n\n"
-        "Your job is to extract a transferable visual style, not recreate the example images. "
-        "Do not describe the source image subject, people-count, exact object count, exact pose, or fixed composition "
-        "unless the board is explicitly about that reusable composition style. The guidance must work if the user prompt "
-        "asks for many people, no people, a product shot, an animal, architecture, text, or an abstract scene. "
-        "Describe palette, lighting, lens/material texture, contrast, rendering medium, atmosphere, era, and composition tendencies as optional style pressure. "
-        "Use phrases like 'apply this palette/lighting/texture' instead of 'show a lone figure'. "
-        "Negative guidance must avoid off-style rendering qualities, not forbid valid user subjects such as crowds unless the style truly requires emptiness.\n\n"
-        f"Mode: {mode}\n"
-        f"{metadata_rule}\n\n"
-        "Return strict JSON only. Required keys: prompt_guidance, negative_guidance, style_axes, "
-        "conditioning_notes, source_summary. In custom/mashup mode also include title, taste_profile, "
-        "and keywords.\n\n"
+        "You are the Krea 2 moodboard style analyst. Distill a transferable visual style from the "
+        "moodboard sources so it can be applied to any user-requested subject.\n\n"
+        "Hard rules:\n"
+        "- Do not describe the source image subject, people-count, exact object count, exact pose, or fixed scene content. "
+        "Never mention people, figures, faces, bodies, animals, creatures, vehicles, buildings, or any specific object from the source images.\n"
+        "- Describe only HOW things are rendered, never WHAT is depicted. The guidance must work whether the user asks for "
+        "many people, no people, a product shot, an animal, architecture, text, or an abstract scene.\n"
+        "- If the sources share a compositional habit (strong silhouette lighting, centered framing, heavy negative space), "
+        "phrase it as a treatment applied to whatever subject the user requests.\n\n"
+        "Return strict JSON only with exactly these keys:\n"
+        "  \"palette\": dominant colors and how they interact (one sentence)\n"
+        "  \"lighting\": light quality, direction, and contrast behavior (one sentence)\n"
+        "  \"medium_texture\": rendering medium, grain, surface texture, lens or film character (one sentence)\n"
+        "  \"composition\": framing tendencies, negative space, scale, depth treatment, subject-agnostic (one sentence)\n"
+        "  \"atmosphere\": mood and emotional tone as adjectives (one sentence)\n"
+        "  \"era_or_movement\": art-historical era, movement, or genre reference (short phrase, or \"\")\n"
+        "  \"style_axes\": 5-8 short style tags (palette/lighting/texture/mood terms only, no subjects)\n"
+        "  \"negative_style_terms\": 3-6 rendering qualities that would break this style. Never ban subjects, "
+        "and never ban detail, sharpness, resolution, or overall image quality.\n"
+        "  \"source_summary\": one sentence describing the shared aesthetic without naming any subject\n"
+        f"{metadata_rule}\n"
+        f"{retry_feedback}\n"
+        f"Mode: {mode}\n\n"
         f"{source_text}"
     )
+
+
+def parse_style_schema_json(text: str, *, allow_catalog_metadata: bool = False) -> dict:
+    """Parse the v2 style-typed schema and assemble the stored guidance dict.
+
+    Accepts legacy prompt_guidance-shaped output as a fallback so a model that
+    ignores the schema still produces usable (sanitized) guidance.
+    """
+    data = _json_object(text)
+    has_schema = any(str(data.get(key) or "").strip() for key, _label in STYLE_SCHEMA_FIELDS)
+    if has_schema:
+        guidance = {
+            "prompt_guidance": _assemble_prompt_guidance(data),
+            "negative_guidance": _filtered_negative_terms(data.get("negative_style_terms")),
+            "style_axes": _string_list(data.get("style_axes")),
+            "conditioning_notes": _string_list(data.get("conditioning_notes")),
+            "source_summary": str(data.get("source_summary") or "").strip(),
+            "guidance_version": GUIDANCE_VERSION,
+        }
+        if not guidance["prompt_guidance"]:
+            raise ValueError("Qwen style schema produced no usable style fields.")
+    else:
+        guidance = {
+            "prompt_guidance": str(data.get("prompt_guidance") or "").strip(),
+            "negative_guidance": str(data.get("negative_guidance") or "").strip(),
+            "style_axes": _string_list(data.get("style_axes")),
+            "conditioning_notes": _string_list(data.get("conditioning_notes")),
+            "source_summary": str(data.get("source_summary") or "").strip(),
+            "guidance_version": GUIDANCE_VERSION,
+        }
+        if not guidance["prompt_guidance"]:
+            raise ValueError("Qwen guidance requires prompt_guidance.")
+
+    if allow_catalog_metadata:
+        guidance["title"] = str(data.get("title") or "").strip()
+        guidance["taste_profile"] = str(data.get("taste_profile") or "").strip()
+        guidance["keywords"] = _string_list(data.get("keywords"))
+
+    return guidance
 
 
 def _fallback_guidance(sources: list[MoodboardSource], mode: GuidanceMode) -> dict:
@@ -208,7 +370,7 @@ def _fallback_guidance(sources: list[MoodboardSource], mode: GuidanceMode) -> di
         prompt_guidance = "Use the uploaded moodboard references as visual style, palette, lighting, and texture guidance."
     guidance = {
         "prompt_guidance": prompt_guidance,
-        "negative_guidance": "Avoid generic styling, mismatched lighting, visual clutter, and off-theme details.",
+        "negative_guidance": "Avoid generic styling, mismatched lighting, and visual clutter.",
         "style_axes": keywords[:12] or ["moodboard style", "palette", "lighting", "texture"],
         "conditioning_notes": [
             "Use reference images for palette, lighting, surface texture, and composition mood.",
@@ -226,41 +388,67 @@ def _fallback_guidance(sources: list[MoodboardSource], mode: GuidanceMode) -> di
 
 
 def _local_qwen_generate(prompt: str, image_b64s: list[str]) -> str:
-    from prompt_expander import _LOCAL_QWEN_LOCK, _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen, _strip_data_url
+    from prompt_expander import _LOCAL_QWEN_LOCK, _decode_generation, _generation_kwargs, _input_ids, _load_local_qwen, _strip_data_url, unload_local_qwen_after_use
 
-    with _LOCAL_QWEN_LOCK:
-        tokenizer, processor, model = _load_local_qwen()
-        device = getattr(model, "device", "cpu")
-        if image_b64s and processor is not None:
-            images = [
-                Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")
-                for image_b64 in image_b64s[:10]
-            ]
-            pads = "".join("<|vision_start|><|image_pad|><|vision_end|>" for _ in images)
-            inputs = processor(
-                text=[f"<|im_start|>user\n{pads}{prompt}<|im_end|>\n<|im_start|>assistant\n"],
-                images=images,
-                return_tensors="pt",
-            ).to(device)
+    tokenizer = processor = model = inputs = outputs = None
+    images = []
+    try:
+        with _LOCAL_QWEN_LOCK:
+            tokenizer, processor, model = _load_local_qwen()
+            device = getattr(model, "device", "cpu")
+            if image_b64s and processor is not None:
+                images = [
+                    Image.open(io.BytesIO(base64.b64decode(_strip_data_url(image_b64)))).convert("RGB")
+                    for image_b64 in image_b64s[:10]
+                ]
+                pads = "".join("<|vision_start|><|image_pad|><|vision_end|>" for _ in images)
+                inputs = processor(
+                    text=[f"<|im_start|>user\n{pads}{prompt}<|im_end|>\n<|im_start|>assistant\n"],
+                    images=images,
+                    return_tensors="pt",
+                ).to(device)
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=900,
+                    do_sample=True,
+                    temperature=0.45,
+                    eos_token_id=getattr(tokenizer, "eos_token_id", None),
+                )
+                return _decode_generation(tokenizer, outputs, inputs.get("input_ids") if isinstance(inputs, dict) else None)
+
+            messages = [{"role": "user", "content": prompt}]
+            inputs = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(device)
             outputs = model.generate(
-                **inputs,
+                **_generation_kwargs(inputs),
                 max_new_tokens=900,
                 do_sample=True,
                 temperature=0.45,
                 eos_token_id=getattr(tokenizer, "eos_token_id", None),
             )
-            return _decode_generation(tokenizer, outputs, inputs.get("input_ids") if isinstance(inputs, dict) else None)
+            return _decode_generation(tokenizer, outputs, _input_ids(inputs))
+    finally:
+        del tokenizer, processor, model, inputs, outputs, images
+        unload_local_qwen_after_use()
 
-        messages = [{"role": "user", "content": prompt}]
-        inputs = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(device)
-        outputs = model.generate(
-            **_generation_kwargs(inputs),
-            max_new_tokens=900,
-            do_sample=True,
-            temperature=0.45,
-            eos_token_id=getattr(tokenizer, "eos_token_id", None),
-        )
-        return _decode_generation(tokenizer, outputs, _input_ids(inputs))
+
+def _comfy_qwen_generate(prompt: str, image_b64s: list[str]) -> str:
+    from comfy_qwen_vl import enrich_images_comfy
+
+    return enrich_images_comfy(image_b64s or [], prompt)
+
+
+def _qwen_generate(prompt: str, image_b64s: list[str]) -> str:
+    """Comfy QwenVL by default; Transformers fallback when Comfy is unavailable."""
+    from settings import settings
+
+    backend = str(getattr(settings, "local_llm_backend", "comfy") or "comfy")
+    if backend == "transformers":
+        return _local_qwen_generate(prompt, image_b64s)
+    try:
+        return _comfy_qwen_generate(prompt, image_b64s)
+    except Exception as exc:
+        logger.warning("Comfy QwenVL moodboard enrich failed; falling back to Transformers: %s", exc)
+        return _local_qwen_generate(prompt, image_b64s)
 
 
 def generate_moodboard_guidance(
@@ -271,14 +459,39 @@ def generate_moodboard_guidance(
 ) -> dict:
     if mode not in {"official", "custom", "mashup"}:
         raise ValueError("Unknown moodboard guidance mode.")
-    prompt = build_moodboard_guidance_prompt(sources, mode)
+    generate = generator or _qwen_generate
+    allow_metadata = mode in {"custom", "mashup"}
     images: list[str] = []
     for source in sources:
         images.extend([image for image in source.image_b64s if image])
-    response = (generator or _local_qwen_generate)(prompt, images[:10])
-    try:
-        guidance = parse_qwen_guidance_json(response, allow_catalog_metadata=mode in {"custom", "mashup"})
-        guidance.setdefault("guidance_backend", "qwen")
-        return guidance
-    except ValueError:
-        return _fallback_guidance(sources, mode)
+    images = images[:10]
+
+    best: dict | None = None
+    violations: list[str] = []
+    for attempt in range(MAX_GUIDANCE_ATTEMPTS):
+        prompt = build_moodboard_guidance_prompt(sources, mode, violations=violations or None)
+        response = generate(prompt, images)
+        try:
+            guidance = parse_style_schema_json(response, allow_catalog_metadata=allow_metadata)
+        except ValueError:
+            continue
+        best = guidance
+        violations = find_subject_violations(guidance)
+        if not violations:
+            cleaned = sanitize_transferable_guidance(guidance)
+            cleaned.setdefault("guidance_backend", "qwen")
+            return cleaned
+        logger.info(
+            "Moodboard guidance attempt %d leaked subjects (%s); %s",
+            attempt + 1,
+            "; ".join(violations[:4]),
+            "retrying" if attempt + 1 < MAX_GUIDANCE_ATTEMPTS else "falling back to regex sanitization",
+        )
+
+    if best is not None:
+        # Retries exhausted: keep the best structured output, scrubbed by the
+        # regex sanitizer (which also drops subject-locked style axes).
+        cleaned = sanitize_transferable_guidance(best)
+        cleaned.setdefault("guidance_backend", "qwen")
+        return cleaned
+    return _fallback_guidance(sources, mode)

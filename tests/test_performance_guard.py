@@ -10,7 +10,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from krea2.performance_guard import attention_acceleration_diagnostic  # noqa: E402
+from performance_guard import attention_acceleration_diagnostic  # noqa: E402
 
 
 class PerformanceGuardTests(unittest.TestCase):

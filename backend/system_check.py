@@ -191,7 +191,7 @@ def get_gpu_process_details() -> list[dict[str, Any]]:
 
 
 def get_system_report() -> dict[str, Any]:
-    from krea2.performance_guard import attention_acceleration_diagnostic
+    from performance_guard import attention_acceleration_diagnostic
     from gpu_caps import assess_runnability, detect_gpu_capabilities
     from resource_manager import recommend_defaults
     from settings import settings, MODELS_DIR

@@ -23,7 +23,8 @@ class AppSettings(BaseSettings):
     logs_dir: str = str(BASE_DIR / "logs")
     db_path: str = str(BASE_DIR / "app.db")
     prompt_expander_backend: str = "local"  # local | openrouter | ideogram-json
-    local_llm_backend: str = "transformers"  # transformers | gguf_server
+    local_llm_backend: str = "comfy"  # comfy | transformers | gguf_server
+    comfy_qwen_model: str = "2b"  # 2b | 4b | exact ComfyUI-QwenVL model_name (helpers only)
     local_qwen_model_id: str = ""  # optional Transformers repo/path override for local prompt expansion
     local_qwen_device: str = "auto"  # auto | cuda | cpu; auto avoids CUDA when VRAM is tight
     gguf_helper_base_url: str = "http://127.0.0.1:1234/v1"
@@ -48,6 +49,7 @@ class AppSettings(BaseSettings):
     krea2_moodboard_auto_enrich: bool = True  # background-precompute Qwen guidance for official moodboards when idle
     krea2_torch_compile: bool = False  # opt-in: torch.compile the DiT (experimental; needs Triton/inductor)
     krea_attention_backend: str = "sdpa"  # sdpa | sage
+    seedvr2_model: str = "3b"  # 3b (fast fp8 default) | 7b (best-quality fp16, needs block-swap)
 
     class Config:
         env_file = str(BASE_DIR / ".env")
@@ -72,8 +74,12 @@ _AUTO_RAW_CANDIDATES = [
     _KREA2_DIR / "diffusion_models" / "krea2_raw_fp8_scaled.safetensors",
 ]
 _AUTO_TURBO_INT8_CANDIDATES = [
+    _KREA2_DIR / "kreamania_v2-int8-convrot.safetensors",
+    _KREA2_DIR / "diffusion_models" / "kreamania_v2-int8-convrot.safetensors",
     _KREA2_DIR / "krea2_turbo_int8_convrot.safetensors",
     _KREA2_DIR / "diffusion_models" / "krea2_turbo_int8_convrot.safetensors",
+    _KREA2_DIR / "kreamania_v3-int8-convrot-simple.safetensors",
+    _KREA2_DIR / "diffusion_models" / "kreamania_v3-int8-convrot-simple.safetensors",
 ]
 _AUTO_RAW_INT8_CANDIDATES = [
     _KREA2_DIR / "krea2_raw_int8_convrot.safetensors",

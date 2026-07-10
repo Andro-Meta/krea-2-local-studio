@@ -10,89 +10,64 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from generation_queue import GenerationQueue  # noqa: E402
 
-class GenerationQueueTests(unittest.TestCase):
-    def test_safe_batch_children_use_single_images_and_seed_offsets(self) -> None:
-        from main import build_safe_batch_children
-        from schemas import GenerationRequest
 
-        req = GenerationRequest(
-            prompt="a crystal forest",
-            num_images=3,
-            seed=100,
-            batch_mode="safe_queue",
-        )
+class GenerationQueueCancelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_queued_job_is_dequeued(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
 
-        children = build_safe_batch_children(req)
+        async def handler(job_id, _payload):
+            started.set()
+            await release.wait()
 
-        self.assertEqual([child.num_images for child in children], [1, 1, 1])
-        self.assertEqual([child.seed for child in children], [100, 101, 102])
-        self.assertEqual([child.batch_mode for child in children], ["safe_queue", "safe_queue", "safe_queue"])
-        self.assertEqual([child.parallel_batch_confirmed for child in children], [False, False, False])
+        q = GenerationQueue(handler)
+        worker = asyncio.create_task(q.run())
+        q.enqueue("a", {}, username=None, role="user")
+        q.enqueue("b", {}, username=None, role="user")
+        await asyncio.wait_for(started.wait(), timeout=2)  # 'a' is running, 'b' queued
 
-    def test_runs_jobs_in_fifo_order_and_updates_positions(self) -> None:
-        from generation_queue import GenerationQueue
+        # 'b' is still queued -> dequeued cleanly.
+        self.assertEqual(q.request_cancel("b"), "dequeued")
+        self.assertEqual(q.status("b")["status"], "cancelled")
 
-        async def run() -> None:
-            order: list[str] = []
-            started = asyncio.Event()
-            release_first = asyncio.Event()
+        release.set()
+        await asyncio.wait_for(q.join(), timeout=2)
+        self.assertEqual(q.status("a")["status"], "done")
+        worker.cancel()
 
-            async def handler(job_id: str, _payload: object) -> None:
-                order.append(job_id)
-                if job_id == "job1":
-                    started.set()
-                    await release_first.wait()
+    async def test_cancel_running_job_flags_interrupt_and_marks_cancelled(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
 
-            queue = GenerationQueue(handler)
-            queue.enqueue("job1", object(), username="a", role="user")
-            queue.enqueue("job2", object(), username="b", role="user")
-            queue.enqueue("job3", object(), username="c", role="child")
-            worker = asyncio.create_task(queue.run())
-            await started.wait()
+        async def handler(job_id, _payload):
+            started.set()
+            await release.wait()
+            # Simulate ComfyUI interruption surfacing as an exception.
+            raise RuntimeError("ComfyUI execution was interrupted.")
 
-            self.assertEqual(queue.status("job1")["status"], "running")
-            self.assertEqual(queue.status("job2")["queue_position"], 1)
-            self.assertEqual(queue.status("job3")["queue_position"], 2)
+        q = GenerationQueue(handler)
+        worker = asyncio.create_task(q.run())
+        q.enqueue("a", {}, username=None, role="user")
+        await asyncio.wait_for(started.wait(), timeout=2)
 
-            release_first.set()
-            await asyncio.wait_for(queue.join(), timeout=2)
-            worker.cancel()
+        self.assertEqual(q.request_cancel("a"), "interrupt")
+        self.assertTrue(q.cancel_requested("a"))
 
-            self.assertEqual(order, ["job1", "job2", "job3"])
-            self.assertEqual(queue.status("job1")["status"], "done")
-            self.assertEqual(queue.status("job2")["status"], "done")
-            self.assertEqual(queue.status("job3")["status"], "done")
+        release.set()
+        await asyncio.wait_for(q.join(), timeout=2)
+        # Interrupted running job is cancelled, not error.
+        self.assertEqual(q.status("a")["status"], "cancelled")
+        self.assertFalse(q.cancel_requested("a"))  # flag cleared after finish
+        worker.cancel()
 
-        asyncio.run(run())
+    async def test_request_cancel_unknown_job(self):
+        async def handler(job_id, _payload):
+            return None
 
-    def test_cancel_queued_job(self) -> None:
-        from generation_queue import GenerationQueue
-
-        async def run() -> None:
-            order: list[str] = []
-            release = asyncio.Event()
-
-            async def handler(job_id: str, _payload: object) -> None:
-                order.append(job_id)
-                if job_id == "job1":
-                    await release.wait()
-
-            queue = GenerationQueue(handler)
-            queue.enqueue("job1", object(), username="a", role="user")
-            queue.enqueue("job2", object(), username="b", role="child")
-            worker = asyncio.create_task(queue.run())
-            await asyncio.sleep(0)
-
-            self.assertTrue(queue.cancel("job2"))
-            self.assertEqual(queue.status("job2")["status"], "cancelled")
-
-            release.set()
-            await asyncio.wait_for(queue.join(), timeout=2)
-            worker.cancel()
-            self.assertEqual(order, ["job1"])
-
-        asyncio.run(run())
+        q = GenerationQueue(handler)
+        self.assertEqual(q.request_cancel("nope"), "none")
 
 
 if __name__ == "__main__":

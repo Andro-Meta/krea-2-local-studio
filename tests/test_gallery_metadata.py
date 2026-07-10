@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
@@ -14,6 +16,16 @@ if str(BACKEND) not in sys.path:
 
 
 class GalleryMetadataTests(unittest.TestCase):
+    def _write_png(self, path: Path, metadata: dict | None = None) -> None:
+        from PIL.PngImagePlugin import PngInfo
+
+        info = PngInfo()
+        if metadata:
+            import json
+
+            info.add_text("krea2_metadata", json.dumps(metadata))
+        Image.new("RGB", (32, 32), (20, 30, 40)).save(path, pnginfo=info)
+
     def test_gallery_persists_and_returns_metadata_json(self) -> None:
         import gallery
 
@@ -28,6 +40,7 @@ class GalleryMetadataTests(unittest.TestCase):
                     patch.object(gallery, "OUTPUTS_DIR", out_dir),
                 ):
                     await gallery.init_db()
+                    self._write_png(out_dir / "example.png", {"prompt": "a glass forest", "seed": 99, "steps": 8})
                     image_id = await gallery.save_image(
                         "example.png",
                         prompt="a glass forest",
@@ -86,6 +99,9 @@ class GalleryMetadataTests(unittest.TestCase):
                     patch.object(gallery, "OUTPUTS_DIR", out_dir),
                 ):
                     await gallery.init_db()
+                    self._write_png(out_dir / "alice.png")
+                    self._write_png(out_dir / "bob.png")
+                    self._write_png(out_dir / "legacy.png")
                     await gallery.save_image("alice.png", prompt="a", owner_username="alice")
                     await gallery.save_image("bob.png", prompt="b", owner_username="bob")
                     await gallery.save_image("legacy.png", prompt="legacy")
@@ -126,6 +142,54 @@ class GalleryMetadataTests(unittest.TestCase):
 
                 self.assertFalse((out_dir / "alice.png").exists())
                 self.assertTrue((out_dir / "bob.png").exists())
+
+            asyncio.run(run())
+
+    def test_gallery_discovers_files_moved_into_owner_folder(self) -> None:
+        import gallery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "app.db"
+            out_dir = Path(tmp) / "outputs"
+            alice_dir = out_dir / "alice"
+            alice_dir.mkdir(parents=True)
+            self._write_png(alice_dir / "manual.png", {"prompt": "manual import", "seed": 123, "width": 32, "height": 32})
+
+            async def run() -> None:
+                with (
+                    patch.object(gallery, "DB_PATH", db_path),
+                    patch.object(gallery, "OUTPUTS_DIR", out_dir),
+                ):
+                    await gallery.init_db()
+                    data = await gallery.get_gallery(owner_username="alice", is_admin=False)
+
+                self.assertEqual(data["total"], 1)
+                self.assertEqual(data["items"][0]["filename"], "alice/manual.png")
+                # Filesystem orphans are imported into the DB on list (no longer ephemeral).
+                self.assertFalse(data["items"][0]["filesystem_only"])
+                self.assertEqual(data["items"][0]["metadata"]["prompt"], "manual import")
+                self.assertIsNotNone(data["items"][0].get("thumbnail_b64"))
+
+            asyncio.run(run())
+
+    def test_gallery_prunes_db_rows_when_files_deleted_outside_app(self) -> None:
+        import gallery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "app.db"
+            out_dir = Path(tmp) / "outputs"
+            out_dir.mkdir()
+
+            async def run() -> None:
+                with (
+                    patch.object(gallery, "DB_PATH", db_path),
+                    patch.object(gallery, "OUTPUTS_DIR", out_dir),
+                ):
+                    await gallery.init_db()
+                    await gallery.save_image("deleted.png", prompt="gone")
+                    data = await gallery.get_gallery()
+
+                self.assertEqual(data["total"], 0)
 
             asyncio.run(run())
 

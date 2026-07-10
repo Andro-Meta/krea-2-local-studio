@@ -318,15 +318,11 @@ def _model_linear_shapes(model=None) -> dict:
         return {n: tuple(m.weight.shape) for n, m in model.named_modules()
                 if isinstance(m, torch.nn.Linear)}
     if _MODEL_SHAPES is None:
-        import os
-        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
-        from krea2.mmdit import SingleStreamDiT, SingleMMDiTConfig
-        with torch.device("meta"):
-            _m = SingleStreamDiT(SingleMMDiTConfig(
-                features=6144, tdim=256, txtdim=2560, heads=48, kvheads=12,
-                multiplier=4, layers=28, patch=2, channels=16, txtlayers=12))
-        _MODEL_SHAPES = {n: tuple(mm.weight.shape) for n, mm in _m.named_modules()
-                         if isinstance(mm, torch.nn.Linear)}
+        # The native SingleStreamDiT meta-model used to derive shapes was
+        # removed with the in-process pipeline (ComfyUI validates LoRA
+        # compatibility at graph time now). Without a live model there is
+        # nothing to compare against, so shape-based compat checks no-op.
+        _MODEL_SHAPES = {}
     return _MODEL_SHAPES
 
 

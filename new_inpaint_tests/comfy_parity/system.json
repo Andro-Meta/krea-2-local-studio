@@ -1,37 +1,85 @@
 {
   "gpu_name": "NVIDIA GeForce RTX 4090",
   "vram_total_gb": 24.0,
-  "vram_free_gb": 10.7,
+  "vram_free_gb": 9.5,
   "ram_total_gb": 31.7,
-  "ram_available_gb": 14.5,
-  "disk_free_gb": 2472.6,
-  "gpu_processes": [],
-  "gpu_process_details": [],
+  "ram_available_gb": 8.2,
+  "disk_free_gb": 2312.8,
+  "gpu_processes": [
+    "python.exe"
+  ],
+  "gpu_process_details": [
+    {
+      "pid": 11904,
+      "name": "python.exe",
+      "used_memory_gb": null
+    },
+    {
+      "pid": 35248,
+      "name": "python.exe",
+      "used_memory_gb": null
+    }
+  ],
   "models_dir": "E:\\Krea 2\\models",
   "model_status": {
     "loaded": true,
     "loading": false,
-    "checkpoint": "E:\\Krea 2\\models\\krea2\\diffusion_models\\krea2_turbo_fp8_scaled.safetensors",
-    "quantization": "fp8",
-    "auto_checkpoint": "E:\\Krea 2\\models\\krea2\\diffusion_models\\krea2_turbo_fp8_scaled.safetensors",
-    "auto_quant": "fp8",
+    "checkpoint": "comfyui",
+    "quantization": null,
+    "auto_checkpoint": "E:\\Krea 2\\models\\krea2\\diffusion_models\\krea2_turbo_int8_convrot.safetensors",
+    "auto_quant": "int8",
     "load_error": null,
-    "text_encoder_source": {
-      "kind": "hf_bf16",
-      "path": "Qwen/Qwen3-VL-4B-Instruct",
-      "runtime": "hf_bf16",
-      "status": "HF BF16 runtime"
-    },
+    "text_encoder_source": null,
     "memory": {
-      "loaded": true,
+      "loaded": false,
       "components": {
-        "dit": true,
-        "vae": true,
-        "encoder": true
+        "dit": false,
+        "vae": false,
+        "encoder": false
       },
       "conditioning_cache_size": 0,
-      "memory": "RAM 14.5GB free | VRAM 10.7/24.0GB"
-    }
+      "low_vram": {
+        "blocks_to_swap": 0,
+        "block_swap_active": false,
+        "encoder_offload": true
+      },
+      "memory": "RAM 8.2GB free | VRAM 9.5/24.0GB"
+    },
+    "backend": "comfyui",
+    "comfy_available": true
+  },
+  "attention_acceleration": {
+    "status": "unavailable",
+    "available": false,
+    "reason": "SageAttention is not installed",
+    "recommendation": "Keep the default PyTorch SDPA attention path."
+  },
+  "gpu_capabilities": {
+    "name": "NVIDIA GeForce RTX 4090",
+    "arch": "Ada Lovelace",
+    "compute_capability": "8.9",
+    "vram_total_gb": 24.0,
+    "supports_bf16": true,
+    "supports_fp16": true,
+    "supports_fp8_compute": true,
+    "supports_nvfp4": false,
+    "recommended_compute_dtype": "bf16",
+    "fp8_storage_only": false,
+    "fp8_note": "fp8 runs on tensor cores (lower VRAM and faster matmul)."
+  },
+  "recommended_runtime": {
+    "quantization": "fp8",
+    "blocks_to_swap": 19,
+    "max_tier": "2k",
+    "notes": "fp8 runs on tensor cores (lower VRAM and faster matmul)."
+  },
+  "runnability": {
+    "can_run": true,
+    "tier": "high",
+    "compute_dtype": "bf16",
+    "blocks_to_swap": 0,
+    "max_tier": "2k",
+    "reason": "NVIDIA GeForce RTX 4090 (24GB): runs fp8 with no block swap; 1K and 2K both fine."
   },
   "variants": [
     {
@@ -40,6 +88,7 @@
       "vram_gb": 20.0,
       "ram_gb": 48.0,
       "blockers": [
+        "Only 9.5GB VRAM free (need ~20GB). Close: python.exe",
         "System has 31.7GB RAM; need ~48GB"
       ],
       "warnings": [],
@@ -50,9 +99,11 @@
       "label": "Krea 2 Turbo fp8 (needs ~13 GB VRAM)",
       "vram_gb": 13.0,
       "ram_gb": 12.0,
-      "blockers": [],
+      "blockers": [
+        "Only 9.5GB VRAM free (need ~13GB). Close: python.exe"
+      ],
       "warnings": [],
-      "ok": true
+      "ok": false
     },
     {
       "id": "raw_bf16",
@@ -60,7 +111,19 @@
       "vram_gb": 20.0,
       "ram_gb": 48.0,
       "blockers": [
+        "Only 9.5GB VRAM free (need ~20GB). Close: python.exe",
         "System has 31.7GB RAM; need ~48GB"
+      ],
+      "warnings": [],
+      "ok": false
+    },
+    {
+      "id": "raw_fp8",
+      "label": "Krea 2 RAW via dynamic fp8 (runs on ~13 GB VRAM; ~32 GB RAM to stream-quantize the bf16 file). Add block swap to lower VRAM further.",
+      "vram_gb": 13.0,
+      "ram_gb": 32.0,
+      "blockers": [
+        "Only 9.5GB VRAM free (need ~13GB). Close: python.exe"
       ],
       "warnings": [],
       "ok": false
@@ -74,6 +137,8 @@
       "purpose": "Krea moodboard reference-image conditioning tensors",
       "installed": true,
       "optional": false,
+      "download_enabled": true,
+      "disabled_reason": "",
       "path": "E:\\Krea 2\\models\\local_ai\\qwen3_vl_4b_instruct",
       "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--Qwen--Qwen3-VL-4B-Instruct",
       "legacy_cache_installed": true
@@ -85,9 +150,24 @@
       "purpose": "Lower-memory Krea text conditioning asset compatible with ComfyUI Krea 2",
       "installed": false,
       "optional": true,
+      "download_enabled": true,
+      "disabled_reason": "",
       "path": "E:\\Krea 2\\models\\local_ai\\qwen3_vl_4b_fp8_krea2",
       "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--Comfy-Org--Krea-2",
       "legacy_cache_installed": false
+    },
+    {
+      "id": "qwen3_vl_abliterated",
+      "label": "Abliterated Qwen3-VL magic-wand model",
+      "repo_id": "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated",
+      "purpose": "Optional Transformers-loadable abliterated Qwen3-VL for Xperiment magic-wand prompt expansion",
+      "installed": false,
+      "optional": true,
+      "download_enabled": true,
+      "disabled_reason": "",
+      "path": "E:\\Krea 2\\models\\local_ai\\qwen3_vl_4b_abliterated",
+      "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--huihui-ai--Huihui-Qwen3-VL-4B-Instruct-abliterated",
+      "legacy_cache_installed": true
     },
     {
       "id": "qwen_image_vae",
@@ -96,6 +176,8 @@
       "purpose": "Krea image encode/decode for img2img, inpaint, and outpaint",
       "installed": true,
       "optional": false,
+      "download_enabled": true,
+      "disabled_reason": "",
       "path": "E:\\Krea 2\\models\\local_ai\\qwen_image",
       "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--Qwen--Qwen-Image",
       "legacy_cache_installed": true
@@ -107,8 +189,62 @@
       "purpose": "Optional strict masked inpaint/outpaint provider for preserve-pixel edits",
       "installed": false,
       "optional": true,
+      "download_enabled": true,
+      "disabled_reason": "",
       "path": "E:\\Krea 2\\models\\local_ai\\flux1_fill_dev",
       "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--black-forest-labs--FLUX.1-Fill-dev",
+      "legacy_cache_installed": false
+    },
+    {
+      "id": "qwen_image_edit",
+      "label": "Qwen Image Edit model family",
+      "repo_id": "Qwen/Qwen-Image-Edit",
+      "purpose": "Future optional Qwen Image Edit profile with Edit Plus conditioning",
+      "installed": false,
+      "optional": true,
+      "download_enabled": false,
+      "disabled_reason": "Loader path is not implemented yet.",
+      "path": "E:\\Krea 2\\models\\local_ai\\qwen_image_edit",
+      "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--Qwen--Qwen-Image-Edit",
+      "legacy_cache_installed": false
+    },
+    {
+      "id": "lens_turbo",
+      "label": "Lens Turbo model family",
+      "repo_id": "lens-family/placeholder",
+      "purpose": "Future optional Lens profile requiring GPT-OSS-20B text encoder and Flux2 VAE",
+      "installed": false,
+      "optional": true,
+      "download_enabled": false,
+      "disabled_reason": "Model/license layout and loader path need confirmation before download.",
+      "path": "E:\\Krea 2\\models\\local_ai\\lens_turbo",
+      "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--lens-family--placeholder",
+      "legacy_cache_installed": false
+    },
+    {
+      "id": "ernie_turbo",
+      "label": "ERNIE Turbo model family",
+      "repo_id": "ernie-family/placeholder",
+      "purpose": "Future optional ERNIE profile requiring ERNIE encoder, Flux2 VAE, and AuraFlow shift",
+      "installed": false,
+      "optional": true,
+      "download_enabled": false,
+      "disabled_reason": "Model/license layout and loader path need confirmation before download.",
+      "path": "E:\\Krea 2\\models\\local_ai\\ernie_turbo",
+      "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--ernie-family--placeholder",
+      "legacy_cache_installed": false
+    },
+    {
+      "id": "z_image_turbo",
+      "label": "Z-Image Turbo model family",
+      "repo_id": "z-image-family/placeholder",
+      "purpose": "Future optional Z-Image profile requiring Qwen3-4B encoder and ae.safetensors VAE",
+      "installed": false,
+      "optional": true,
+      "download_enabled": false,
+      "disabled_reason": "Loader path is not implemented yet.",
+      "path": "E:\\Krea 2\\models\\local_ai\\z_image_turbo",
+      "cache_dir": "E:\\Krea 2\\models\\hf\\hub\\models--z-image-family--placeholder",
       "legacy_cache_installed": false
     }
   ]

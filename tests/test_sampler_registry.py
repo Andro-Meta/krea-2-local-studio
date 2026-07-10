@@ -9,7 +9,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from krea2.sampler_registry import (  # noqa: E402
+from sampler_registry import (  # noqa: E402
     KREA_FLOW_SAMPLERS,
     SAMPLER_SPECS,
     normalize_sampler_name,

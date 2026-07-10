@@ -6,8 +6,24 @@ import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate'
 import CloseIcon from '@mui/icons-material/Close'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
+import StarIcon from '@mui/icons-material/Star'
+import StarBorderIcon from '@mui/icons-material/StarBorder'
 import { useStore } from '../../store'
-import { apiFetch, type Mood, type MoodboardItem } from '../../api'
+import { apiFetch, publicUrl, type Mood, type MoodboardItem, type MoodboardSuggestion } from '../../api'
+
+type CatalogSource = 'official' | 'andrometa' | 'favorites' | 'suggested'
+
+function moodboardPreviews(board: MoodboardItem): string[] {
+  const images = board.preview_image_urls?.length
+    ? board.preview_image_urls
+    : board.image_urls?.length ? board.image_urls : [board.primary_image_url].filter(Boolean)
+  return images.slice(0, 4)
+}
+
+function moodboardImageSrc(src: string): string {
+  if (/^(?:https?:|data:|blob:)/i.test(src)) return src
+  return publicUrl(src)
+}
 
 function moodboardErrorMessage(error: any, fallback: string) {
   const detail = error?.response?.data?.detail
@@ -28,15 +44,18 @@ interface MoodboardSectionProps {
 }
 
 export default function MoodboardSection({
-  intro = 'Search official Krea moodboards here, add one or more styles, then generate normally. Catalog boards use style guidance only by default, so they should not copy the source moodboard image layout.',
+  intro = '',
   promptValue,
   onPromptFallback,
   applyTitleToPrompt = true,
 }: MoodboardSectionProps) {
-  const { params, setParam } = useStore()
+  const { params, setParam, moodboardSuggestions } = useStore()
   const [moods, setMoods] = useState<Mood[]>([])
   const [catalogQuery, setCatalogQuery] = useState('')
+  const [catalogSource, setCatalogSource] = useState<CatalogSource>('official')
   const [catalogResults, setCatalogResults] = useState<MoodboardItem[]>([])
+  const [catalogPage, setCatalogPage] = useState(1)
+  const [catalogTotal, setCatalogTotal] = useState(0)
   const [selectedBoards, setSelectedBoards] = useState<MoodboardItem[]>([])
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [mashupLoading, setMashupLoading] = useState(false)
@@ -73,13 +92,31 @@ export default function MoodboardSection({
       .catch(() => undefined)
   }, [selectedCatalogIds, selectedBoards])
 
-  const searchCatalog = async (query = catalogQuery) => {
+  const CATALOG_PAGE_SIZE = 60
+
+  const searchCatalog = async (query = catalogQuery, src = catalogSource, page = 1, append = false) => {
+    if (src === 'suggested') {
+      setCatalogMessage(moodboardSuggestions.length ? '' : 'Use Magic Wand to suggest moodboards for your prompt.')
+      return
+    }
     setCatalogLoading(true)
-    setCatalogMessage('')
+    if (!append) setCatalogMessage('')
     try {
-      const data = await apiFetch.moodboards({ q: query, page: 1, pageSize: 12 })
-      setCatalogResults(data.items)
-      if (!data.items.length) setCatalogMessage('No catalog moodboards matched that search.')
+      const opts: { q: string; page: number; pageSize: number; favorites?: boolean; source?: 'official' | 'andrometa' } =
+        { q: query, page, pageSize: CATALOG_PAGE_SIZE }
+      if (src === 'favorites') opts.favorites = true
+      else opts.source = src
+      const data = await apiFetch.moodboards(opts)
+      setCatalogResults(prev => append ? [...prev, ...data.items] : data.items)
+      setCatalogTotal(data.total)
+      setCatalogPage(page)
+      if (!data.total) {
+        setCatalogMessage(src === 'favorites'
+          ? 'No favorited moodboards yet — tap the ☆ on any board to save it here.'
+          : 'No moodboards matched that search.')
+      } else {
+        setCatalogMessage('')
+      }
     } catch (e: any) {
       setCatalogMessage(moodboardErrorMessage(e, 'Could not search moodboards.'))
     } finally {
@@ -87,9 +124,36 @@ export default function MoodboardSection({
     }
   }
 
+  const selectSource = (src: CatalogSource) => {
+    setCatalogSource(src)
+    searchCatalog(catalogQuery, src, 1, false)
+  }
+
+  useEffect(() => {
+    if (moodboardSuggestions.length > 0) {
+      setOpen(true)
+      setCatalogSource('suggested')
+    }
+  }, [moodboardSuggestions.length])
+
+  const toggleCatalogFavorite = async (item: MoodboardItem) => {
+    const next = !item.favorite
+    try {
+      await apiFetch.setMoodboardFavorite(item.id, next)
+      if (catalogSource === 'favorites' && !next) {
+        setCatalogResults(prev => prev.filter(r => r.id !== item.id))
+        setCatalogTotal(t => Math.max(0, t - 1))
+      } else {
+        setCatalogResults(prev => prev.map(r => r.id === item.id ? { ...r, favorite: next } : r))
+      }
+    } catch (e: any) {
+      setCatalogMessage(moodboardErrorMessage(e, 'Could not update favorite.'))
+    }
+  }
+
   useEffect(() => {
     if (!open || catalogResults.length) return
-    searchCatalog('')
+    searchCatalog('', catalogSource)
     // Only auto-load a small browse set when the section is first opened.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -114,6 +178,16 @@ export default function MoodboardSection({
     } finally {
       setCatalogLoading(false)
     }
+  }
+
+  const addSuggestedMoodboard = (moodboard: MoodboardSuggestion) => {
+    const nextIds = Array.from(new Set([...params.selected_moodboard_ids, moodboard.id]))
+    const nextUuids = Array.from(new Set([
+      ...params.moodboard_uuids,
+      ...(moodboard.uuid ? [moodboard.uuid] : []),
+    ]))
+    setParam('selected_moodboard_ids', nextIds)
+    setParam('moodboard_uuids', nextUuids)
   }
 
   const removeCatalogMoodboard = (id: number) => {
@@ -183,9 +257,11 @@ export default function MoodboardSection({
 
       <Collapse in={open}>
         <Box sx={{ pt: 1 }}>
-          <Alert severity="info" sx={{ py: 0.75, mb: 1.5 }}>
-            {intro}
-          </Alert>
+          {intro && (
+            <Alert severity="info" sx={{ py: 0.75, mb: 1.5 }}>
+              {intro}
+            </Alert>
+          )}
 
           {selectedMoods.length > 0 && (
             <Box sx={{ mb: 1.5 }}>
@@ -242,43 +318,35 @@ export default function MoodboardSection({
             </Box>
           )}
 
-          {/* Mood presets, grouped by category */}
-          <Box sx={{ maxHeight: 280, overflowY: 'auto', mb: 1.5 }}>
-            {[...new Set(moods.map(m => m.category))].map(cat => (
-              <Box key={cat} sx={{ mb: 1 }}>
-                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5, fontWeight: 600 }}>
-                  {cat}
-                </Typography>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                  {moods.filter(m => m.category === cat).map(m => (
-                    <Tooltip key={m.id} arrow placement="top"
-                      title={<><b>Adds:</b> {m.keywords}<br /><b>Avoids:</b> {m.avoids}</>}>
-                      <Chip
-                        label={`${m.emoji} ${m.name}`}
-                        size="small"
-                        clickable
-                        variant={selectedIds.includes(m.id) ? 'filled' : 'outlined'}
-                        color={selectedIds.includes(m.id) ? (m.category === 'Horror' ? 'error' : 'secondary') : 'default'}
-                        onClick={() => pickMood(m.id)}
-                      />
-                    </Tooltip>
-                  ))}
-                </Box>
-              </Box>
-            ))}
-          </Box>
-
           {/* Krea catalog moodboards */}
           <Box sx={{ mb: 1.5 }}>
             <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
               <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', fontWeight: 600 }}>
-                Search Official Krea Moodboards
+                Browse Moodboards
               </Typography>
               <Typography variant="caption" sx={{ color: 'text.disabled' }}>
-                Click Add to apply. Select 2+ to mash up.
+                Click Add to apply · ☆ to favorite · 2+ to mash up.
               </Typography>
             </Stack>
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 0.75 }}>
+              {([
+                ['suggested', `Suggested${moodboardSuggestions.length ? ` (${moodboardSuggestions.length})` : ''}`],
+                ['official', 'Official Krea'],
+                ['favorites', '★ Favorites'],
+                ['andrometa', 'Andro.Meta'],
+              ] as const).map(([src, label]) => (
+                <Chip
+                  key={src}
+                  size="small"
+                  clickable
+                  label={label}
+                  variant={catalogSource === src ? 'filled' : 'outlined'}
+                  color={catalogSource === src ? 'primary' : 'default'}
+                  onClick={() => selectSource(src)}
+                />
+              ))}
+            </Stack>
+            {catalogSource !== 'suggested' && <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75}>
               <TextField
                 size="small"
                 value={catalogQuery}
@@ -290,8 +358,8 @@ export default function MoodboardSection({
               <Button variant="outlined" onClick={() => searchCatalog(catalogQuery)} disabled={catalogLoading}>
                 {catalogLoading ? <CircularProgress size={16} /> : 'Search'}
               </Button>
-            </Stack>
-            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+            </Stack>}
+            {catalogSource !== 'suggested' && <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
               {['fantasy', 'sci-fi', 'product', 'noir', 'ethereal'].map(term => (
                 <Chip
                   key={term}
@@ -305,42 +373,101 @@ export default function MoodboardSection({
                   }}
                 />
               ))}
-            </Stack>
+            </Stack>}
             {catalogMessage && (
               <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
                 {catalogMessage}
               </Typography>
             )}
-            {catalogResults.length > 0 && (
-              <Stack spacing={0.75} sx={{ mt: 1, maxHeight: 260, overflowY: 'auto' }}>
-                {catalogResults.map(result => (
-                  <Box
-                    key={result.id}
-                    sx={{
-                      border: '1px solid rgba(202,196,208,0.18)',
-                      borderRadius: 1.5,
-                      p: 1,
-                      bgcolor: selectedCatalogIds.includes(result.id) ? 'rgba(187,134,252,0.12)' : 'rgba(255,255,255,0.03)',
-                    }}
-                  >
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
-                      <Box>
-                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{result.title}</Typography>
-                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
-                          {(result.qwen_guidance?.prompt_guidance || result.taste_profile || result.keywords.join(', ')).slice(0, 160)}
-                        </Typography>
-                      </Box>
-                      <Button
-                        size="small"
-                        variant={selectedCatalogIds.includes(result.id) ? 'contained' : 'outlined'}
-                        disabled={catalogLoading}
-                        onClick={() => selectedCatalogIds.includes(result.id) ? removeCatalogMoodboard(result.id) : addCatalogMoodboard(result)}
-                      >
-                        {selectedCatalogIds.includes(result.id) ? 'Added' : 'Add'}
-                      </Button>
-                    </Stack>
-                  </Box>
-                ))}
+            {catalogSource === 'suggested' && moodboardSuggestions.length > 0 && (
+              <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
+                Suggested by Magic Wand for your current prompt. Add one or more to apply their text guidance.
+              </Typography>
+            )}
+            {((catalogSource === 'suggested' ? moodboardSuggestions : catalogResults).length > 0) && (
+              <Stack spacing={0.75} sx={{ mt: 1, maxHeight: 460, overflowY: 'auto' }}>
+                {(catalogSource === 'suggested' ? moodboardSuggestions : catalogResults).map(result => {
+                  const isSuggested = catalogSource === 'suggested'
+                  const previews = isSuggested ? ((result as MoodboardSuggestion).preview_image_urls ?? []) : moodboardPreviews(result as MoodboardItem)
+                  const description = isSuggested
+                    ? ((result as MoodboardSuggestion).reason ?? '')
+                    : ((result as MoodboardItem).taste_profile || (result as MoodboardItem).qwen_guidance?.prompt_guidance || (result as MoodboardItem).keywords.join(', '))
+                  return (
+                    <Box
+                      key={result.id}
+                      sx={{
+                        border: '1px solid rgba(202,196,208,0.18)',
+                        borderRadius: 1.5,
+                        p: 1,
+                        bgcolor: selectedCatalogIds.includes(result.id) ? 'rgba(187,134,252,0.12)' : 'rgba(255,255,255,0.03)',
+                      }}
+                    >
+                      <Stack direction="row" spacing={1}>
+                        {previews.length > 0 && (
+                          <Box sx={{
+                            flexShrink: 0, width: 62, aspectRatio: '2 / 3', borderRadius: 1, overflow: 'hidden',
+                            display: 'grid', gridTemplateColumns: previews.length > 1 ? '1fr 1fr' : '1fr',
+                            gap: '1px', bgcolor: 'background.default',
+                          }}>
+                            {previews.map((src, i) => (
+                              <Box key={i} component="img" src={moodboardImageSrc(src)} alt="" loading="lazy"
+                                sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                                onError={(e: any) => { e.target.style.visibility = 'hidden' }} />
+                            ))}
+                          </Box>
+                        )}
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={0.5}>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{result.title}</Typography>
+                            <Stack direction="row" spacing={0.25} alignItems="center" sx={{ flexShrink: 0 }}>
+                              {!isSuggested && <Tooltip title={(result as MoodboardItem).favorite ? 'Remove from favorites' : 'Save to favorites'}>
+                                <IconButton size="small" onClick={() => toggleCatalogFavorite(result as MoodboardItem)}>
+                                  {(result as MoodboardItem).favorite
+                                    ? <StarIcon fontSize="small" sx={{ color: '#f5c518' }} />
+                                    : <StarBorderIcon fontSize="small" sx={{ color: 'text.disabled' }} />}
+                                </IconButton>
+                              </Tooltip>}
+                              <Button
+                                size="small"
+                                variant={selectedCatalogIds.includes(result.id) ? 'contained' : 'outlined'}
+                                disabled={catalogLoading}
+                                onClick={() => selectedCatalogIds.includes(result.id)
+                                  ? removeCatalogMoodboard(result.id)
+                                  : isSuggested ? addSuggestedMoodboard(result as MoodboardSuggestion) : addCatalogMoodboard(result as MoodboardItem)}
+                              >
+                                {selectedCatalogIds.includes(result.id) ? 'Added' : 'Add'}
+                              </Button>
+                            </Stack>
+                          </Stack>
+                          {description && (
+                            <Typography variant="caption" sx={{ color: 'text.secondary', display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden', mt: 0.25 }}>
+                              {description}
+                            </Typography>
+                          )}
+                          {!isSuggested && (result as MoodboardItem).keywords.length > 0 && (
+                            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                              {(result as MoodboardItem).keywords.slice(0, 6).map(k => (
+                                <Chip key={k} label={k} size="small" variant="outlined" sx={{ height: 18, fontSize: 10 }} />
+                              ))}
+                            </Stack>
+                          )}
+                        </Box>
+                      </Stack>
+                    </Box>
+                  )
+                })}
+              </Stack>
+            )}
+            {catalogSource !== 'suggested' && catalogTotal > 0 && (
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 0.75 }}>
+                <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                  Showing {catalogResults.length} of {catalogTotal}
+                </Typography>
+                {catalogResults.length < catalogTotal && (
+                  <Button size="small" onClick={() => searchCatalog(catalogQuery, catalogSource, catalogPage + 1, true)} disabled={catalogLoading}>
+                    {catalogLoading ? <CircularProgress size={14} /> : 'Load more'}
+                  </Button>
+                )}
               </Stack>
             )}
           </Box>

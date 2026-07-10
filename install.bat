@@ -12,7 +12,7 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 :: -- Python check -------------------------------------------------------------
-echo [1/9] Checking Python...
+echo [1/10] Checking Python...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python not found. Install Python 3.12+ from python.org.
@@ -35,7 +35,7 @@ if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 12 (
 
 :: -- Virtual environment -------------------------------------------------------
 echo.
-echo [2/9] Creating virtual environment...
+echo [2/10] Creating virtual environment...
 if exist "venv\Scripts\activate.bat" (
     echo        venv already exists, skipping.
 ) else (
@@ -50,12 +50,12 @@ call venv\Scripts\activate.bat
 
 :: -- Upgrade pip ---------------------------------------------------------------
 echo.
-echo [3/9] Upgrading pip...
+echo [3/10] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
 :: -- PyTorch with CUDA 12.8 ----------------------------------------------------
 echo.
-echo [4/9] Installing PyTorch + CUDA 12.8 (may take several minutes)...
+echo [4/10] Installing PyTorch + CUDA 12.8 (may take several minutes)...
 python -c "import torch; assert torch.cuda.is_available(), 'CUDA is not available'; assert '+cu' in torch.__version__, torch.__version__; print(torch.__version__)" >nul 2>&1
 if not errorlevel 1 (
     for /f "tokens=*" %%t in ('python -c "import torch; print(torch.__version__)"') do echo        PyTorch %%t with CUDA already installed, skipping.
@@ -85,13 +85,13 @@ if not errorlevel 1 (
 
 :: -- Python dependencies -------------------------------------------------------
 echo.
-echo [5/9] Installing Python dependencies...
+echo [5/10] Installing Python dependencies...
 pip install -r requirements.txt --quiet
 if errorlevel 1 (
     echo WARNING: Some deps failed. Retrying core deps only...
     pip install fastapi "uvicorn[standard]" python-multipart aiosqlite aiofiles ^
         pydantic pydantic-settings requests pillow numpy einops psutil ^
-        transformers safetensors diffusers accelerate torchao --quiet
+        transformers safetensors diffusers accelerate torchao websocket-client --quiet
     if errorlevel 1 (
         echo ERROR: Python dependency installation failed.
         exit /b 1
@@ -101,7 +101,7 @@ echo        Dependencies installed.
 
 :: -- Download Krea support models ------------------------------------------------
 echo.
-echo [6/9] Downloading Krea support models for moodboards...
+echo [6/10] Downloading Krea support models for moodboards...
 echo        This prepares Qwen3-VL conditioning and Qwen-Image VAE assets.
 python scripts/download_support_models.py
 if errorlevel 1 (
@@ -110,18 +110,21 @@ if errorlevel 1 (
     echo          or use System ^> Krea Moodboard Conditioning to repair.
 )
 
-:: -- Download Krea 2 source ----------------------------------------------------
+:: -- Download default ComfyUI workflow assets ---------------------------------
 echo.
-echo [7/9] Downloading Krea 2 model source files...
-python scripts/download_krea2.py
+echo [7b/10] Downloading default ComfyUI workflow assets...
+echo        This prepares the default Turbo INT8 ConvRot graph, abliterated Krea CLIP,
+echo        Qwen VAE fallback, and filter-bypass LoRA used by the default recipe.
+python scripts/download_quality_assets.py --assets krea2_turbo_int8_convrot,qwen3vl_abliterated_fp8,qwen_image_comfy_vae,krea2_filter_bypass
 if errorlevel 1 (
-    echo ERROR: Failed to download krea2 source files.
+    echo ERROR: Failed to download one or more default ComfyUI workflow assets.
+    echo        Re-run install.bat after checking internet/Hugging Face access.
     exit /b 1
 )
 
 :: -- Node.js + Frontend build --------------------------------------------------
 echo.
-echo [8/9] Building frontend...
+echo [8/10] Building frontend...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo WARNING: Node.js not found. Skipping frontend build.
@@ -154,6 +157,19 @@ echo        Frontend skipped.
 
 :done_frontend
 
+:: -- ComfyUI image engine ------------------------------------------------------
+echo.
+echo [9/10] Setting up ComfyUI image engine (backend)...
+echo        Clones ComfyUI, creates its venv, installs PyTorch + requirements,
+echo        ComfyUI-Manager, the Krea-2 custom nodes, and extra_model_paths.yaml.
+echo        This can take several minutes on first run.
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\install_comfyui.ps1"
+if errorlevel 1 (
+    echo WARNING: ComfyUI provisioning did not complete. You can re-run install.bat,
+    echo          run scripts\install_comfyui.ps1 directly, or set KREA_USE_COMFY=0
+    echo          in .env to use the in-process native engine instead.
+)
+
 :: -- .env scaffold ------------------------------------------------------------
 if not exist ".env" (
     echo.
@@ -164,7 +180,7 @@ if not exist ".env" (
 
 :: -- Tailscale sharing helper -------------------------------------------------
 echo.
-echo [9/9] Checking Tailscale for public sharing...
+echo [10/10] Checking Tailscale for public sharing...
 where tailscale >nul 2>&1
 if errorlevel 1 (
     if exist "C:\Program Files\Tailscale\tailscale.exe" (
@@ -198,8 +214,9 @@ echo  Install complete!
 echo.
 echo  Next steps:
 echo    1. Edit .env -- set HF_TOKEN
-echo    2. Run run.bat to start public sharing
+echo    2. Run run.bat to start public sharing (also launches ComfyUI)
 echo    3. If moodboard conditioning is missing, open System ^> Krea Moodboard Conditioning
 echo    4. For local-only mode, run run.bat local
+echo    5. ComfyUI is the image engine; set KREA_USE_COMFY=0 in .env for the native engine
 echo ====================================
 echo.

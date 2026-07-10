@@ -29,7 +29,7 @@ import AddLinkIcon from '@mui/icons-material/AddLink'
 import DeleteIcon from '@mui/icons-material/Delete'
 import SaveAltIcon from '@mui/icons-material/SaveAlt'
 import { apiFetch, publicUrl, type AuthSession, type MoodboardItem } from '../../api'
-import { useStore } from '../../store'
+import { TAB, useStore } from '../../store'
 
 const PAGE_SIZE = 48
 const MAX_CUSTOM_MOODBOARD_REFS = 10
@@ -80,7 +80,7 @@ export default function MoodboardsPanel() {
   const [mashupIds, setMashupIds] = useState<number[]>([])
   const [mashupWeights, setMashupWeights] = useState<Record<number, number>>({})
   const customFileRef = useRef<HTMLInputElement>(null)
-  const { params, realtime, setParams, setTab, createMode, setCreateMode, setRealtime, moodboardView, setMoodboardView } = useStore()
+  const { params, setParams, setTab, createMode, setCreateMode, moodboardView, setMoodboardView } = useStore()
   const isAdmin = auth?.role === 'admin'
 
   const load = useCallback(async (pg = 1) => {
@@ -107,7 +107,7 @@ export default function MoodboardsPanel() {
         page: pg,
         pageSize: PAGE_SIZE,
         favorites: moodboardView === 'favorites',
-        source: moodboardView === 'custom' ? 'custom' : moodboardView === 'official' ? 'official' : undefined,
+        source: moodboardView === 'custom' ? 'custom' : moodboardView === 'official' ? 'official' : moodboardView === 'andrometa' ? 'andrometa' : undefined,
         shuffleSeed: !query.trim() && moodboardView === 'official' ? shuffleSeed : undefined,
       })
       setItems(prev => pg === 1 ? data.items : [...prev, ...data.items])
@@ -125,6 +125,24 @@ export default function MoodboardsPanel() {
   useEffect(() => { load(1) }, [load])
   useEffect(() => {
     apiFetch.authMe().then(setAuth).catch(() => setAuth(null))
+  }, [])
+
+  // Infinite scroll: when the sentinel below the grid becomes visible, fetch
+  // the next page. The Load more button stays as a manual fallback.
+  const loadMoreRef = useRef<HTMLDivElement>(null)
+  const loadNextRef = useRef<() => void>(() => {})
+  loadNextRef.current = () => {
+    if (!loading && items.length > 0 && items.length < total) load(page + 1)
+  }
+  useEffect(() => {
+    const sentinel = loadMoreRef.current
+    if (!sentinel) return
+    const observer = new IntersectionObserver(
+      entries => { if (entries.some(entry => entry.isIntersecting)) loadNextRef.current() },
+      { rootMargin: '600px' },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
   }, [])
 
   const toggleFavorite = async (board: MoodboardItem) => {
@@ -236,11 +254,11 @@ export default function MoodboardsPanel() {
     }
   }
 
-  const useMoodboard = async (board: MoodboardItem, target: 'txt2img' | 'redraw' | 'realtime' = createMode) => {
+  const useMoodboard = async (board: MoodboardItem, target: 'txt2img' | 'redraw' = createMode === 'redraw' ? 'redraw' : 'txt2img') => {
     setBusy(`Loading ${board.title}`)
     setMessage(null)
     try {
-      const basePrompt = target === 'realtime' ? realtime.prompt.trim() : params.prompt.trim()
+      const basePrompt = params.prompt.trim()
       const mode = target === 'txt2img' ? 'txt2img' : 'redraw'
       setParams({
         mode,
@@ -250,12 +268,11 @@ export default function MoodboardsPanel() {
         moodboard_uuids: board.uuid ? [board.uuid] : [],
         moodboard_strength: 0.35,
         moodboard_images: [],
-        prompt: target === 'realtime' ? params.prompt : (basePrompt || board.title),
+        prompt: basePrompt || board.title,
       })
-      if (target === 'realtime') setRealtime({ prompt: basePrompt || board.title })
       setCreateMode(target)
-      setMessage({ severity: 'success', text: `Loaded ${board.title} style guidance into ${target === 'txt2img' ? 'Create' : target === 'redraw' ? 'Redraw' : 'Realtime'}.` })
-      setTab(0)
+      setMessage({ severity: 'success', text: `Loaded ${board.title} style guidance into ${target === 'txt2img' ? 'Create' : 'Redraw'}.` })
+      setTab(TAB.CREATE)
     } catch (e: any) {
       setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not load moodboard') })
     } finally {
@@ -338,7 +355,7 @@ export default function MoodboardsPanel() {
           <Box>
             <Typography variant="h5">Moodboards</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Search public Krea moodboards, save favorites, and load enriched style guidance into Create, Redraw, or Realtime.
+              Search public Krea moodboards, save favorites, and load enriched style guidance into Create or Redraw.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -415,6 +432,7 @@ export default function MoodboardsPanel() {
           <Tabs value={moodboardView} onChange={(_, v) => setMoodboardView(v)} variant="scrollable" scrollButtons="auto" sx={{ minWidth: { xs: 0, sm: 360 }, maxWidth: '100%' }}>
             <Tab label="Official" value="official" />
             <Tab label="Favorites" value="favorites" />
+            <Tab label="Andro.Meta" value="andrometa" />
             <Tab label="Custom" value="custom" />
             <Tab label="New" value="new" />
           </Tabs>
@@ -433,7 +451,7 @@ export default function MoodboardsPanel() {
           )}
         </Stack>
 
-        {loading && page === 1 ? (
+        {loading && items.length === 0 ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
             <CircularProgress />
           </Box>
@@ -476,7 +494,9 @@ export default function MoodboardsPanel() {
                           component="img"
                           image={moodboardImageSrc(src)}
                           alt={`${board.title} reference ${index + 1}`}
+                          loading="lazy"
                           sx={{ height: '100%', minHeight: 0, objectFit: 'cover' }}
+                          onError={(e: any) => { e.target.style.visibility = 'hidden' }}
                         />
                       )) : (
                         <Box sx={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -534,9 +554,6 @@ export default function MoodboardsPanel() {
                         <Button size="small" variant="outlined" onClick={() => useMoodboard(board, 'redraw')} disabled={!!busy}>
                           Redraw
                         </Button>
-                        <Button size="small" variant="outlined" onClick={() => useMoodboard(board, 'realtime')} disabled={!!busy}>
-                          Realtime
-                        </Button>
                       </Stack>
                     </CardContent>
                   </Card>
@@ -546,6 +563,7 @@ export default function MoodboardsPanel() {
           </Grid>
         )}
 
+        <Box ref={loadMoreRef} sx={{ minHeight: 1 }} />
         {items.length < total && (
           <Box sx={{ textAlign: 'center' }}>
             <Button variant="outlined" onClick={() => load(page + 1)} disabled={loading}>

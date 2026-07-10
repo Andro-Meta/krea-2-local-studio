@@ -6,6 +6,7 @@ import base64
 import io
 import logging
 import os
+import random
 import re
 import secrets
 import subprocess
@@ -32,7 +33,9 @@ if str(_BACKEND) not in sys.path:
 from crash_reporter import archive_stale_generation_breadcrumbs, clear_generation_breadcrumb, disable_fault_logging, enable_fault_logging, stale_generation_breadcrumbs, write_generation_breadcrumb
 from gallery import delete_image, get_gallery, get_image_record_by_filename, init_db, save_image, set_favorite
 from generation_queue import GenerationQueue
-from inference import pipeline
+# Phase 1: native in-process DiT pipeline is deprecated. Keep a stub so memory /
+# system-report call sites stay intact without importing torch + krea2 at startup.
+from comfy_pipeline_stub import pipeline
 from log_setup import setup_logging
 from lora_manager import inspect_lora, list_loras
 from moodboards_catalog import (
@@ -58,10 +61,12 @@ from moodboards_catalog import (
 from prompt_expander import describe_image_local, describe_image_openrouter, expand_prompt_result, openrouter_error_hint
 from prompt_planner import plan_prompt
 from prompt_recipes import delete_recipe, list_recipes, save_recipe
+from settings_env import read_env, secret_value, write_env
 from schemas import (
     AutoMaskRequest,
     DescribeImageRequest,
     DescribeImageResponse,
+    DepthPreviewRequest,
     ExpandPromptRequest,
     ExpandPromptResponse,
     FavoriteRequest,
@@ -83,7 +88,6 @@ from schemas import (
     PromptRecipe,
     PromptRecipeListResponse,
     MoodboardItem,
-    RealtimePreviewRequest,
     SettingsUpdate,
     ShareLoginRequest,
     ShareUserCreateRequest,
@@ -93,7 +97,6 @@ from schemas import (
     UpscaleRequest,
     PreprocessorPreviewRequest,
 )
-from realtime_jobs import RealtimePreviewRegistry
 from settings import BASE_DIR, DIST_DIR, LOGS_DIR, LORAS_DIR, MODELS_DIR, OUTPUTS_DIR, settings
 from share_auth import (
     add_user,
@@ -106,6 +109,8 @@ from share_auth import (
     verify_user,
 )
 from support_models import download_support_models, support_model_status
+from comfy_config import use_comfy_backend
+from comfy_client import comfy_available, free_comfy_vram
 from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, repair_funnel, start_funnel, stop_funnel, tailscale_status, tailscale_up
 from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_lora_filename
 from system_check import get_system_report
@@ -209,6 +214,37 @@ def _request_user_role(request: Request) -> tuple[str | None, str, bool]:
     return username, role, role == "admin"
 
 
+# Last time each authenticated user was seen making a request (for admin-only
+# "who's online" presence). Updated in the auth middleware.
+_USER_LAST_SEEN: dict[str, float] = {}
+_ONLINE_WINDOW_SEC = 120.0
+
+
+def _users_with_presence() -> list[dict]:
+    """Admin-only user list augmented with online/active/last_seen. 'active' means
+    the user currently has a queued or running generation."""
+    records = list_user_records(SHARE_AUTH_FILE)
+    now = time.time()
+    active_users: set[str] = set()
+    if generation_queue is not None:
+        try:
+            for rec in generation_queue.all_statuses().values():
+                if rec.get("status") in ("queued", "running") and rec.get("username"):
+                    active_users.add(str(rec["username"]))
+        except Exception:
+            pass
+    out: list[dict] = []
+    for r in records:
+        u = str(r.get("username") or "")
+        seen = _USER_LAST_SEEN.get(u)
+        rr = dict(r)
+        rr["last_seen"] = seen
+        rr["online"] = bool(seen and (now - seen) <= _ONLINE_WINDOW_SEC)
+        rr["active"] = u in active_users
+        out.append(rr)
+    return out
+
+
 def _requires_admin(path: str, method: str) -> bool:
     if path.startswith("/api/admin/") or path.startswith("/api/sharing/") or path.startswith("/api/moderation/"):
         return True
@@ -240,6 +276,7 @@ async def share_auth_middleware(request: Request, call_next):
     user = _auth_username_from_cookie(request.cookies.get(SHARE_COOKIE))
     if user:
         request.state.share_user = user
+        _USER_LAST_SEEN[user] = time.time()
         if _requires_admin(path, request.method) and not is_admin(SHARE_AUTH_FILE, user):
             return JSONResponse({"detail": "Admin access required"}, status_code=403)
         return await call_next(request)
@@ -336,7 +373,7 @@ async def share_me(request: Request):
 
 @app.get("/api/admin/users")
 async def admin_list_users():
-    return {"users": list_user_records(SHARE_AUTH_FILE)}
+    return {"users": _users_with_presence()}
 
 
 @app.post("/api/admin/users")
@@ -345,7 +382,7 @@ async def admin_add_user(req: ShareUserCreateRequest):
         add_user(SHARE_AUTH_FILE, req.username, req.password, role=req.role)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"ok": True, "users": list_user_records(SHARE_AUTH_FILE)}
+    return {"ok": True, "users": _users_with_presence()}
 
 
 @app.put("/api/admin/users/{username}/role")
@@ -355,7 +392,7 @@ async def admin_set_user_role(username: str, req: ShareUserRoleRequest):
             raise HTTPException(404, "User not found")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"ok": True, "users": list_user_records(SHARE_AUTH_FILE)}
+    return {"ok": True, "users": _users_with_presence()}
 
 
 @app.put("/api/admin/users/{username}/password")
@@ -377,7 +414,7 @@ async def admin_remove_user(username: str):
             raise HTTPException(404, "User not found")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"ok": True, "users": list_user_records(SHARE_AUTH_FILE)}
+    return {"ok": True, "users": _users_with_presence()}
 
 
 @app.get("/api/sharing/status")
@@ -437,6 +474,47 @@ def _new_job(username: str | None = None, role: str = "admin") -> str:
     return jid
 
 
+def _job_summary(req: "GenerationRequest") -> str:
+    """Short human label for the queue list, e.g. 'RAW · 2048×2048 · Mr.Flow ×2'."""
+    try:
+        w = int(getattr(req, "width", 0) or 0)
+        h = int(getattr(req, "height", 0) or 0)
+        ck = (getattr(req, "checkpoint", "turbo") or "turbo").lower()
+        prof = (getattr(req, "model_profile", "") or "").lower()
+        is_raw = ck == "raw" or prof == "krea_raw"
+        parts = ["RAW" if is_raw else "Turbo", f"{w}×{h}"]
+        if bool(getattr(req, "god_mode", False)):
+            parts.append("God Mode ✨→4K")
+        elif bool(getattr(req, "mrflow", False)):
+            parts.append("Mr.Flow ×4" if getattr(req, "mrflow_upscaler", "") == "remacri_x4" else "Mr.Flow ×2")
+        elif is_raw and max(w, h) >= 2560:
+            parts.append("SeedVR2→4K")
+        mode = (getattr(req, "mode", "txt2img") or "txt2img").lower()
+        if mode not in ("txt2img", "redraw"):
+            parts.append(mode)
+        if bool(getattr(req, "depth_control", False)):
+            parts.append("depth")
+        n = int(getattr(req, "num_images", 1) or 1)
+        if n > 1:
+            parts.append(f"×{n}")
+        return " · ".join(parts)
+    except Exception:
+        return ""
+
+
+def _job_thumb(data_url: str, size: int = 160) -> str:
+    """Small JPEG data URL for the queue list (computed once, cached on the job)."""
+    try:
+        raw = base64.b64decode((data_url or "").split(",")[-1])
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        im.thumbnail((size, size))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=70)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return ""
+
+
 def build_safe_batch_children(req: GenerationRequest) -> list[GenerationRequest]:
     count = max(1, int(getattr(req, "num_images", 1) or 1))
     base_seed = int(getattr(req, "seed", -1))
@@ -450,6 +528,40 @@ def build_safe_batch_children(req: GenerationRequest) -> list[GenerationRequest]
         child.batch_mode = "safe_queue"
         child.parallel_batch_confirmed = False
         children.append(child)
+    return children
+
+
+def int8_batch_eligible(req: GenerationRequest) -> bool:
+    """The 'batch all Turbo INT8 models' sweep only makes sense for a Turbo INT8
+    ConvRot config (the only path where turbo_int8_variant swaps the checkpoint)."""
+    if not bool(getattr(req, "batch_int8_all", False)):
+        return False
+    checkpoint = str(getattr(req, "checkpoint", "") or "").lower()
+    quant = str(getattr(req, "quantization", "") or "").lower()
+    return checkpoint == "turbo" and "int8" in quant
+
+
+def build_int8_variant_children(req: GenerationRequest) -> list[GenerationRequest]:
+    """Fan the request out across every Turbo INT8 ConvRot checkpoint. Produces
+    ``num_images`` copies per variant, all sharing the same base seed so image N
+    is directly comparable across models (same settings, only the checkpoint swaps)."""
+    from comfy_workflows import _TURBO_INT8_VARIANTS
+    variants = list(_TURBO_INT8_VARIANTS.keys())
+    count = max(1, int(getattr(req, "num_images", 1) or 1))
+    base_seed = int(getattr(req, "seed", -1))
+    if base_seed < 0:
+        base_seed = secrets.randbelow(2**31 - 1)
+    children: list[GenerationRequest] = []
+    for variant in variants:
+        for index in range(count):
+            child = req.model_copy(deep=True)
+            child.num_images = 1
+            child.seed = base_seed + index
+            child.batch_mode = "safe_queue"
+            child.parallel_batch_confirmed = False
+            child.turbo_int8_variant = variant
+            child.batch_int8_all = False  # children are concrete single renders
+            children.append(child)
     return children
 
 
@@ -478,6 +590,44 @@ def _refresh_parent_batch_job(parent_job_id: str) -> dict | None:
     else:
         parent["status"] = "queued" if any(child and child.get("status") == "queued" for child in children) else "running"
     return parent
+
+
+async def _enqueue_batch_children(job_id: str, children: list[GenerationRequest], batch_meta: dict,
+                                  username: str | None, role: str | None) -> dict:
+    """Enqueue a list of single-image child requests under a parent batch job and
+    return the parent queue payload. Shared by safe-queue and INT8-sweep batches."""
+    parent_job = _jobs[job_id]
+    parent_job["status"] = "queued"
+    parent_job["batch"] = batch_meta
+    child_job_ids: list[str] = []
+    child_positions: list[int | None] = []
+    for index, child_req in enumerate(children):
+        child_job_id = _new_job(username=username, role=role)
+        child_job = _jobs[child_job_id]
+        child_job["parent_job_id"] = job_id
+        child_job["batch_index"] = index
+        child_job["batch_count"] = len(children)
+        queue_state = generation_queue.enqueue(
+            child_job_id,
+            {"req": child_req, "username": username, "role": role, "parent_job_id": job_id, "batch_index": index},
+            username=username,
+            role=role,
+        )
+        child_job_ids.append(child_job_id)
+        child_positions.append(queue_state.get("queue_position"))
+    parent_job["child_job_ids"] = child_job_ids
+    parent_job["queue_position"] = min((pos for pos in child_positions if pos is not None), default=None)
+    parent_job["queue_length"] = max((pos for pos in child_positions if pos is not None), default=len(child_job_ids))
+    _sync_queue_state_to_jobs()
+    await ws_manager.broadcast(job_id, {"type": "queue", **parent_job})
+    return {
+        "job_id": job_id,
+        "batch_id": job_id,
+        "child_job_ids": child_job_ids,
+        "status": "queued",
+        "queue_position": parent_job.get("queue_position"),
+        "queue_length": parent_job.get("queue_length"),
+    }
 
 
 def _sync_queue_state_to_jobs() -> None:
@@ -544,7 +694,6 @@ class WSManager:
 
 
 ws_manager = WSManager()
-realtime_previews = RealtimePreviewRegistry(max_jobs=64)
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -576,10 +725,16 @@ async def startup():
         asyncio.create_task(_sync_krea_moodboards())
     asyncio.create_task(_moodboard_sync_loop())
     asyncio.create_task(_moodboard_enrich_loop())
-    # Auto-load model if configured
-    cp = settings.krea2_auto_checkpoint or settings.krea2_turbo_path
-    if cp and Path(cp).exists():
-        asyncio.create_task(_auto_load_model(cp, settings.krea2_auto_quant, settings.krea2_blocks_to_swap))
+    # Auto-load model if configured. Skipped when the ComfyUI backend is active:
+    # ComfyUI owns the diffusion weights, so loading them in-process too would
+    # double VRAM use and starve ComfyUI.
+    if use_comfy_backend():
+        logger.info("ComfyUI backend active; skipping in-process native model auto-load. Comfy at %s available=%s",
+                    os.environ.get("KREA_COMFY_URL", "http://127.0.0.1:8188"), comfy_available())
+    else:
+        cp = settings.krea2_auto_checkpoint or settings.krea2_turbo_path
+        if cp and Path(cp).exists():
+            asyncio.create_task(_auto_load_model(cp, settings.krea2_auto_quant, settings.krea2_blocks_to_swap))
 
 
 @app.on_event("shutdown")
@@ -684,10 +839,10 @@ async def generate(req: GenerationRequest, request: Request):
         result = expand_prompt_result(
             req.prompt,
             backend=helper_backend,
-            openrouter_api_key=settings.openrouter_api_key,
+            openrouter_api_key=_secret_value("OPENROUTER_API_KEY", "openrouter_api_key"),
             openrouter_model=settings.openrouter_model,
             openrouter_free_only=settings.openrouter_free_only,
-            ideogram_api_key=settings.ideogram_api_key,
+            ideogram_api_key=_secret_value("IDEOGRAM_API_KEY", "ideogram_api_key"),
             gguf_helper_base_url=settings.gguf_helper_base_url,
             gguf_helper_model=settings.gguf_helper_model,
             gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
@@ -698,6 +853,7 @@ async def generate(req: GenerationRequest, request: Request):
 
     username, role, _is_admin = _request_user_role(request)
     job_id = _new_job(username=username, role=role)
+    _jobs[job_id]["summary"] = _job_summary(req)
 
     decision = moderate_prompt(req.prompt, req.negative_prompt, role=role)
     if not decision.allowed:
@@ -722,6 +878,10 @@ async def generate(req: GenerationRequest, request: Request):
 
     if generation_queue is None:
         raise HTTPException(503, "Generation queue is not ready yet.")
+    # 4K (or any >=2560px) is too heavy to batch on a 24GB card: force a single
+    # image regardless of what the client sent (defensive; the UI also clamps this).
+    if max(int(req.width or 0), int(req.height or 0)) >= 2560:
+        req.num_images = 1
     if req.batch_mode == "parallel" and int(req.num_images or 1) > 1:
         from resource_manager import plan_parallel_batch
         from system_check import get_gpu_info
@@ -740,39 +900,19 @@ async def generate(req: GenerationRequest, request: Request):
         if not parallel_plan["allowed"] or not req.parallel_batch_confirmed:
             req.batch_mode = "safe_queue"
             req.parallel_batch_confirmed = False
+    if int8_batch_eligible(req):
+        children = build_int8_variant_children(req)
+        return await _enqueue_batch_children(
+            job_id, children,
+            {"mode": "safe_queue", "count": len(children), "parallel": False, "int8_variants": True},
+            username, role,
+        )
     if req.batch_mode == "safe_queue" and int(req.num_images or 1) > 1:
-        parent_job = _jobs[job_id]
-        parent_job["status"] = "queued"
-        parent_job["batch"] = {"mode": "safe_queue", "count": int(req.num_images), "parallel": False}
-        child_job_ids: list[str] = []
-        child_positions: list[int | None] = []
-        for index, child_req in enumerate(build_safe_batch_children(req)):
-            child_job_id = _new_job(username=username, role=role)
-            child_job = _jobs[child_job_id]
-            child_job["parent_job_id"] = job_id
-            child_job["batch_index"] = index
-            child_job["batch_count"] = int(req.num_images)
-            queue_state = generation_queue.enqueue(
-                child_job_id,
-                {"req": child_req, "username": username, "role": role, "parent_job_id": job_id, "batch_index": index},
-                username=username,
-                role=role,
-            )
-            child_job_ids.append(child_job_id)
-            child_positions.append(queue_state.get("queue_position"))
-        parent_job["child_job_ids"] = child_job_ids
-        parent_job["queue_position"] = min((pos for pos in child_positions if pos is not None), default=None)
-        parent_job["queue_length"] = max((pos for pos in child_positions if pos is not None), default=len(child_job_ids))
-        _sync_queue_state_to_jobs()
-        await ws_manager.broadcast(job_id, {"type": "queue", **parent_job})
-        return {
-            "job_id": job_id,
-            "batch_id": job_id,
-            "child_job_ids": child_job_ids,
-            "status": "queued",
-            "queue_position": parent_job.get("queue_position"),
-            "queue_length": parent_job.get("queue_length"),
-        }
+        return await _enqueue_batch_children(
+            job_id, build_safe_batch_children(req),
+            {"mode": "safe_queue", "count": int(req.num_images), "parallel": False},
+            username, role,
+        )
     queue_state = generation_queue.enqueue(job_id, {"req": req, "username": username, "role": role}, username=username, role=role)
     _sync_queue_state_to_jobs()
     job = _jobs[job_id]
@@ -783,15 +923,6 @@ async def generate(req: GenerationRequest, request: Request):
         "queue_position": queue_state.get("queue_position"),
         "queue_length": queue_state.get("queue_length"),
     }
-
-
-def _fit_preview_dimensions(width: int, height: int, max_side: int = 512) -> tuple[int, int]:
-    width = max(64, int(width or max_side))
-    height = max(64, int(height or max_side))
-    scale = min(max_side / max(width, height), 1.0)
-    w = max(64, int(width * scale))
-    h = max(64, int(height * scale))
-    return max(64, round(w / 16) * 16), max(64, round(h / 16) * 16)
 
 
 def _job_images_from_b64(results: list[str]) -> list[Image.Image]:
@@ -816,7 +947,7 @@ def _quarantine_output_files(filenames: list[str], job_id: str) -> str | None:
         src = OUTPUTS_DIR / safe_source
         if not src.exists():
             continue
-        dst_name = f"{job_id}_{filename}"
+        dst_name = f"{job_id}_{Path(safe_source).name}"
         safe_dest = _safe_served_filename(dst_name)
         if safe_dest is None:
             continue
@@ -827,99 +958,16 @@ def _quarantine_output_files(filenames: list[str], job_id: str) -> str | None:
 
 
 def _safe_served_filename(filename: str) -> str | None:
-    safe_name = Path(str(filename or "")).name
-    if safe_name != filename or not SAFE_SERVED_FILENAME_RE.fullmatch(safe_name):
+    """Validate a served output path. Allows a flat name (legacy) or one per-user
+    subfolder level (username/name). Rejects traversal and deeper nesting."""
+    raw = str(filename or "").replace("\\", "/")
+    parts = [p for p in raw.split("/") if p]
+    if not (1 <= len(parts) <= 2):
         return None
-    return safe_name
-
-
-@app.post("/api/realtime/preview")
-async def realtime_preview(req: RealtimePreviewRequest):
-    if not pipeline.is_loaded():
-        raise HTTPException(503, "No Krea model is loaded. Load a model before realtime preview.")
-    if generation_queue is not None and generation_queue.has_active_or_pending():
-        raise HTTPException(409, "Krea is busy with another generation or preview. Try again when it finishes.")
-    session_id = req.session_id.strip() or uuid.uuid4().hex
-    if realtime_previews.busy():
-        job = realtime_previews.create_pending(session_id, req)
-        return {
-            "job_id": job["job_id"],
-            "session_id": session_id,
-            "revision": job["revision"],
-            "status": "queued",
-            "dropped_intermediate_frames": True,
-        }
-    job = realtime_previews.create(session_id)
-    asyncio.create_task(_run_realtime_preview(job["job_id"], req, session_id))
-    return {
-        "job_id": job["job_id"],
-        "session_id": session_id,
-        "revision": job["revision"],
-        "status": job["status"],
-        "dropped_intermediate_frames": False,
-    }
-
-
-@app.get("/api/realtime/preview/{job_id}")
-async def realtime_preview_status(job_id: str):
-    job = realtime_previews.get(job_id)
-    if job is None:
-        raise HTTPException(404, "Preview job not found")
-    return job
-
-
-@app.post("/api/realtime/cancel/{job_id}")
-async def realtime_preview_cancel(job_id: str):
-    if not realtime_previews.cancel(job_id):
-        raise HTTPException(404, "Preview job not found")
-    return {"ok": True, "job_id": job_id, "status": "cancelled"}
-
-
-async def _run_realtime_preview(job_id: str, req: RealtimePreviewRequest, session_id: str):
-    realtime_previews.mark_started(job_id)
-    loop = asyncio.get_event_loop()
-
-    def progress_cb(step: int, total: int):
-        pct = int(step / max(total, 1) * 100)
-        realtime_previews.update(job_id, progress=max(1, min(pct, 98)))
-
-    try:
-        width, height = _fit_preview_dimensions(req.width, req.height)
-        preview_req = GenerationRequest(
-            prompt=req.prompt,
-            negative_prompt=req.negative_prompt,
-            mode="redraw",
-            checkpoint="turbo",
-            quantization="fp8",
-            steps=max(4, min(6, int(req.preview_steps))),
-            cfg=0.0,
-            width=width,
-            height=height,
-            num_images=1,
-            seed=int(req.seed),
-            denoise=1.0,
-            use_prompt_expander=False,
-            refine=False,
-            moodboard_strength=max(0.0, min(1.0, float(req.moodboard_strength))),
-            mood=req.mood,
-            moodboard_ids=list(req.moodboard_ids or []),
-            moodboard_uuids=list(req.moodboard_uuids or []),
-            moodboard_images=[req.canvas_image_b64, *list(req.moodboard_images or [])],
-            loras=list(req.loras or []),
-        )
-        results, seed, filenames, _, metadata = await loop.run_in_executor(
-            None, lambda: pipeline.generate(preview_req, progress_cb=progress_cb, save_outputs=False)
-        )
-        image = results[0] if results else ""
-        realtime_previews.complete(job_id, image_b64=image, seed=seed, metadata=metadata[0] if metadata else {})
-    except Exception as e:
-        logger.exception("Realtime preview failed")
-        realtime_previews.fail(job_id, str(e))
-    finally:
-        realtime_previews.mark_finished(job_id)
-        pending = realtime_previews.pop_pending(session_id)
-        if pending is not None:
-            asyncio.create_task(_run_realtime_preview(pending["job"]["job_id"], pending["payload"], session_id))
+    for part in parts:
+        if part in (".", "..") or not SAFE_SERVED_FILENAME_RE.fullmatch(part):
+            return None
+    return "/".join(parts)
 
 
 async def _run_generation(job_id: str, req: GenerationRequest, *, username: str | None = None, role: str = "user"):
@@ -954,35 +1002,18 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
         if getattr(req, "diffusion_engine", "native_pytorch") in {"native_int8_convrot", "int8_convrot_external"}:
             req.diffusion_engine = "native_int8_convrot"
             req.quantization = "int8"
-        from edit_providers import resolve_edit_provider
-        from flux_fill_provider import flux_fill_installed, generate_flux_fill
-
-        flux_installed = flux_fill_installed()
-        requested_method = getattr(req, "inpaint_method", "native")
-        provider_name = "flux_fill" if requested_method == "flux_fill" else req.edit_provider
-        if requested_method in {"native", "lanpaint_experimental"}:
-            provider_name = "krea_native"
-        provider = resolve_edit_provider(provider_name, req.mode, flux_fill_installed=flux_installed)
-        job["edit_provider"] = provider.name
-        job["provider_warning"] = (
-            provider.reason
-            if req.edit_provider in {"auto", "flux_fill"} and provider.name != "flux_fill" and req.mode in {"inpaint", "outpaint"}
-            else None
-        )
-        if provider.name == "flux_fill":
-            pipeline.unload()
-            if req.steps < 50:
-                req.steps = 50
-            if req.cfg < 30:
-                req.cfg = 30
-            write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="flux_fill_start", extra={"provider": provider.name})
+        if use_comfy_backend():
+            write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="comfy_generation_start", extra={"provider": "comfyui"})
+            from comfy_workflows import comfy_generate
+            job["edit_provider"] = "comfyui"
+            _owner = username if SHARE_AUTH_ENABLED else None
             results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                None, lambda: generate_flux_fill(req, progress_cb=progress_cb)
+                None, lambda: comfy_generate(req, progress_cb=progress_cb, username=_owner)
             )
         else:
-            write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="native_generation_start", extra={"provider": provider.name})
-            results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                None, lambda: pipeline.generate(req, progress_cb=progress_cb)
+            raise RuntimeError(
+                "Native Studio generation is deprecated. ComfyUI is required "
+                "(KREA_USE_COMFY defaults to on). Start ComfyUI and retry."
             )
         missing_outputs = [fname for fname in (filenames or []) if fname and not (OUTPUTS_DIR / fname).exists()]
         write_generation_breadcrumb(
@@ -1074,18 +1105,25 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
                 await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
 
     except Exception as e:
-        logger.exception(f"Generation failed for job {job_id}")
-        write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="generation_error", extra={"error": str(e)})
-        job["status"] = "error"
-        job["error"] = str(e)
-        await ws_manager.broadcast(job_id, {"type": "error", "error": str(e)})
+        # A user cancel interrupts ComfyUI, which surfaces here as an exception.
+        # Report it as a clean cancellation instead of a generation error.
+        if generation_queue is not None and generation_queue.cancel_requested(job_id):
+            logger.info("Generation cancelled by user for job %s", job_id)
+            job["status"] = "cancelled"
+            await ws_manager.broadcast(job_id, {"type": "cancelled"})
+        else:
+            logger.exception(f"Generation failed for job {job_id}")
+            write_generation_breadcrumb(LOGS_DIR, job_id=job_id, req=req, stage="generation_error", extra={"error": str(e)})
+            job["status"] = "error"
+            job["error"] = str(e)
+            await ws_manager.broadcast(job_id, {"type": "error", "error": str(e)})
         parent_job_id = job.get("parent_job_id")
         if parent_job_id:
             parent = _refresh_parent_batch_job(str(parent_job_id))
             if parent:
                 await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
     finally:
-        if job.get("status") in {"done", "blocked", "error"}:
+        if job.get("status") in {"done", "blocked", "error", "cancelled"}:
             clear_generation_breadcrumb(LOGS_DIR, job_id=job_id)
 
 
@@ -1097,6 +1135,84 @@ async def job_status(job_id: str):
     if job.get("child_job_ids"):
         _refresh_parent_batch_job(job_id)
     return job
+
+
+@app.get("/api/jobs")
+async def list_jobs(limit: int = 24):
+    """Recent generation jobs for the queue panel (newest first). Batch children
+    are folded into their parent. Thumbnails are small JPEGs cached per job."""
+    _sync_queue_state_to_jobs()
+    out: list[dict] = []
+    for jid, job in reversed(list(_jobs.items())):
+        if job.get("parent_job_id"):
+            continue  # represented by its parent batch job
+        if job.get("child_job_ids"):
+            _refresh_parent_batch_job(jid)
+        status = job.get("status")
+        thumb = job.get("thumb")
+        if thumb is None and status == "done" and job.get("images"):
+            thumb = _job_thumb(job["images"][0])
+            job["thumb"] = thumb  # cache (even "" so we don't retry)
+        out.append({
+            "job_id": jid,
+            "status": status,
+            "progress": int(job.get("progress", 0) or 0),
+            "queue_position": job.get("queue_position"),
+            "queue_length": job.get("queue_length"),
+            "seed": job.get("seed"),
+            "error": job.get("error"),
+            "summary": job.get("summary", ""),
+            "thumb": thumb or "",
+            "is_batch": bool(job.get("child_job_ids")),
+            "batch_count": (job.get("batch") or {}).get("count"),
+            "num_images": len(job.get("images") or []),
+        })
+        if len(out) >= max(1, min(int(limit or 24), 100)):
+            break
+    return {"jobs": out}
+
+
+@app.post("/api/generate/{job_id}/cancel")
+async def cancel_generation_job(job_id: str):
+    """Cancel a generation. Dequeues any not-yet-started (batch) children and, if
+    one of the targets is the job currently running on the GPU, interrupts ComfyUI
+    so the in-flight prompt stops instead of running to completion."""
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    targets = list(job.get("child_job_ids") or []) or [job_id]
+    cancelled = 0
+    interrupt_running = False
+    for tid in targets:
+        if generation_queue is None:
+            break
+        outcome = generation_queue.request_cancel(tid)
+        if outcome == "none":
+            continue
+        if outcome == "interrupt":
+            interrupt_running = True
+        cancelled += 1
+        child = _jobs.get(tid)
+        if child:
+            child["status"] = "cancelled"
+            child["queue_position"] = None
+            await ws_manager.broadcast(tid, {"type": "cancelled"})
+
+    if interrupt_running:
+        # ComfyUI /interrupt is a blocking HTTP call; keep the event loop free.
+        from comfy_client import interrupt_comfy
+        await asyncio.get_event_loop().run_in_executor(None, interrupt_comfy)
+
+    if job.get("child_job_ids"):
+        _refresh_parent_batch_job(job_id)
+        if all((_jobs.get(t) or {}).get("status") == "cancelled" for t in targets):
+            job["status"] = "cancelled"
+            await ws_manager.broadcast(job_id, {"type": "cancelled"})
+    elif cancelled:
+        job["status"] = "cancelled"
+        job["queue_position"] = None
+    _sync_queue_state_to_jobs()
+    return {"ok": cancelled > 0, "job_id": job_id, "status": job.get("status"), "cancelled": cancelled}
 
 
 @app.websocket("/ws/{job_id}")
@@ -1134,6 +1250,10 @@ def _load_model_error_detail(exc: Exception) -> str:
 
 @app.post("/api/load-model")
 async def load_model(req: LoadModelRequest):
+    if use_comfy_backend():
+        # ComfyUI manages weight loading itself (on demand, per job). Report
+        # success so the UI's explicit "load" action stays a no-op.
+        return {"status": "loaded", "checkpoint": req.checkpoint_path or "comfyui", "backend": "comfyui"}
     if generation_queue is not None and generation_queue.has_active_or_pending():
         raise HTTPException(409, "Generation queue is active. Wait for queued/running jobs before loading a model.")
     loop = asyncio.get_event_loop()
@@ -1156,16 +1276,13 @@ async def load_model(req: LoadModelRequest):
 
 @app.post("/api/load-model/preflight")
 async def load_model_preflight(req: LoadModelRequest):
-    try:
-        from inference import preflight_model_load
-
-        preflight_model_load(req.checkpoint_path, req.quantization, blocks_to_swap=req.blocks_to_swap)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except Exception as exc:
-        return {"ok": False, "detail": _load_model_error_detail(exc), "system": get_system_report()}
-    return {"ok": True, "detail": "This model load passes the current RAM/VRAM preflight.", "system": get_system_report()}
-
+    if use_comfy_backend():
+        return {"ok": True, "detail": "ComfyUI backend active; models load on demand in ComfyUI.", "system": get_system_report()}
+    return {
+        "ok": False,
+        "detail": "Native Studio model loading is deprecated. Use ComfyUI (KREA_USE_COMFY=1).",
+        "system": get_system_report(),
+    }
 
 @app.post("/api/unload-model")
 async def unload_model():
@@ -1236,7 +1353,7 @@ async def delete_gallery_item(gallery_id: int, request: Request):
     return {"ok": True, "filename": filename}
 
 
-@app.get("/api/outputs/{filename}")
+@app.get("/api/outputs/{filename:path}")
 async def output_file(filename: str, request: Request):
     safe_name = _safe_served_filename(filename)
     if safe_name is None:
@@ -1302,7 +1419,8 @@ async def moderation_quarantine_file(filename: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/moodboards", response_model=MoodboardListResponse)
-async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False, source: str = "", shuffle_seed: str = ""):
+async def moodboards(request: Request, q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False, source: str = "", shuffle_seed: str = ""):
+    username, _role, _is_admin = _request_user_role(request)
     return await list_moodboards(
         query=q,
         page=page,
@@ -1310,6 +1428,7 @@ async def moodboards(q: str = "", page: int = 1, page_size: int = 50, favorites:
         favorites_only=favorites,
         source=source,
         shuffle_seed=shuffle_seed,
+        username=username or "",
     )
 
 
@@ -1328,20 +1447,25 @@ async def moodboard_cached_image(url: str):
     except Exception:
         logger.exception("Krea moodboard cached image fetch failed")
         raise HTTPException(502, "Could not cache Krea moodboard image")
-    return FileResponse(path)
+    # The cache key is the source URL's hash, so a given path's bytes never change.
+    # Tell the browser to cache aggressively so previews load instantly after the
+    # first fetch instead of re-requesting the backend on every render.
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @app.get("/api/moodboards/{moodboard_id}", response_model=MoodboardItem)
-async def moodboard_detail(moodboard_id: int):
-    item = await get_moodboard(moodboard_id)
+async def moodboard_detail(moodboard_id: int, request: Request):
+    username, _role, _is_admin = _request_user_role(request)
+    item = await get_moodboard(moodboard_id, username=username or "")
     if item is None:
         raise HTTPException(404, "Not found")
     return item
 
 
 @app.put("/api/moodboards/{moodboard_id}/favorite")
-async def favorite_moodboard(moodboard_id: int, req: FavoriteRequest):
-    await set_moodboard_favorite(moodboard_id, req.favorite)
+async def favorite_moodboard(moodboard_id: int, req: FavoriteRequest, request: Request):
+    username, _role, _is_admin = _request_user_role(request)
+    await set_moodboard_favorite(moodboard_id, req.favorite, username=username or "")
     return {"ok": True}
 
 
@@ -1432,13 +1556,21 @@ _CUSTOM_IMAGE_FILENAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL
 
 
 def _safe_custom_moodboard_image_path(board_uuid: str, filename: str) -> Path:
+    raw = str(board_uuid)
+    safe_board_uuid: str | None = None
     try:
-        safe_board_uuid = str(uuid.UUID(str(board_uuid)))
-    except (ValueError, TypeError) as exc:
-        raise ValueError("Invalid custom moodboard id") from exc
-
-    if safe_board_uuid != str(board_uuid).lower():
-        raise ValueError("Invalid custom moodboard id")
+        canonical = str(uuid.UUID(raw))
+        if canonical == raw.lower():
+            safe_board_uuid = canonical
+    except (ValueError, TypeError):
+        safe_board_uuid = None
+    if safe_board_uuid is None:
+        # Andro.Meta preset boards use a stable id ("andrometa-<mood_id>") rather
+        # than a random UUID. Accept those too (safe path-segment chars only).
+        if re.fullmatch(r"andrometa-[a-z0-9_]+", raw):
+            safe_board_uuid = raw
+        else:
+            raise ValueError("Invalid custom moodboard id")
     if not filename or "/" in filename or "\\" in filename:
         raise ValueError("Invalid custom moodboard image name")
     if any(char not in _CUSTOM_IMAGE_FILENAME_CHARS for char in filename):
@@ -1474,7 +1606,7 @@ async def custom_moodboard_image(board_uuid: str, filename: str):
         path = _safe_custom_moodboard_image_path(board_uuid, filename)
     except ValueError:
         raise HTTPException(404, "Custom moodboard image not found")
-    return FileResponse(path)
+    return FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ---------------------------------------------------------------------------
@@ -1489,7 +1621,71 @@ async def get_moods():
 
 @app.get("/api/loras")
 async def get_loras():
-    return list_loras()
+    from civitai_loras import enrich_loras
+    loras = list_loras()
+    if use_comfy_backend():
+        # ComfyUI's loader (comfy.sd.load_lora_for_models) converts LoRA / LoKr /
+        # LyCORIS / diffusers key formats, so the native SingleStreamDiT naming
+        # check (inspect_lora) is too strict and must not block selection. If it
+        # genuinely doesn't match, ComfyUI just applies 0 layers (no crash).
+        for l in loras:
+            if l.get("installed") and l.get("compatible") is False:
+                l["compatible"] = True
+                l["match_info"] = "Native key check didn't recognize this LoRA; ComfyUI will still attempt to apply it."
+    return enrich_loras(loras, fetch=False)
+
+
+@app.post("/api/loras/civitai-scan")
+async def loras_civitai_scan():
+    """Hash every installed LoRA and enrich it with Civitai metadata (background)."""
+    import threading
+    from civitai_loras import scan_all, scan_state
+    if not scan_state()["scanning"]:
+        threading.Thread(
+            target=lambda: scan_all(list_loras, token=_secret_value("CIVITAI_TOKEN", "civitai_token") or None),
+            daemon=True,
+        ).start()
+    return scan_state()
+
+
+@app.get("/api/loras/civitai-scan/status")
+async def loras_civitai_scan_status():
+    from civitai_loras import scan_state
+    return scan_state()
+
+
+@app.get("/api/civitai/loras")
+async def civitai_browse_loras(query: str = "", page: int = 1, sort: str = "Most Downloaded", nsfw: bool = False):
+    """Browse Krea 2 LoRA + LoKr (LoCon) models on Civitai."""
+    from civitai_loras import civitai_browse
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(
+            None, lambda: civitai_browse(query=query, page=page, sort=sort, nsfw=nsfw, token=_secret_value("CIVITAI_TOKEN", "civitai_token") or None)
+        )
+    except Exception as exc:
+        logger.exception("Civitai browse failed")
+        raise HTTPException(502, f"Civitai browse failed: {exc}")
+
+
+@app.post("/api/civitai/install")
+async def civitai_install_lora(req: dict):
+    """Install a Civitai LoRA version into models/loras by version_id."""
+    version_id = req.get("version_id")
+    if not version_id:
+        raise HTTPException(400, "version_id is required.")
+    from civitai_loras import civitai_install
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: civitai_install(int(version_id), token=_secret_value("CIVITAI_TOKEN", "civitai_token") or None, filename=req.get("filename"))
+        )
+    except PermissionError as exc:
+        raise HTTPException(402, str(exc))
+    except Exception as exc:
+        logger.exception("Civitai install failed")
+        raise HTTPException(502, f"Civitai install failed: {exc}")
+    return result
 
 
 @app.post("/api/loras/{lora_name}/download")
@@ -1504,7 +1700,7 @@ async def download_lora(lora_name: str):
         dest = await loop.run_in_executor(
             None,
             lambda: hf_hub_download(
-                **official_lora_download_kwargs(lora_name, token=settings.hf_token),
+                **official_lora_download_kwargs(lora_name, token=_secret_value("HF_TOKEN", "hf_token")),
             ),
         )
         info = OFFICIAL_LORAS[lora_name]
@@ -1534,7 +1730,7 @@ async def import_lora_url(req: LoraImportRequest):
 
     headers = {"User-Agent": "krea2-studio/1.0"}
     if is_civitai_url(url):
-        token = req.civitai_token or settings.civitai_token
+        token = req.civitai_token or _secret_value("CIVITAI_TOKEN", "civitai_token")
         if token:
             url = append_query_param(url, "token", token)
 
@@ -1566,81 +1762,40 @@ async def import_lora_url(req: LoraImportRequest):
 
 @app.post("/api/upscale")
 async def upscale(req: UpscaleRequest):
-    from upscaler import (
-        b64_to_pil, upscale_model_refine, upscale_realesrgan,
-        upscale_refine_2pass, upscale_tiled_vae, upscale_ultimate,
-    )
+    from upscaler import b64_to_pil, upscale_realesrgan
     from output_saver import encode_images
 
     img = b64_to_pil(req.image_b64)
     loop = asyncio.get_event_loop()
 
-    if req.method == "realesrgan":
-        result = await loop.run_in_executor(
-            None, lambda: upscale_realesrgan(img, MODELS_DIR, req.scale)
-        )
-    elif req.method == "tiled_vae":
-        if not pipeline.is_loaded():
-            raise HTTPException(400, "Model must be loaded for tiled VAE upscale")
-        result = await loop.run_in_executor(
-            None, lambda: upscale_tiled_vae(
-                img, pipeline.ae,
-                device=pipeline._device, dtype=pipeline._dtype,
-                scale=req.upscale_by,
+    # Model/VAE-dependent methods run as ComfyUI graphs. realesrgan also runs
+    # through Comfy (ImageUpscaleWithModel) when it is up, with the in-process
+    # implementation kept only as a fallback. Native DiT upscale paths are
+    # deprecated.
+    if req.method in {"tiled_vae", "model_refine", "ultimate", "refine_2pass", "wan_vae_2x", "seedvr2"} or (
+        req.method == "realesrgan" and comfy_available()
+    ):
+        if not comfy_available():
+            raise HTTPException(
+                503,
+                f"Upscale method '{req.method}' requires ComfyUI. Start ComfyUI and retry.",
             )
-        )
-    elif req.method == "model_refine":
+        from comfy_workflows import comfy_upscale
+        method = "esrgan" if req.method == "realesrgan" else req.method
+        upscale_by = float(req.scale) if req.method == "realesrgan" else req.upscale_by
         result = await loop.run_in_executor(
-            None, lambda: upscale_model_refine(img, pipeline, denoise=req.denoise)
-        )
-    elif req.method == "ultimate":
-        if not pipeline.is_loaded():
-            raise HTTPException(400, "Model must be loaded for Ultimate upscale")
-        result = await loop.run_in_executor(
-            None, lambda: upscale_ultimate(
-                img, pipeline, MODELS_DIR, prompt=req.prompt, scale=req.upscale_by,
-                tile=req.tile_width or req.tile_size, padding=req.tile_padding,
-                mask_blur=req.mask_blur, denoise=req.denoise, steps=req.steps,
-                cfg=req.cfg, sampler=req.sampler, scheduler=req.scheduler,
-                seam_mode=req.seam_mode, tile_mode=req.tile_mode,
-                tiled_decode=req.tiled_decode, seam_fix=req.seam_fix,
-            )
-        )
-    elif req.method == "refine_2pass":
-        if not pipeline.is_loaded():
-            raise HTTPException(400, "Model must be loaded for 2-pass refine upscale")
-        result = await loop.run_in_executor(
-            None, lambda: upscale_refine_2pass(
-                img, pipeline, MODELS_DIR, prompt=req.prompt, scale=req.upscale_by,
+            None, lambda: comfy_upscale(
+                method, req.image_b64, prompt=req.prompt, upscale_by=upscale_by,
                 denoise=req.denoise, steps=req.steps, cfg=req.cfg,
                 sampler=req.sampler, scheduler=req.scheduler,
-                tile_size=req.tile_width or req.tile_size, tiled_decode=req.tiled_decode,
+                tile_width=req.tile_width or req.tile_size, tile_height=req.tile_height or req.tile_size,
+                tile_padding=req.tile_padding, mask_blur=req.mask_blur,
+                seam_mode=req.seam_mode, tile_mode=req.tile_mode, tiled_decode=req.tiled_decode,
             )
         )
-    elif req.method == "wan_vae_2x":
-        if not pipeline.is_loaded():
-            raise HTTPException(400, "Model must be loaded for Wan/Qwen VAE 2x decode upscale")
-        from quality_assets import asset_by_id
-        from upscaler import upscale_wan_vae_2x
-
-        vae_path = asset_by_id("spacepxl_wan_2x_vae").local_path
-        if not vae_path.exists():
-            raise HTTPException(400, "Spacepxl Wan/Qwen 2x VAE asset is not installed.")
+    elif req.method == "realesrgan":
         result = await loop.run_in_executor(
-            None, lambda: upscale_wan_vae_2x(img, pipeline.ae, str(vae_path), device=pipeline._device, dtype=pipeline._dtype)
-        )
-    elif req.method == "pid_upscale":
-        from pid_decoder_provider import upscale_pid
-
-        if int(round(float(req.upscale_by or 4))) != 4:
-            raise HTTPException(400, "PiD upscale is only supported at 4x. Use Wan 2.1, model refine, or Ultimate SD Upscale for 2x.")
-        # PiD is a separate high-VRAM decoder. Evict the Krea pipeline first so
-        # the native PiD runtime can own the GPU; pre-generation cleanup unloads
-        # PiD before Krea is loaded again.
-        pipeline.unload()
-        clear_cuda_cache()
-        result = await loop.run_in_executor(
-            None, lambda: upscale_pid(img, _pid_settings(), prompt=req.prompt, scale=req.upscale_by)
+            None, lambda: upscale_realesrgan(img, MODELS_DIR, req.scale)
         )
     else:
         raise HTTPException(400, f"Unknown upscale method: {req.method}")
@@ -1671,10 +1826,6 @@ async def upscale(req: UpscaleRequest):
         "width": result.width,
         "height": result.height,
     }
-    if req.method == "pid_upscale":
-        from pid_decoder_provider import pid_status
-
-        metadata["runtime"] = {"pid": pid_status(_pid_settings())}
     encoded, _ = encode_images([result], OUTPUTS_DIR, save_outputs=False, metadata=[metadata])
     return {"image_b64": encoded[0], "metadata": metadata}
 
@@ -1742,10 +1893,10 @@ async def describe_image(req: DescribeImageRequest):
         if settings.prompt_expander_backend == "openrouter":
             result = await loop.run_in_executor(
                 None,
-                lambda: describe_image_openrouter(req.image_b64, settings.openrouter_api_key),
+                lambda: describe_image_openrouter(req.image_b64, _secret_value("OPENROUTER_API_KEY", "openrouter_api_key"), req.mode, req.guidance),
             )
         else:
-            result = await loop.run_in_executor(None, lambda: describe_image_local(req.image_b64))
+            result = await _run_helper_with_optional_krea_preempt("local", lambda: describe_image_local(req.image_b64, req.mode, req.guidance))
     except Exception as exc:
         if settings.prompt_expander_backend == "openrouter":
             detail = openrouter_error_hint(exc)
@@ -1754,6 +1905,29 @@ async def describe_image(req: DescribeImageRequest):
             detail = "Local image description failed. Use System > Krea Moodboard Conditioning / Local AI Assets to repair local models."
         raise HTTPException(502, detail)
     return DescribeImageResponse(**result)
+
+
+@app.post("/api/depth-preview")
+async def depth_preview(req: DepthPreviewRequest):
+    """Return the depth map the ControlNet would follow, so users can verify it
+    before a full render. ComfyUI serializes this behind any active generation."""
+    if not use_comfy_backend():
+        raise HTTPException(400, "Depth preview requires the ComfyUI backend.")
+    if not comfy_available():
+        raise HTTPException(503, "ComfyUI is not available.")
+    loop = asyncio.get_event_loop()
+    from comfy_workflows import comfy_depth_preview
+    try:
+        img = await loop.run_in_executor(
+            None,
+            lambda: comfy_depth_preview(req.image_b64, estimator=req.estimator, resolution=req.resolution, invert=req.invert),
+        )
+    except Exception:
+        logger.exception("Depth preview failed")
+        raise HTTPException(502, "Depth preview failed. Check that the depth estimator model is installed.")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return {"image_b64": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}
 
 
 # ---------------------------------------------------------------------------
@@ -1767,16 +1941,23 @@ async def system_info():
     # (one-click recovery if auto-load failed, e.g. transient low RAM).
     auto_cp = settings.krea2_auto_checkpoint or settings.krea2_turbo_path or ""
     auto_quant = settings.krea2_auto_quant or ("fp8" if "fp8" in auto_cp.lower() else "bf16")
+    comfy_on = use_comfy_backend()
+    comfy_up = comfy_available() if comfy_on else False
     report["model_status"] = {
-        "loaded": pipeline.is_loaded(),
-        "loading": getattr(pipeline, "_loading", False),
-        "checkpoint": pipeline._loaded_checkpoint,
-        "quantization": pipeline._loaded_quant,
+        # ComfyUI loads weights on demand per job, so "loaded" tracks server
+        # reachability when the Comfy backend is active. This keeps the UI's
+        # model-loaded gate open without loading anything in-process.
+        "loaded": comfy_up if comfy_on else pipeline.is_loaded(),
+        "loading": False if comfy_on else getattr(pipeline, "_loading", False),
+        "checkpoint": ("comfyui" if comfy_on else pipeline._loaded_checkpoint),
+        "quantization": (None if comfy_on else pipeline._loaded_quant),
         "auto_checkpoint": auto_cp,
         "auto_quant": auto_quant,
-        "load_error": getattr(pipeline, "_last_load_error", None),
-        "text_encoder_source": getattr(pipeline, "_text_encoder_source", None),
+        "load_error": (None if comfy_on else getattr(pipeline, "_last_load_error", None)),
+        "text_encoder_source": (None if comfy_on else getattr(pipeline, "_text_encoder_source", None)),
         "memory": pipeline.memory_status(),
+        "backend": "comfyui" if comfy_on else "native",
+        "comfy_available": comfy_up,
     }
     report["support_models"] = support_model_status()
     return report
@@ -1797,7 +1978,7 @@ async def download_support_models_endpoint():
 async def quality_assets_status():
     from quality_assets import asset_specs, asset_status
 
-    has_token = bool(settings.hf_token or os.environ.get("HF_TOKEN"))
+    has_token = bool(_secret_value("HF_TOKEN", "hf_token"))
     return {
         "has_hf_token": has_token,
         "items": [asset_status(spec, has_hf_token=has_token) for spec in asset_specs()],
@@ -1816,12 +1997,7 @@ async def download_quality_asset_endpoint(asset_id: str):
     if not spec.download_enabled:
         raise HTTPException(403, spec.disabled_reason or "This asset cannot be downloaded automatically.")
 
-    token = settings.hf_token or os.environ.get("HF_TOKEN") or None
-    if spec.id == "flux_fill" and not token:
-        raise HTTPException(
-            401,
-            "FLUX Fill is gated on Hugging Face. Open System > Precision Editing, paste an HF token that has accepted access to black-forest-labs/FLUX.1-Fill-dev, then retry.",
-        )
+    token = _secret_value("HF_TOKEN", "hf_token") or None
 
     loop = asyncio.get_event_loop()
     try:
@@ -1829,13 +2005,13 @@ async def download_quality_asset_endpoint(asset_id: str):
     except GatedRepoError:
         raise HTTPException(
             401,
-            "Your Hugging Face token does not have access to black-forest-labs/FLUX.1-Fill-dev yet. Open the model page, accept the license/access terms, then retry.",
+            "Your Hugging Face token does not have access to this gated model yet. Open the model page, accept the license/access terms, then retry.",
         )
     except HfHubHTTPError as exc:
         if getattr(exc.response, "status_code", None) in {401, 403}:
             raise HTTPException(
                 401,
-                "Hugging Face rejected the FLUX Fill download. Confirm the token is valid and has access to the gated model, then retry.",
+                "Hugging Face rejected the download. Confirm the token is valid and has access to the gated model, then retry.",
             )
         logger.exception("Quality asset download failed")
         raise HTTPException(502, "Quality asset download failed. Check connection and server logs.")
@@ -1843,7 +2019,7 @@ async def download_quality_asset_endpoint(asset_id: str):
         logger.exception("Quality asset download failed")
         raise HTTPException(502, "Quality asset download failed. Check connection and server logs.")
 
-    has_token = bool(settings.hf_token or os.environ.get("HF_TOKEN"))
+    has_token = bool(_secret_value("HF_TOKEN", "hf_token"))
     return {"ok": True, "path": str(path), "item": asset_status(spec, has_hf_token=has_token)}
 
 
@@ -1854,7 +2030,7 @@ async def xperiment_setup_endpoint():
 
     required_ids = ["wan_2_1_vae", "qwen3vl_abliterated_fp8", "krea2_realism_v1_lora"]
     results: list[dict] = []
-    token = settings.hf_token or os.environ.get("HF_TOKEN") or None
+    token = _secret_value("HF_TOKEN", "hf_token") or None
     loop = asyncio.get_event_loop()
     for asset_id in required_ids:
         spec = asset_by_id(asset_id)
@@ -1888,13 +2064,23 @@ async def xperiment_setup_endpoint():
     _write_env(env)
     bypass_spec = asset_by_id("krea2_filter_bypass")
     bypass = asset_status(bypass_spec, has_hf_token=bool(token))
+    # Uncensored recipe (Comfy-Org Krea-2 Turbo reference workflow): abliterated
+    # Qwen3-VL text encoder + the txtfusion filter-bypass diff + realism LoRA.
     loras = [
-        {"name": "Krea2-realism-V1", "filename": "Krea2-realism-V1.safetensors", "strength": 0.55, "block_filter": "late"},
+        {"name": "Krea2-realism-V1", "filename": "Krea2-realism-V1.safetensors", "strength": 0.6, "block_filter": "late"},
     ]
-    if asset_installed(bypass_spec):
-        loras.append({"name": "krea2filterbypass3", "filename": "krea2filterbypass3.safetensors", "strength": 4.0, "block_filter": "style_safe"})
-    configured_engine = settings.diffusion_engine or "native_pytorch"
-    configured_quant = "int8" if configured_engine == "native_int8_convrot" else "gguf" if configured_engine == "native_gguf" else "fp8"
+    bypass_installed = asset_installed(bypass_spec) and bypass_spec.local_path.stat().st_size > 0
+    if bypass_installed:
+        loras.insert(0, {"name": "krea2filterbypass3", "filename": "krea2filterbypass3.safetensors", "strength": 4.0, "block_filter": "style_safe"})
+    # Prefer int8 (user preference); keep gguf if that's what's configured.
+    configured_engine = settings.diffusion_engine if settings.diffusion_engine in ("native_int8_convrot", "native_gguf") else "native_int8_convrot"
+    configured_quant = "gguf" if configured_engine == "native_gguf" else "int8"
+    warnings = [
+        "CFG 1.0 = guidance-off for the distilled Turbo model (matches the reference workflow's ConditioningZeroOut). ComfyUI treats CFG<1 as prompt-ignoring, so Xperiment uses 1.0, not 0.",
+        "Runs on your int8/gguf engine as chosen. LoRA patching on the custom-quant engine is slower than fp8-cast; set KREA_LORA_ENGINE=fp8_fast in .env to trade quant for speed.",
+    ]
+    if not bypass_installed:
+        warnings.append("krea2filterbypass3 (the uncensor diff) is manual-only and was not found in models/loras, so it was NOT attached. Add it to enable the fully unfiltered recipe.")
     return {
         "ok": True,
         "assets": results,
@@ -1903,18 +2089,16 @@ async def xperiment_setup_endpoint():
         "loras": loras,
         "diffusion_engine": configured_engine,
         "quantization": configured_quant,
-        "sampler": {"sampler": "er_sde", "scheduler": "beta57", "steps": 6, "cfg": 0.0},
+        # ClownsharKSampler_Beta (RES4LYF) exact recipe from the reference workflow.
+        "sampler": {"sampler": "er_sde", "scheduler": "beta57", "steps": 8, "cfg": 1.0},
+        "res4lyf": {"sampler_name": "exponential/ddim", "eta": 0.5, "bongmath": False},
         "use_prompt_expander": False,
         "prompt_expander_backend": "local",
         "local_llm_backend": "transformers",
         "local_qwen_model_id": xperiment_qwen,
-        "benchmark_note": "Verified on RTX 4090: 1024px, er_sde/beta57, 6 steps, CFG 0, Realism LoKr late@0.55 completed in ~10s with good prompt adherence.",
+        "benchmark_note": "Uncensored Krea-2 Turbo recipe: abliterated Qwen3-VL encoder + filter-bypass diff @4 + Realism LoKr @0.6, ClownsharKSampler_Beta exponential/ddim + beta57, 8 steps, CFG 1, eta 0.5.",
         "manual_only": [bypass],
-        "warnings": [
-            "Exact ClownsharKSampler_Beta is a Comfy/RES4LYF node; native Krea Studio applies the closest safe native mapping: er_sde + beta57.",
-            "krea2filterbypass3 is manual-only and not auto-downloaded.",
-            "Xperiment keeps the diffusion engine selected in .env instead of forcing Original/Native PyTorch.",
-        ],
+        "warnings": warnings,
     }
 
 
@@ -1924,7 +2108,7 @@ async def gguf_setup_low_vram_endpoint():
     from quality_assets import asset_by_id, asset_installed, asset_status, download_asset
 
     required_ids = ["gguf_krea2_turbo_q4km", "wan_2_1_vae"]
-    token = settings.hf_token or os.environ.get("HF_TOKEN") or None
+    token = _secret_value("HF_TOKEN", "hf_token") or None
     loop = asyncio.get_event_loop()
     results: list[dict] = []
     for asset_id in required_ids:
@@ -1973,23 +2157,18 @@ async def gguf_setup_low_vram_endpoint():
 # ---------------------------------------------------------------------------
 
 ENV_PATH = Path(__file__).parent.parent / ".env"
-SECRET_ENV_KEYS = {"HF_TOKEN", "CIVITAI_TOKEN", "IDEOGRAM_API_KEY", "OPENROUTER_API_KEY"}
 
 
 def _read_env() -> dict[str, str]:
-    env: dict[str, str] = {}
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                env[k.strip()] = v.strip()
-    return env
+    return read_env(ENV_PATH)
 
 
 def _write_env(env: dict[str, str]) -> None:
-    lines = [f"{k}={v}" for k, v in env.items() if k not in SECRET_ENV_KEYS]
-    ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_env(ENV_PATH, env)
+
+
+def _secret_value(env_key: str, attr: str, env: dict[str, str] | None = None) -> str:
+    return secret_value(env_key, getattr(settings, attr, ""), env)
 
 
 @app.get("/api/settings")
@@ -2010,6 +2189,7 @@ async def get_settings():
         "output_dir": env.get("OUTPUT_DIR", str(MODELS_DIR.parent / "outputs")),
         "prompt_expander_backend": env.get("PROMPT_EXPANDER_BACKEND", settings.prompt_expander_backend),
         "local_llm_backend": env.get("LOCAL_LLM_BACKEND", settings.local_llm_backend),
+        "comfy_qwen_model": env.get("COMFY_QWEN_MODEL", settings.comfy_qwen_model),
         "local_qwen_model_id": env.get("LOCAL_QWEN_MODEL_ID", settings.local_qwen_model_id),
         "local_qwen_device": env.get("LOCAL_QWEN_DEVICE", settings.local_qwen_device),
         "gguf_helper_base_url": env.get("GGUF_HELPER_BASE_URL", settings.gguf_helper_base_url),
@@ -2026,20 +2206,27 @@ async def get_settings():
         "krea2_vae_blend_radius": int(env.get("KREA2_VAE_BLEND_RADIUS", str(settings.krea2_vae_blend_radius)) or 24),
         "krea2_vae_blend_strength": float(env.get("KREA2_VAE_BLEND_STRENGTH", str(settings.krea2_vae_blend_strength)) or 0.65),
         "krea_attention_backend": env.get("KREA_ATTENTION_BACKEND", settings.krea_attention_backend),
-        "has_hf_token": bool(env.get("HF_TOKEN", settings.hf_token)),
-        "has_civitai_token": bool(env.get("CIVITAI_TOKEN", settings.civitai_token)),
-        "has_ideogram_api_key": bool(env.get("IDEOGRAM_API_KEY", settings.ideogram_api_key)),
-        "has_openrouter_api_key": bool(env.get("OPENROUTER_API_KEY", settings.openrouter_api_key)),
+        "seedvr2_model": env.get("SEEDVR2_MODEL", settings.seedvr2_model),
+        "has_hf_token": bool(_secret_value("HF_TOKEN", "hf_token", env)),
+        "has_civitai_token": bool(_secret_value("CIVITAI_TOKEN", "civitai_token", env)),
+        "has_ideogram_api_key": bool(_secret_value("IDEOGRAM_API_KEY", "ideogram_api_key", env)),
+        "has_openrouter_api_key": bool(_secret_value("OPENROUTER_API_KEY", "openrouter_api_key", env)),
     }
 
 
 @app.put("/api/settings")
 async def update_settings(req: SettingsUpdate):
     env = _read_env()
+    # API keys persist to .env so they survive restarts (empty values are ignored
+    # so a blank Save never wipes an existing persistent key).
     if req.hf_token is not None:
         settings.hf_token = req.hf_token.replace("\r", "").replace("\n", "")
+        if settings.hf_token:
+            env["HF_TOKEN"] = settings.hf_token
     if req.civitai_token is not None:
         settings.civitai_token = req.civitai_token.replace("\r", "").replace("\n", "")
+        if settings.civitai_token:
+            env["CIVITAI_TOKEN"] = settings.civitai_token
     if req.krea2_turbo_path is not None:
         env["KREA2_TURBO_PATH"] = req.krea2_turbo_path
     if req.krea2_raw_path is not None:
@@ -2058,6 +2245,9 @@ async def update_settings(req: SettingsUpdate):
     if req.local_llm_backend is not None:
         env["LOCAL_LLM_BACKEND"] = req.local_llm_backend
         settings.local_llm_backend = req.local_llm_backend
+    if req.comfy_qwen_model is not None:
+        env["COMFY_QWEN_MODEL"] = req.comfy_qwen_model
+        settings.comfy_qwen_model = req.comfy_qwen_model
     if req.local_qwen_model_id is not None:
         env["LOCAL_QWEN_MODEL_ID"] = req.local_qwen_model_id
         settings.local_qwen_model_id = req.local_qwen_model_id
@@ -2085,8 +2275,12 @@ async def update_settings(req: SettingsUpdate):
         settings.gguf_raw_path = req.gguf_raw_path
     if req.ideogram_api_key is not None:
         settings.ideogram_api_key = req.ideogram_api_key.replace("\r", "").replace("\n", "")
+        if settings.ideogram_api_key:
+            env["IDEOGRAM_API_KEY"] = settings.ideogram_api_key
     if req.openrouter_api_key is not None:
         settings.openrouter_api_key = req.openrouter_api_key.replace("\r", "").replace("\n", "")
+        if settings.openrouter_api_key:
+            env["OPENROUTER_API_KEY"] = settings.openrouter_api_key
     if req.openrouter_model is not None:
         env["OPENROUTER_MODEL"] = req.openrouter_model
         settings.openrouter_model = req.openrouter_model
@@ -2111,12 +2305,11 @@ async def update_settings(req: SettingsUpdate):
     if req.krea_attention_backend is not None:
         env["KREA_ATTENTION_BACKEND"] = req.krea_attention_backend
         settings.krea_attention_backend = req.krea_attention_backend
-        try:
-            from krea2 import mmdit
-
-            mmdit.KREA_ATTENTION_BACKEND = req.krea_attention_backend
-        except Exception:
-            logger.debug("Could not update live attention backend")
+        # Native mmdit attention toggle is deprecated (ComfyUI owns attention via Sage/SDPA).
+    if req.seedvr2_model is not None:
+        val = "7b" if "7b" in str(req.seedvr2_model).lower() else "3b"
+        env["SEEDVR2_MODEL"] = val
+        settings.seedvr2_model = val
     _write_env(env)
     return {"ok": True}
 
@@ -2125,29 +2318,114 @@ async def update_settings(req: SettingsUpdate):
 # Prompt expander
 # ---------------------------------------------------------------------------
 
+def _local_helper_uses_cuda(backend: str) -> bool:
+    """True when a local-Qwen helper (prompt expand / describe image) will run on
+    the GPU — i.e. the transformers backend on a CUDA device (not the gguf server,
+    not CPU). Such a helper must never share the GPU with an active generation."""
+    return (
+        backend == "local"
+        and settings.local_llm_backend != "gguf_server"
+        and str(getattr(settings, "local_qwen_device", "auto") or "auto").lower() != "cpu"
+    )
+
+
+def _local_qwen_helper_needs_krea_preempt(backend: str) -> bool:
+    # Native mode only: an in-process Krea pipeline is resident and must be
+    # unloaded before the helper borrows CUDA.
+    return _local_helper_uses_cuda(backend) and pipeline.is_loaded()
+
+
+async def _run_helper_with_optional_krea_preempt(backend: str, fn):
+    """Run local Qwen helpers without stacking them beside GPU generation.
+
+    Two independent contention sources: (1) an in-process native Krea pipeline
+    (which we unload/reload), and (2) a ComfyUI generation running in the queue.
+    A CUDA helper must not share the GPU with an active/pending generation in
+    EITHER mode, or both stall as the driver spills to shared RAM (the ~67s/it
+    slowdown + websocket keepalive failure seen when the encoder loads mid-sample)."""
+    loop = asyncio.get_event_loop()
+    reload_state = None
+    if _local_helper_uses_cuda(backend):
+        # Applies in both ComfyUI and native modes — this is the guard that was
+        # previously skipped in ComfyUI mode (pipeline never loaded there).
+        if generation_queue is not None and generation_queue.has_active_or_pending():
+            raise HTTPException(409, "The image helper must wait for the running/queued generation to finish before it can use the GPU.")
+    if _local_qwen_helper_needs_krea_preempt(backend):
+        if getattr(pipeline, "_loading", False):
+            raise HTTPException(409, "Magic Wand must wait for the model load to finish before it can borrow the GPU.")
+        reload_state = {
+            "checkpoint": getattr(pipeline, "_loaded_checkpoint", "") or "",
+            "quantization": getattr(pipeline, "_loaded_quant", "") or settings.krea2_auto_quant,
+            "blocks_to_swap": int(getattr(settings, "krea2_blocks_to_swap", 0) or 0),
+        }
+        logger.info("Temporarily unloading Krea model so local Qwen helper can use CUDA safely.")
+        await loop.run_in_executor(None, pipeline.unload)
+        clear_cuda_cache()
+    try:
+        return await loop.run_in_executor(None, fn)
+    finally:
+        if reload_state and reload_state["checkpoint"] and Path(reload_state["checkpoint"]).exists():
+            try:
+                logger.info("Reloading Krea model after local Qwen helper.")
+                await loop.run_in_executor(
+                    None,
+                    lambda: pipeline.load(
+                        reload_state["checkpoint"],
+                        reload_state["quantization"],
+                        blocks_to_swap=reload_state["blocks_to_swap"],
+                        fp8_fast_matmul=bool(getattr(settings, "krea2_fp8_fast_matmul", False)),
+                        torch_compile=bool(getattr(settings, "krea2_torch_compile", False)),
+                    ),
+                )
+            except Exception:
+                logger.exception("Could not reload Krea model after local Qwen helper")
+
+
 @app.post("/api/expand-prompt", response_model=ExpandPromptResponse)
 async def expand_prompt_endpoint(req: ExpandPromptRequest):
-    loop = asyncio.get_event_loop()
     backend = req.backend or ("gguf-server" if settings.local_llm_backend == "gguf_server" and settings.prompt_expander_backend == "local" else settings.prompt_expander_backend)
-    result = await loop.run_in_executor(
-        None,
+    result = await _run_helper_with_optional_krea_preempt(
+        backend,
         lambda: expand_prompt_result(
             req.prompt,
             backend=backend,
-            openrouter_api_key=settings.openrouter_api_key,
+            openrouter_api_key=_secret_value("OPENROUTER_API_KEY", "openrouter_api_key"),
             openrouter_model=settings.openrouter_model,
             openrouter_free_only=settings.openrouter_free_only,
-            ideogram_api_key=settings.ideogram_api_key,
+            ideogram_api_key=_secret_value("IDEOGRAM_API_KEY", "ideogram_api_key"),
             gguf_helper_base_url=settings.gguf_helper_base_url,
             gguf_helper_model=settings.gguf_helper_model,
             gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
         ),
     )
+    suggestions: list[dict] = []
+    if req.suggest_moodboards and req.prompt.strip():
+        try:
+            from moodboards_catalog import list_moodboards
+            found = await list_moodboards(req.prompt, page_size=48)
+            pool = list(found.get("items", []) or [])
+            locked = pool[:4]
+            rotating = pool[4:48]
+            random.shuffle(rotating)
+            for item in (locked + rotating)[:12]:
+                guidance = item.get("qwen_guidance") or {}
+                reason = str(guidance.get("prompt_guidance") or item.get("taste_profile") or "")
+                suggestions.append({
+                    "id": int(item["id"]),
+                    "uuid": str(item.get("uuid") or ""),
+                    "title": str(item.get("title") or f"Moodboard #{item['id']}"),
+                    "reason": reason[:180],
+                    "preview_image_urls": list(item.get("preview_image_urls") or [])[:4],
+                })
+        except Exception:
+            logger.debug("Moodboard suggestions failed during prompt expansion", exc_info=True)
     return ExpandPromptResponse(
         expanded=result.expanded,
         changed=result.changed,
         error=result.error,
         backend=result.backend,
+        suggested_moodboards=suggestions,
+        sign_copy_pass=getattr(result, "sign_copy_pass", None),
     )
 
 
@@ -2160,9 +2438,23 @@ async def resolution_options_endpoint():
 
 @app.get("/api/sampler-catalog")
 async def sampler_catalog_endpoint(profile: str = "krea_turbo"):
-    from krea2.sampler_registry import sampler_catalog
-
-    return sampler_catalog(profile)
+    # ComfyUI is the only image engine — surface its live sampler/scheduler catalog.
+    if comfy_available():
+        try:
+            from comfy_catalog import sampler_catalog as comfy_sampler_catalog
+            return comfy_sampler_catalog(profile)
+        except Exception:
+            logger.exception("comfy sampler catalog failed")
+    # Soft fallback when Comfy is down: a minimal static list (no native krea2 import).
+    return {
+        "profile": profile,
+        "samplers": [
+            {"id": "euler", "label": "euler", "supported_schedulers": ["simple", "normal", "beta", "sgm_uniform"], "recommended_steps": 8},
+            {"id": "euler_ancestral", "label": "euler_ancestral", "supported_schedulers": ["simple", "normal", "beta"], "recommended_steps": 8},
+        ],
+        "schedulers": ["simple", "normal", "beta", "sgm_uniform"],
+        "note": "ComfyUI offline — showing a minimal fallback catalog.",
+    }
 
 
 @app.get("/api/engine-catalog")
@@ -2186,18 +2478,6 @@ async def gguf_helper_test_endpoint():
     return {"ok": True, "backend": result.backend, "expanded": result.expanded}
 
 
-def _pid_settings():
-    from pid_decoder_provider import PiDSettings
-    from quality_assets import asset_by_id
-
-    return PiDSettings(
-        decoder_path=str(asset_by_id("pid_qwenimage_decoder").local_path),
-        text_encoder_path=str(asset_by_id("pid_gemma_text_encoder").local_path),
-        official_checkpoint_path=str(asset_by_id("pid_qwenimage_official_checkpoint").local_path),
-        official_vae_path=str(asset_by_id("pid_qwenimage_vae_2d").local_path),
-    )
-
-
 @app.get("/api/gguf/status")
 async def gguf_status_endpoint():
     fields = {
@@ -2216,43 +2496,25 @@ async def gguf_status_endpoint():
     }
 
 
-@app.get("/api/pid/status")
-async def pid_status_endpoint():
-    from pid_decoder_provider import pid_status
-    from system_check import get_gpu_info
-
-    _name, _total, free = get_gpu_info()
-    return pid_status(_pid_settings(), free_vram_gb=free)
-
-
 @app.get("/api/int8/status")
 async def int8_status_endpoint():
-    import importlib.util
-    import torch
-    from krea2.int8_convrot import inspect_int8_safetensors
+    """INT8 status for the ComfyUI path (OTUNetLoaderW8A8), not the deprecated native DiT."""
     from quality_assets import asset_by_id, asset_status
 
     def _asset(asset_id: str, configured_path: str) -> dict:
         spec = asset_by_id(asset_id)
-        item = asset_status(spec, has_hf_token=bool(settings.hf_token or os.environ.get("HF_TOKEN")))
+        item = asset_status(spec, has_hf_token=bool(_secret_value("HF_TOKEN", "hf_token")))
         path = Path(configured_path or item["local_path"])
         item["configured_path"] = str(path)
         item["installed"] = path.exists()
-        if path.exists():
-            try:
-                item["inspection"] = inspect_int8_safetensors(path)
-            except Exception as exc:  # noqa: BLE001
-                item["inspection_error"] = str(exc)
         return item
 
     return {
-        "ok": bool(hasattr(torch, "_int_mm")),
-        "torch": torch.__version__,
-        "cuda": torch.version.cuda,
-        "torch_int_mm": bool(hasattr(torch, "_int_mm")),
-        "comfy_kitchen": importlib.util.find_spec("comfy_kitchen") is not None,
-        "triton": importlib.util.find_spec("triton") is not None,
-        "diffusion_engine": settings.diffusion_engine,
+        "ok": True,
+        "backend": "comfyui",
+        "loader": "OTUNetLoaderW8A8",
+        "diffusion_engine": "comfyui_int8",
+        "note": "Native Studio INT8 is deprecated. Turbo INT8 ConvRot checkpoints load in ComfyUI via OTUNetLoaderW8A8.",
         "assets": {
             "turbo": _asset("krea2_turbo_int8_convrot", settings.krea2_turbo_int8_path),
             "raw": _asset("krea2_raw_int8_convrot", settings.krea2_raw_int8_path),
@@ -2262,11 +2524,12 @@ async def int8_status_endpoint():
 
 @app.post("/api/int8/setup-native")
 async def int8_setup_native_endpoint():
+    """Kept for UI compatibility — downloads the default Turbo INT8 ConvRot for ComfyUI."""
     from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
     from quality_assets import asset_by_id, asset_installed, asset_status, download_asset
 
     required_ids = ["krea2_turbo_int8_convrot"]
-    token = settings.hf_token or os.environ.get("HF_TOKEN") or None
+    token = _secret_value("HF_TOKEN", "hf_token") or None
     loop = asyncio.get_event_loop()
     results: list[dict] = []
     for asset_id in required_ids:
@@ -2279,7 +2542,7 @@ async def int8_setup_native_endpoint():
             except (GatedRepoError, HfHubHTTPError) as exc:
                 raise HTTPException(502, f"Could not download {asset_id}: {exc}") from exc
             except Exception as exc:
-                logger.exception("Native INT8 asset download failed")
+                logger.exception("INT8 asset download failed")
                 raise HTTPException(502, f"Could not download {asset_id}. Check connection and server logs.") from exc
         results.append({"id": asset_id, "path": str(path), "skipped": skipped, "item": asset_status(spec, has_hf_token=bool(token))})
 
@@ -2297,11 +2560,14 @@ async def int8_setup_native_endpoint():
     return {
         "ok": True,
         "assets": results,
-        "diffusion_engine": "native_int8_convrot",
+        "diffusion_engine": "comfyui_int8",
         "turbo_path": str(turbo),
         "quantization": "int8",
         "sampler": {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15},
-        "warnings": ["Native INT8 uses torch._int_mm fallback first; comfy_kitchen/Triton are optional future accelerators, not required."],
+        "warnings": [
+            "Native Studio INT8 is deprecated. This download is for ComfyUI (OTUNetLoaderW8A8). "
+            "Triton/SageAttention live in the ComfyUI venv and are used automatically.",
+        ],
     }
 
 
@@ -2318,7 +2584,7 @@ async def runtime_advice_endpoint(width: int = 1024, height: int = 1024, quantiz
 
 @app.get("/api/accelerators/status")
 async def accelerators_status_endpoint():
-    from krea2.performance_guard import accelerator_status
+    from performance_guard import accelerator_status
 
     return accelerator_status()
 
@@ -2337,7 +2603,7 @@ async def _pip_install_accelerator(*packages: str) -> dict:
     output = output_b.decode("utf-8", errors="replace")
     if proc.returncode != 0:
         raise HTTPException(500, output[-2000:] or "Accelerator install failed.")
-    from krea2.performance_guard import accelerator_status
+    from performance_guard import accelerator_status
 
     return {"ok": True, "status": accelerator_status(), "message": output[-2000:]}
 
@@ -2389,10 +2655,9 @@ async def prompting_guide_endpoint():
 
 @app.post("/api/plan-prompt", response_model=PlanPromptResponse)
 async def plan_prompt_endpoint(req: PlanPromptRequest):
-    loop = asyncio.get_event_loop()
     helper_backend = "gguf-server" if settings.local_llm_backend == "gguf_server" else "local"
-    result = await loop.run_in_executor(
-        None,
+    result = await _run_helper_with_optional_krea_preempt(
+        helper_backend,
         lambda: plan_prompt(
             req.prompt,
             enabled=True,
@@ -2435,7 +2700,10 @@ if DIST_DIR.exists():
             raise HTTPException(404)
         index = DIST_DIR / "index.html"
         if index.exists():
-            return FileResponse(str(index))
+            # Never cache index.html: it references content-hashed asset files, so a
+            # stale cached copy would keep loading the OLD bundle after a rebuild.
+            # (The hashed /assets files stay immutable/cacheable.)
+            return FileResponse(str(index), headers={"Cache-Control": "no-store, must-revalidate"})
         raise HTTPException(404, "Frontend not built. Run install.bat.")
 else:
     @app.get("/")

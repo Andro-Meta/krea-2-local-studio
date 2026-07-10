@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Alert, Box, Chip, Grid, Slider, Stack, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material'
+import { Alert, Box, Grid, Slider, Stack, TextField, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material'
 import { useStore } from '../../store'
 import { apiFetch } from '../../api'
 
@@ -16,6 +16,16 @@ const FALLBACK_DIMS: Record<string, Record<string, [number, number]>> = {
 }
 const ASPECTS = ['1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16', '21:9']
 const align16 = (value: number) => Math.max(256, Math.min(2048, Math.round((Number(value) || 256) / 16) * 16))
+
+// Proportional glyph so the chip's shape signals portrait (tall) vs landscape (wide).
+function aspectGlyph(aspect: string, maxSide = 26): { w: number; h: number } {
+  const [a, b] = aspect.split(':').map(Number)
+  if (!a || !b) return { w: maxSide, h: maxSide }
+  return {
+    w: a >= b ? maxSide : Math.round(maxSide * (a / b)),
+    h: b >= a ? maxSide : Math.round(maxSide * (b / a)),
+  }
+}
 
 export default function DimensionSection() {
   const { params, setParam, setParams } = useStore()
@@ -65,29 +75,38 @@ export default function DimensionSection() {
           <ToggleButton value="1k">1K</ToggleButton>
           <ToggleButton value="2k">2K</ToggleButton>
         </ToggleButtonGroup>
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
-          {ASPECTS.map(aspect => (
-            <Chip
-              key={aspect}
-              label={aspect}
-              size="small"
-              variant={isActiveAspect(aspect) ? 'filled' : 'outlined'}
-              color={isActiveAspect(aspect) ? 'primary' : 'default'}
-              onClick={() => applyTierAspect(params.resolution_tier, aspect)}
-              clickable
-            />
-          ))}
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.25 }}>
+          {ASPECTS.map(aspect => {
+            const active = isActiveAspect(aspect)
+            const { w, h } = aspectGlyph(aspect)
+            return (
+              <Box
+                key={aspect}
+                onClick={() => applyTierAspect(params.resolution_tier, aspect)}
+                title={aspect}
+                sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.25, cursor: 'pointer', minWidth: 30 }}
+              >
+                <Box sx={{ height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Box
+                    sx={{
+                      width: w,
+                      height: h,
+                      borderRadius: 0.5,
+                      border: '2px solid',
+                      borderColor: active ? 'primary.main' : 'text.disabled',
+                      bgcolor: active ? 'primary.main' : 'transparent',
+                      opacity: active ? 0.85 : 1,
+                      transition: 'all 0.15s',
+                    }}
+                  />
+                </Box>
+                <Typography variant="caption" sx={{ fontSize: 10, lineHeight: 1, color: active ? 'primary.main' : 'text.secondary', fontWeight: active ? 700 : 400 }}>
+                  {aspect}
+                </Typography>
+              </Box>
+            )
+          })}
         </Box>
-        {params.resolution_tier === '2k' && (
-          <Alert severity={advice && !advice.fits ? 'warning' : 'info'} sx={{ py: 0 }}>
-            2K is ~4× the pixels of 1K — much slower and more VRAM-hungry (attention scales with token count). Turbo holds a fixed shift at 2K; RAW uses resolution-adaptive shift.
-            {advice && (
-              advice.fits
-                ? ` Estimated to fit${advice.free_vram_gb != null ? ` (~${advice.free_vram_gb}GB free)` : ''}${advice.blocks_to_swap ? `; recommend loading with ~${advice.blocks_to_swap} block-swap.` : '.'}`
-                : ` May not fit${advice.free_vram_gb != null ? ` (~${advice.free_vram_gb}GB free)` : ''} — load with ~${advice.blocks_to_swap} block-swap (System tab), use fp8, or lower the resolution.`
-            )}
-          </Alert>
-        )}
         <Grid container spacing={1.5}>
           <Grid item xs={6}>
             <TextField
@@ -114,17 +133,6 @@ export default function DimensionSection() {
             />
           </Grid>
         </Grid>
-        <Stack direction="row" spacing={2} alignItems="center">
-          <Typography variant="body2" sx={{ minWidth: 60, color: 'text.secondary' }}>Batch</Typography>
-          <Slider
-            value={params.num_images}
-            min={1} max={4} step={1}
-            onChange={(_, v) => setParam('num_images', v as number)}
-            marks valueLabelDisplay="auto"
-            sx={{ flex: 1 }}
-          />
-          <Typography variant="body2" sx={{ minWidth: 16 }}>{params.num_images}</Typography>
-        </Stack>
       </Stack>
     </Box>
   )

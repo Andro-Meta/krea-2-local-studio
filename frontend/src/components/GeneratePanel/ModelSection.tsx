@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
-import { Alert, Box, Button, Chip, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material'
+import { Alert, Box, Button, Chip, Collapse, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { apiFetch, type AppSettings } from '../../api'
 import { useStore } from '../../store'
 
@@ -49,6 +50,7 @@ export default function ModelSection() {
   const [runtimeSettings, setRuntimeSettings] = useState<AppSettings | null>(null)
   const [savingRuntime, setSavingRuntime] = useState(false)
   const [runtimeMessage, setRuntimeMessage] = useState<{ severity: 'success' | 'warning' | 'error'; text: string } | null>(null)
+  const [showModelAdvanced, setShowModelAdvanced] = useState(false)
   const loaded = systemReport?.model_status?.loaded
   const loadedCp = systemReport?.model_status?.checkpoint ?? ''
   const engines = engineCatalog?.engines ?? []
@@ -201,6 +203,15 @@ export default function ModelSection() {
           ))}
         </Stack>
         <Box>
+          <Button size="small" onClick={() => setShowModelAdvanced(v => !v)}
+            endIcon={<ExpandMoreIcon sx={{ transform: showModelAdvanced ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />}
+            sx={{ textTransform: 'none', color: 'text.secondary' }}>
+            Advanced — VAE decoder & text encoder
+          </Button>
+        </Box>
+        <Collapse in={showModelAdvanced}>
+          <Stack spacing={2}>
+        <Box>
           <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5 }}>
             VAE decoder mode
           </Typography>
@@ -212,7 +223,7 @@ export default function ModelSection() {
                 label="Decoder"
                 value={vaeMode}
                 onChange={e => updateRuntimeSettings({ krea2_vae_mode: e.target.value as AppSettings['krea2_vae_mode'] })}
-                helperText="Applies after model reload. Qwen is the current default."
+                helperText="ComfyUI applies this on the next generation (no model reload needed). Qwen is the default."
                 sx={{ minWidth: 240 }}
               >
                 <MenuItem value="qwen">Qwen VAE (default)</MenuItem>
@@ -262,6 +273,8 @@ export default function ModelSection() {
             {textEncoder?.status ? ` · ${textEncoder.status}` : ''}
           </Typography>
         </Box>
+          </Stack>
+        </Collapse>
         {loaded && loadedCp && (
           <Typography variant="caption" sx={{ color: 'success.main', wordBreak: 'break-all' }}>
             Loaded: {loadedCp.split(/[\\/]/).pop()}

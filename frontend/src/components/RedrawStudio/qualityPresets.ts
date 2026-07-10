@@ -19,13 +19,17 @@ export interface RedrawQualityPreset {
   qualityMode: RedrawQualityMode
   checkpoint: GenerationRequest['checkpoint']
   quantization: GenerationRequest['quantization']
+  diffusionEngine: NonNullable<GenerationRequest['diffusion_engine']>
+  sampler: NonNullable<GenerationRequest['sampler']>
+  scheduler: NonNullable<GenerationRequest['scheduler']>
+  cfgZeroStar: boolean
   steps: number
   cfg: number
   mu: number | null
   moodboardStrength: number
   denoise: number
   usePromptExpander: boolean
-  editProvider: 'auto' | 'krea_native' | 'flux_fill'
+  editProvider: 'auto' | 'krea_native'
   promptHint: string
   warning?: string
 }
@@ -37,7 +41,7 @@ const modeBoost: Record<RedrawQualityMode, { steps: number; strengthDelta: numbe
   raw_benchmark: { steps: 52, strengthDelta: 0, expander: true },
 }
 
-const base: Record<RedrawTaskKind, Omit<RedrawQualityPreset, 'qualityMode' | 'steps' | 'checkpoint' | 'quantization' | 'cfg' | 'mu' | 'usePromptExpander'>> = {
+const base: Record<RedrawTaskKind, Omit<RedrawQualityPreset, 'qualityMode' | 'steps' | 'checkpoint' | 'quantization' | 'cfg' | 'mu' | 'usePromptExpander' | 'sampler' | 'scheduler' | 'diffusionEngine' | 'cfgZeroStar'>> = {
   recreate: {
     task: 'recreate',
     moodboardStrength: 0.6,
@@ -123,13 +127,20 @@ export function presetFor(task: RedrawTaskKind, qualityMode: RedrawQualityMode):
   const boost = modeBoost[qualityMode]
   const preset = base[task]
   const raw = qualityMode === 'raw_benchmark'
+  // Community default recipe (the "best settings" sweep winner): Turbo Int8,
+  // CFG 1 with CFG-Zero* on, er_sde/beta57. RAW benchmark keeps the base-model
+  // reference path (bf16, euler/beta, real CFG) for quality comparisons.
   return {
     ...preset,
     qualityMode,
     checkpoint: raw ? 'raw' : 'turbo',
-    quantization: raw ? 'bf16' : 'fp8',
+    quantization: raw ? 'bf16' : 'int8',
+    diffusionEngine: raw ? 'native_pytorch' : 'native_int8_convrot',
+    sampler: 'er_sde',
+    scheduler: raw ? 'beta' : 'beta57',
+    cfgZeroStar: !raw,
     steps: boost.steps,
-    cfg: raw ? 3.5 : 0,
+    cfg: raw ? 3.5 : 1.0,
     mu: raw ? null : 1.15,
     moodboardStrength: clamp(preset.moodboardStrength + boost.strengthDelta, 0.25, 0.75),
     usePromptExpander: boost.expander,

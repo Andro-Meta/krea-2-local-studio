@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react'
 import {
   Accordion, AccordionDetails, AccordionSummary,
-  Box, Button, Chip, FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, Tooltip, Typography,
+  Alert, Box, Button, Chip, FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
 import { useStore } from '../../store'
 import { apiFetch, type BatchPlan } from '../../api'
+import { INT8_VARIANTS } from './QuickPresets'
+
+const INT8_VARIANT_COUNT = INT8_VARIANTS.length
 
 type SamplerCatalog = Awaited<ReturnType<typeof apiFetch.samplerCatalog>>
 
@@ -18,12 +21,12 @@ function InfoTip({ text }: { text: string }) {
   )
 }
 
-function LabeledSlider({ label, value, min, max, step, onChange, tip, helperText }: {
+function LabeledSlider({ label, value, min, max, step, onChange, tip, helperText, disabled }: {
   label: string; value: number; min: number; max: number; step: number
-  onChange: (v: number) => void; tip?: string; helperText?: string
+  onChange: (v: number) => void; tip?: string; helperText?: string; disabled?: boolean
 }) {
   return (
-    <Box sx={{ width: '100%' }}>
+    <Box sx={{ width: '100%', opacity: disabled ? 0.45 : 1 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
         <Typography variant="body2" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
           {label}{tip && <InfoTip text={tip} />}
@@ -36,6 +39,7 @@ function LabeledSlider({ label, value, min, max, step, onChange, tip, helperText
         value={value} min={min} max={max} step={step}
         onChange={(_, v) => onChange(v as number)}
         size="small"
+        disabled={disabled}
         sx={{ mt: 0.5 }}
       />
       {helperText && (
@@ -51,8 +55,17 @@ export default function ParameterSection() {
   const { params, setParam, setParams } = useStore()
   const [advOpen, setAdvOpen] = useState(false)
   const isTurbo = params.checkpoint === 'turbo'
+  // Mr. Flow and God Mode drive steps/CFG/sampler from their own presets, so the
+  // normal controls are inert under them — grey them out to avoid the conflict.
+  const pipelineOverridesSampling = !!params.mrflow || !!params.god_mode
+  // Very large custom/preset outputs are too heavy to batch on 24GB; force single image.
+  const isLargeOutput = Math.max(params.width, params.height) >= 2560
   const [catalog, setCatalog] = useState<SamplerCatalog | null>(null)
   const [batchPlan, setBatchPlan] = useState<BatchPlan | null>(null)
+  useEffect(() => {
+    if (isLargeOutput && params.num_images !== 1) setParam('num_images', 1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLargeOutput])
   const rbgExpressionDefaultsActive =
     params.seed_variance_preset === 'creative' &&
     params.seed_variance_algorithm === 'rbg' &&
@@ -113,25 +126,20 @@ export default function ParameterSection() {
   const supportedSchedulers = currentSampler?.supported_schedulers ?? ['simple', 'normal', 'beta', 'sgm_uniform']
   const recommendedSteps = currentSampler?.recommended_steps
 
-  const applyCombo = (c: { sampler: string; scheduler: string; steps: number; cfg: number }) => {
+  const applyCombo = (c: { sampler: string; scheduler: string; steps: number; cfg: number; cfg_zero_star?: boolean }) => {
     setParams({
       sampler: c.sampler as typeof params.sampler,
       scheduler: c.scheduler as typeof params.scheduler,
       steps: c.steps,
       cfg: c.cfg,
-    })
-  }
-  const setEnhancerVariant = (variant: typeof params.krea_enhancer_variant) => {
-    setParams({
-      krea_enhancer_variant: variant,
-      use_rebalance: variant !== 'current',
-      krea_enhancer_enabled: variant !== 'off',
+      // Presets carrying the CFG-Zero* flag toggle it on; others turn it off so
+      // switching presets is predictable.
+      cfg_zero_star: !!c.cfg_zero_star,
     })
   }
   const setInpaintMethod = (method: typeof params.inpaint_method) => {
     setParams({
       inpaint_method: method,
-      edit_provider: method === 'flux_fill' ? 'flux_fill' : params.edit_provider,
       ...(method === 'lanpaint_experimental'
         ? {
             steps: Math.max(params.steps, 20),
@@ -171,62 +179,32 @@ export default function ParameterSection() {
         Parameters
       </Typography>
       <Stack spacing={2}>
-        <TextField
-          select
-          label="Creativity"
-          value={params.creativity}
-          onChange={e => setCreativity(e.target.value as typeof params.creativity)}
-          size="small"
-          fullWidth
-          helperText="Native Krea control: higher adds aesthetic interpretation; lower keeps tighter prompt adherence."
-        >
-          <MenuItem value="raw">Raw / literal</MenuItem>
-          <MenuItem value="low">Low</MenuItem>
-          <MenuItem value="medium">Medium (default)</MenuItem>
-          <MenuItem value="high">High</MenuItem>
-        </TextField>
-
-        <LabeledSlider
-          label="Steps"
-          value={params.steps}
-          min={1} max={60} step={1}
-          onChange={v => setParam('steps', v)}
-          tip={isTurbo
-            ? 'Turbo: 8 steps is optimal. More steps add compute with minimal quality gain.'
-            : 'RAW: 52 steps is optimal for maximum quality.'}
-          helperText={isTurbo ? 'Turbo default: 8' : 'RAW default: 52'}
-        />
-
-        <LabeledSlider
-          label="CFG Scale"
-          value={params.cfg}
-          min={0} max={10} step={0.1}
-          onChange={v => setParam('cfg', v)}
-          tip="Classifier-Free Guidance adds an unconditional/negative pass. Turbo still uses your prompt at CFG 0; it is distilled to follow the conditional prompt without extra CFG. RAW uses real CFG."
-          helperText={isTurbo ? 'Turbo default: 0 does not ignore the prompt; use 1+ only for experiments' : 'RAW default: 3.5'}
-        />
-
-        {params.cfg > 0 && (
-          <Box>
-            <FormControlLabel
-              control={<Switch size="small" checked={params.cfg_zero_star} onChange={e => setParam('cfg_zero_star', e.target.checked)} />}
-              label={
-                <Typography variant="body2" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
-                  CFG-Zero*
-                  <InfoTip text="Flow-matching guidance upgrade (arXiv:2503.18886). Optimized-scale corrects velocity error and zero-init skips the unreliable first step(s). Improves color/detail and prompt alignment at real CFG. Only applies when CFG > 0; not combined with the CFG++ samplers." />
-                </Typography>
-              }
+        {pipelineOverridesSampling ? (
+          <Alert severity="info" sx={{ py: 0 }}>
+            {params.god_mode ? 'God Mode' : 'Mr. Flow'} sets steps, CFG, and sampler automatically
+            {params.mrflow ? ' — tune them in the Mr. Flow settings card above.' : '.'}
+          </Alert>
+        ) : (
+          <>
+            <LabeledSlider
+              label="Steps"
+              value={params.steps}
+              min={1} max={60} step={1}
+              onChange={v => setParam('steps', v)}
+              tip={isTurbo
+                ? 'Turbo: 8 steps is optimal. More steps add compute with minimal quality gain.'
+                : 'RAW: 52 steps is optimal for maximum quality.'}
+              helperText={isTurbo ? 'Turbo default: 8' : 'RAW default: 52'}
             />
-            {params.cfg_zero_star && (
-              <LabeledSlider
-                label="Zero-init steps"
-                value={params.cfg_zero_init_steps}
-                min={0} max={4} step={1}
-                onChange={v => setParam('cfg_zero_init_steps', v)}
-                helperText="Skip the first N ODE steps (paper default 1). 0 = optimized-scale only."
-              />
-            )}
-          </Box>
+            <LabeledSlider
+              label="CFG Scale"
+              value={params.cfg}
+              min={0} max={10} step={0.1}
+              onChange={v => setParam('cfg', v)}
+              tip="Classifier-Free Guidance adds an unconditional/negative pass. Turbo still uses your prompt at CFG 0; it is distilled to follow the conditional prompt without extra CFG. RAW uses real CFG."
+              helperText={isTurbo ? 'Turbo default: 0 does not ignore the prompt; use 1+ only for experiments' : 'RAW default: 3.5'}
+            />
+          </>
         )}
 
         {params.mode !== 'txt2img' && (
@@ -257,20 +235,63 @@ export default function ParameterSection() {
             />
           </Grid>
           <Grid item xs={6}>
-            <TextField
-              label="Batch"
-              type="number"
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5 }}>
+              Batch{isLargeOutput ? '' : ' (1–4)'}
+            </Typography>
+            <ToggleButtonGroup
+              exclusive
               size="small"
               fullWidth
-              value={params.num_images}
-              onChange={e => setParam('num_images', Math.max(1, Math.min(4, Number(e.target.value))))}
-              helperText="1–4 images"
-              inputProps={{ min: 1, max: 4 }}
-            />
+              value={isLargeOutput ? 1 : params.num_images}
+              disabled={isLargeOutput}
+              onChange={(_, v) => { if (v != null) setParam('num_images', v as number) }}
+              sx={{
+                '& .MuiToggleButton-root': {
+                  minHeight: 40,
+                  flex: 1,
+                  py: 0.75,
+                  fontFamily: 'Roboto Mono, monospace',
+                  fontSize: 14,
+                },
+              }}
+            >
+              {[1, 2, 3, 4].map(n => (
+                <ToggleButton key={n} value={n} disabled={isLargeOutput && n !== 1}>
+                  {n}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+            <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
+              {isLargeOutput ? 'Large outputs are single-image only' : 'Tap a count — no typing needed'}
+            </Typography>
           </Grid>
         </Grid>
 
-        {params.num_images > 1 && (
+        {isTurbo && params.quantization === 'int8' && (
+          <Box>
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked={params.batch_int8_all}
+                  onChange={e => setParam('batch_int8_all', e.target.checked)}
+                />
+              }
+              label={
+                <Typography variant="body2">
+                  Batch all Turbo INT8 models
+                </Typography>
+              }
+            />
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', ml: 4, mt: -0.5 }}>
+              {params.batch_int8_all
+                ? `Renders your batch with each of the ${INT8_VARIANT_COUNT} INT8 checkpoints — ${(isLargeOutput ? 1 : params.num_images) * INT8_VARIANT_COUNT} images total (${isLargeOutput ? 1 : params.num_images} per model, same seed), safe-queued for comparison.`
+                : `Sweep the current settings across all ${INT8_VARIANT_COUNT} Turbo INT8 checkpoints (batch × ${INT8_VARIANT_COUNT} images).`}
+            </Typography>
+          </Box>
+        )}
+
+        {params.num_images > 1 && !params.batch_int8_all && (
           <TextField
             select
             label="Batch mode"
@@ -290,6 +311,16 @@ export default function ParameterSection() {
             <MenuItem value="parallel" disabled={Boolean(batchPlan && !batchPlan.allowed)}>Parallel (experimental)</MenuItem>
           </TextField>
         )}
+
+        <FormControlLabel
+          control={<Switch checked={params.vae_degrid} onChange={e => setParam('vae_degrid', e.target.checked)} size="small" />}
+          label={
+            <Typography variant="body2" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
+              VAE DeGrid
+              <InfoTip text="Removes the faint 2px pixel grid left by the Qwen/Wan VAE after decode. On by default — turn off only to A/B compare or if you prefer the raw decode." />
+            </Typography>
+          }
+        />
 
         {/* Detail refine runs a second self-pass; the backend skips it for
             inpaint/outpaint (must not re-touch kept pixels), so hide it there. */}
@@ -327,6 +358,7 @@ export default function ParameterSection() {
           </Box>
         )}
 
+        {!pipelineOverridesSampling && (
         <Accordion expanded={advOpen} onChange={(_, v) => setAdvOpen(v)} disableGutters>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
@@ -335,6 +367,42 @@ export default function ParameterSection() {
           </AccordionSummary>
           <AccordionDetails>
             <Stack spacing={2}>
+              <TextField
+                select
+                label="Creativity"
+                value={params.creativity}
+                onChange={e => setCreativity(e.target.value as typeof params.creativity)}
+                size="small"
+                fullWidth
+                helperText="Native Krea control: higher adds aesthetic interpretation; lower keeps tighter prompt adherence."
+              >
+                <MenuItem value="raw">Raw / literal</MenuItem>
+                <MenuItem value="low">Low</MenuItem>
+                <MenuItem value="medium">Medium (default)</MenuItem>
+                <MenuItem value="high">High</MenuItem>
+              </TextField>
+              {params.cfg > 0 && (
+                <Box>
+                  <FormControlLabel
+                    control={<Switch size="small" checked={params.cfg_zero_star} onChange={e => setParam('cfg_zero_star', e.target.checked)} />}
+                    label={
+                      <Typography variant="body2" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
+                        CFG-Zero*
+                        <InfoTip text="Flow-matching guidance upgrade (arXiv:2503.18886). Optimized-scale corrects velocity error and zero-init skips the unreliable first step(s). Improves color/detail and prompt alignment at real CFG. Only applies when CFG > 0; not combined with the CFG++ samplers." />
+                      </Typography>
+                    }
+                  />
+                  {params.cfg_zero_star && (
+                    <LabeledSlider
+                      label="Zero-init steps"
+                      value={params.cfg_zero_init_steps}
+                      min={0} max={4} step={1}
+                      onChange={v => setParam('cfg_zero_init_steps', v)}
+                      helperText="Skip the first N ODE steps (paper default 1). 0 = optimized-scale only."
+                    />
+                  )}
+                </Box>
+              )}
               {catalog && catalog.recommended_combos.length > 0 && (
                 <Box>
                   <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.5 }}>
@@ -413,11 +481,10 @@ export default function ParameterSection() {
                   onChange={e => setInpaintMethod(e.target.value as typeof params.inpaint_method)}
                   size="small"
                   fullWidth
-                  helperText="Native Krea is the default. LanPaint is experimental and currently inpaint-only. FLUX Fill uses the optional strict edit provider."
+                  helperText="Native Krea is the default. LanPaint is experimental and currently inpaint-only."
                 >
                   <MenuItem value="native">Native Krea masked sampler</MenuItem>
                   {params.mode === 'inpaint' && <MenuItem value="lanpaint_experimental">LanPaint experimental (inpaint)</MenuItem>}
-                  <MenuItem value="flux_fill">FLUX Fill provider</MenuItem>
                 </TextField>
               )}
               {params.mode === 'inpaint' && params.inpaint_method === 'native' && (
@@ -768,11 +835,13 @@ export default function ParameterSection() {
                             onChange={e => setParam('seed_variance_schedule', e.target.value as typeof params.seed_variance_schedule)}
                             size="small"
                             fullWidth
-                            helperText="Step cutoff approximates composition lock"
+                            helperText="Composition Lock: hard_lock keeps composition fixed, then varies details"
                           >
-                            <MenuItem value="constant">Constant</MenuItem>
-                            <MenuItem value="decreasing">Decreasing</MenuItem>
-                            <MenuItem value="step_cutoff">Step cutoff</MenuItem>
+                            <MenuItem value="constant">Constant (standard)</MenuItem>
+                            <MenuItem value="decreasing">Decreasing (fade out)</MenuItem>
+                            <MenuItem value="step_cutoff">Step cutoff (block switch)</MenuItem>
+                            <MenuItem value="hard_lock">Hard lock (composition lock)</MenuItem>
+                            <MenuItem value="tiered_release">Tiered release (multi-phase)</MenuItem>
                           </TextField>
                         </Grid>
                       </Grid>
@@ -882,47 +951,28 @@ export default function ParameterSection() {
                 </>
               )}
               <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', mt: 0.5 }}>
-                Experimental Krea 2 Enhancer
-                <InfoTip text="Runtime patch based on the ComfyUI Krea2T enhancer. It runs Krea's text-fusion normally, compares it with a boosted pass, then applies a capped delta. Default is off." />
+                Krea 2 Enhancer
+                <InfoTip text="ComfyUI-Krea2T-Enhancer model patch: runs Krea's text-fusion, compares it with a boosted pass, and applies a capped delta for better prompt adherence and micro-detail. Off by default." />
               </Typography>
-              <TextField
-                select
-                label="Prompt adherence experiment"
-                value={params.krea_enhancer_variant}
-                onChange={e => setEnhancerVariant(e.target.value as typeof params.krea_enhancer_variant)}
-                size="small"
-                fullWidth
-                helperText="Use fixed seed/prompt to compare baseline, current rebalance, enhancer, and stacked conditioning."
-              >
-                <MenuItem value="off">Off</MenuItem>
-                <MenuItem value="current">Current enhancer</MenuItem>
-                <MenuItem value="capped_delta">Text-fusion capped delta</MenuItem>
-                <MenuItem value="current_plus_capped">Stacked test</MenuItem>
-              </TextField>
+              <FormControlLabel
+                control={<Switch size="small" checked={params.krea_enhancer_enabled}
+                  onChange={e => setParams({ krea_enhancer_enabled: e.target.checked, krea_enhancer_variant: e.target.checked ? 'current' : 'off' })} />}
+                label={<Typography variant="body2">Enable enhancer <Typography component="span" variant="caption" sx={{ color: 'text.disabled' }}>· prompt adherence + micro-detail</Typography></Typography>}
+              />
               {params.krea_enhancer_enabled && (
-                <>
-                  <LabeledSlider
-                    label="Enhancer strength"
-                    value={params.krea_enhancer_strength}
-                    min={0} max={2} step={0.05}
-                    onChange={v => setParam('krea_enhancer_strength', v)}
-                    tip="Blends the internal text-fusion enhancement from neutral 0.0 to full 2.0. Start at 1.0 for A/B tests."
-                    helperText="Experimental · compare with a fixed seed before using in a final workflow"
-                  />
-                  {(params.krea_enhancer_variant === 'capped_delta' || params.krea_enhancer_variant === 'current_plus_capped') && (
-                    <LabeledSlider
-                      label="Delta cap"
-                      value={params.krea_enhancer_delta_cap}
-                      min={0.05} max={2} step={0.05}
-                      onChange={v => setParam('krea_enhancer_delta_cap', v)}
-                      tip="Caps text-fusion output shift relative to the reference pass. Lower is safer; 0.75 matches the default."
-                    />
-                  )}
-                </>
+                <LabeledSlider
+                  label="Enhancer strength"
+                  value={params.krea_enhancer_strength}
+                  min={0} max={2} step={0.05}
+                  onChange={v => setParam('krea_enhancer_strength', v)}
+                  tip="How strongly the text-fusion enhancement is blended in. 1.0 is the tuned default; lower is subtler, above 1.0 can over-saturate."
+                  helperText="1.0 = default · lower = subtler · >1 = stronger"
+                />
               )}
             </Stack>
           </AccordionDetails>
         </Accordion>
+        )}
       </Stack>
     </Box>
   )

@@ -11,6 +11,123 @@ import aiosqlite
 
 from settings import DB_PATH, OUTPUTS_DIR
 
+THUMB_SIZE = (320, 320)
+THUMB_QUALITY = 75
+THUMBS_DIRNAME = ".thumbs"
+
+
+def _thumbs_root() -> Path:
+    return OUTPUTS_DIR / THUMBS_DIRNAME
+
+
+def _thumb_cache_path(filename: str) -> Path:
+    # Keep a stable 1:1 mapping under outputs/.thumbs without nesting user folders.
+    safe = filename.replace("\\", "/").replace("/", "__")
+    return _thumbs_root() / f"{safe}.webp"
+
+
+def _metadata_from_png(path: Path) -> dict:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            raw = img.info.get("krea2_metadata") or img.info.get("parameters") or "{}"
+        data = json.loads(raw) if raw else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _iter_gallery_files(owner_username: str | None, is_admin: bool) -> list[tuple[str, Path, str | None]]:
+    if not OUTPUTS_DIR.exists():
+        return []
+    files: list[tuple[str, Path, str | None]] = []
+    if is_admin:
+        roots = [(None, OUTPUTS_DIR), *[(p.name, p) for p in OUTPUTS_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")]]
+    else:
+        roots = [(owner_username or "", OUTPUTS_DIR / (owner_username or ""))]
+    for owner, root in roots:
+        if not root.exists():
+            continue
+        for path in root.glob("*.png"):
+            rel = path.relative_to(OUTPUTS_DIR).as_posix()
+            files.append((rel, path, owner))
+    return files
+
+
+async def _prune_missing_rows(db: aiosqlite.Connection, *, owner_username: str | None, is_admin: bool) -> None:
+    db.row_factory = aiosqlite.Row
+    if is_admin:
+        rows = await (await db.execute("SELECT id, filename FROM gallery")).fetchall()
+    else:
+        rows = await (
+            await db.execute("SELECT id, filename FROM gallery WHERE owner_username = ?", (owner_username or "",))
+        ).fetchall()
+    missing = [row["id"] for row in rows if not (OUTPUTS_DIR / row["filename"]).exists()]
+    if missing:
+        await db.executemany("DELETE FROM gallery WHERE id = ?", [(item,) for item in missing])
+        await db.commit()
+        for row in rows:
+            if row["id"] in missing:
+                _thumb_cache_path(row["filename"]).unlink(missing_ok=True)
+
+
+async def _import_filesystem_orphans(
+    db: aiosqlite.Connection,
+    *,
+    owner_username: str | None,
+    is_admin: bool,
+) -> int:
+    """Promote PNGs that exist on disk but not in the DB into gallery rows.
+
+    Cheap: only reads PNG text metadata for new files. Thumbnails are generated
+    lazily for the requested page, not for the whole library.
+    """
+    db.row_factory = aiosqlite.Row
+    if is_admin:
+        known_rows = await (await db.execute("SELECT filename FROM gallery")).fetchall()
+    else:
+        known_rows = await (
+            await db.execute("SELECT filename FROM gallery WHERE owner_username = ?", (owner_username or "",))
+        ).fetchall()
+    known = {row["filename"] for row in known_rows}
+    imported = 0
+    for filename, path, owner in _iter_gallery_files(owner_username, is_admin):
+        if filename in known:
+            continue
+        meta = _metadata_from_png(path)
+        created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime))
+        prompt = str(meta.get("prompt") or meta.get("original_prompt") or "")
+        loras = meta.get("loras") or []
+        if owner:
+            meta = {**meta, "owner_username": owner}
+        await db.execute(
+            """INSERT INTO gallery
+               (filename, prompt, negative_prompt, checkpoint, steps, cfg,
+                width, height, seed, loras, mode, metadata_json, owner_username, favorite, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+            (
+                filename,
+                prompt,
+                str(meta.get("negative_prompt") or ""),
+                str(meta.get("checkpoint") or (meta.get("model") or {}).get("checkpoint") or ""),
+                int(meta.get("steps") or 0),
+                float(meta.get("cfg") or 0.0),
+                int(meta.get("width") or (meta.get("model") or {}).get("width") or 0),
+                int(meta.get("height") or (meta.get("model") or {}).get("height") or 0),
+                int(meta.get("seed") or 0),
+                json.dumps(loras),
+                str(meta.get("mode") or ""),
+                json.dumps(meta),
+                owner,
+                created,
+            ),
+        )
+        imported += 1
+    if imported:
+        await db.commit()
+    return imported
+
 
 async def init_db() -> None:
     async with aiosqlite.connect(str(DB_PATH)) as db:
@@ -44,6 +161,9 @@ async def init_db() -> None:
         )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_gallery_owner_created ON gallery(owner_username, created_at DESC)"
+        )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_filename ON gallery(filename)"
         )
         await db.commit()
 
@@ -80,16 +200,45 @@ async def save_image(
         return cursor.lastrowid
 
 
-def _make_thumbnail(img_path: Path) -> str | None:
+def _make_thumbnail(img_path: Path, *, filename: str | None = None) -> str | None:
+    """Return a WEBP thumbnail as base64, using a disk cache keyed by source mtime."""
     try:
         from PIL import Image
-        img = Image.open(img_path)
-        img.thumbnail((320, 320))
-        buf = io.BytesIO()
-        img.save(buf, format="WEBP", quality=75)
-        return base64.b64encode(buf.getvalue()).decode()
+
+        if not img_path.exists():
+            return None
+        cache_key = filename or img_path.name
+        cache_path = _thumb_cache_path(cache_key)
+        src_mtime = img_path.stat().st_mtime
+        if cache_path.exists() and cache_path.stat().st_mtime >= src_mtime:
+            return base64.b64encode(cache_path.read_bytes()).decode()
+
+        with Image.open(img_path) as img:
+            img = img.convert("RGB")
+            img.thumbnail(THUMB_SIZE)
+            buf = io.BytesIO()
+            img.save(buf, format="WEBP", quality=THUMB_QUALITY)
+            data = buf.getvalue()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(".webp.tmp")
+        tmp.write_bytes(data)
+        tmp.replace(cache_path)
+        return base64.b64encode(data).decode()
     except Exception:
         return None
+
+
+def _hydrate_item(row: aiosqlite.Row | dict) -> dict:
+    item = dict(row)
+    item["favorite"] = bool(item.get("favorite"))
+    try:
+        item["metadata"] = json.loads(item.get("metadata_json") or "{}")
+    except json.JSONDecodeError:
+        item["metadata"] = {}
+    img_path = OUTPUTS_DIR / item["filename"]
+    item["thumbnail_b64"] = _make_thumbnail(img_path, filename=item["filename"]) if img_path.exists() else None
+    item["filesystem_only"] = False
+    return item
 
 
 async def get_gallery(
@@ -99,7 +248,10 @@ async def get_gallery(
     owner_username: str | None = None,
     is_admin: bool = True,
 ) -> dict:
+    page = max(1, int(page or 1))
+    page_size = max(1, min(100, int(page_size or 50)))
     offset = (page - 1) * page_size
+
     clauses: list[str] = []
     params: list[object] = []
     if favorites_only:
@@ -108,27 +260,23 @@ async def get_gallery(
         clauses.append("owner_username = ?")
         params.append(owner_username or "")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
     async with aiosqlite.connect(str(DB_PATH)) as db:
+        await _prune_missing_rows(db, owner_username=owner_username, is_admin=is_admin)
+        if not favorites_only:
+            await _import_filesystem_orphans(db, owner_username=owner_username, is_admin=is_admin)
+
         db.row_factory = aiosqlite.Row
-        total_row = await (await db.execute(f"SELECT COUNT(*) FROM gallery {where}", params)).fetchone()
-        total = total_row[0]
+        total_row = await (await db.execute(f"SELECT COUNT(*) AS n FROM gallery {where}", params)).fetchone()
+        total = int(total_row["n"] if total_row else 0)
         rows = await (
             await db.execute(
                 f"SELECT * FROM gallery {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                (*params, page_size, offset),
+                [*params, page_size, offset],
             )
         ).fetchall()
-        items = []
-        for row in rows:
-            item = dict(row)
-            item["favorite"] = bool(item["favorite"])
-            try:
-                item["metadata"] = json.loads(item.get("metadata_json") or "{}")
-            except json.JSONDecodeError:
-                item["metadata"] = {}
-            img_path = OUTPUTS_DIR / item["filename"]
-            item["thumbnail_b64"] = _make_thumbnail(img_path) if img_path.exists() else None
-            items.append(item)
+
+    items = [_hydrate_item(row) for row in rows]
     return {"items": items, "total": total}
 
 
@@ -175,6 +323,7 @@ async def delete_image(
         await db.commit()
     img_path = OUTPUTS_DIR / filename
     img_path.unlink(missing_ok=True)
+    _thumb_cache_path(filename).unlink(missing_ok=True)
     return filename
 
 

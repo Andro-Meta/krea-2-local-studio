@@ -1,0 +1,568 @@
+{
+ "158": {
+  "inputs": {
+   "vae_name": "Krea-RealVae.safetensors"
+  },
+  "class_type": "VAELoader",
+  "_meta": {
+   "title": "Load VAE"
+  }
+ },
+ "162": {
+  "inputs": {
+   "samples": [
+    "282",
+    0
+   ],
+   "vae": [
+    "158",
+    0
+   ]
+  },
+  "class_type": "VAEDecode",
+  "_meta": {
+   "title": "VAE Decode"
+  }
+ },
+ "166": {
+  "inputs": {
+   "unet_name": "KREA2\\krea2_turbo_fp8.safetensors",
+   "weight_dtype": "default"
+  },
+  "class_type": "UNETLoader",
+  "_meta": {
+   "title": "Load Diffusion Model Main"
+  }
+ },
+ "167": {
+  "inputs": {
+   "text": [
+    "271",
+    0
+   ],
+   "clip": [
+    "168",
+    0
+   ]
+  },
+  "class_type": "CLIPTextEncode",
+  "_meta": {
+   "title": "CLIP Text Encode (Positive Prompt)"
+  }
+ },
+ "168": {
+  "inputs": {
+   "clip_name": "Huihui-Qwen3-VL-4B-Instruct-abliterated.safetensors",
+   "type": "krea2",
+   "device": "default"
+  },
+  "class_type": "CLIPLoader",
+  "_meta": {
+   "title": "Load CLIP"
+  }
+ },
+ "209": {
+  "inputs": {
+   "anything": [
+    "284",
+    0
+   ],
+   "anything11": [
+    "168",
+    0
+   ],
+   "anything12": [
+    "158",
+    0
+   ]
+  },
+  "class_type": "Anything Everywhere",
+  "_meta": {
+   "title": "Anything Everywhere"
+  }
+ },
+ "210": {
+  "inputs": {
+   "source": [
+    "231",
+    0
+   ]
+  },
+  "class_type": "PreviewAny",
+  "_meta": {
+   "title": "JSON Preview"
+  }
+ },
+ "231": {
+  "inputs": {
+   "width": 2560,
+   "height": 1440,
+   "high_level_description": "",
+   "background": "",
+   "style": "photo",
+   "style.photo": "wide-angle shot with a shallow depth of field effect on the background elements, drawing focus to the central subject.",
+   "aesthetics": "cinematic, dramatic, and ethereal",
+   "lighting": "low-key, warm, and highly reflective, with numerous scattered bokeh-like lights creating a magical, deep atmosphere.",
+   "medium": "digital photograph",
+   "style_palette_data": "",
+   "elements_data": "",
+   "bg_brightness": 25,
+   "import_mode": "when empty",
+   "output_format": "compact",
+   "coord_mode": "normalized",
+   "bbox_order": "yx"
+  },
+  "class_type": "Ideogram4PromptBuilderKJ",
+  "_meta": {
+   "title": "Ideogram 4 Prompt Builder KJ"
+  }
+ },
+ "266": {
+  "inputs": {
+   "text": "watermark",
+   "clip": [
+    "168",
+    0
+   ]
+  },
+  "class_type": "CLIPTextEncode",
+  "_meta": {
+   "title": "CLIP Text Encode (Negative Prompt)"
+  }
+ },
+ "271": {
+  "inputs": {
+   "select": 1,
+   "sel_mode": false,
+   "input1": [
+    "272",
+    0
+   ],
+   "input2": [
+    "231",
+    0
+   ]
+  },
+  "class_type": "ImpactSwitch",
+  "_meta": {
+   "title": "Switch Prompt"
+  }
+ },
+ "272": {
+  "inputs": {
+   "value": "Ultra-realistic candid cinematic fullbody shot of the terrifying black skin alien sucubus, incredibly sex and alluring, suddenly caught during a daytime encounter. Dimly lit, crumbling ancient Greek temple with harsh shafts of sunlight breaking through the ceiling. The camera frames her entire form standing amidst stone debris: a powerful, athletic female torso with realistic skin texture, sweat, and veins, topped by a head where a writhing mass of venomous, scaled green serpents replaces her hair, extending down to her bare feet on the cracked temple floor. The snakes are coiling and hissing, while Medusa looks directly at the camera with piercing, calcifying eyes. Photographic artifacts: high ISO digital noise, slight motion blur on the striking snakes, realistic depth of field (sharp on her full figure, softer background), minor camera shake. Cool flash color cast, raw aesthetic, ultra-detailed textures, National Geographic cryptid style, grain."
+  },
+  "class_type": "PrimitiveStringMultiline",
+  "_meta": {
+   "title": "MANUAL Prompt"
+  }
+ },
+ "281": {
+  "inputs": {
+   "width": 2560,
+   "height": 1080,
+   "aspect_ratio": "custom",
+   "swap_dimensions": "Off",
+   "upscale_factor": 1.0,
+   "prescale_factor": 1.0,
+   "batch_size": 1
+  },
+  "class_type": "CR Aspect Ratio",
+  "_meta": {
+   "title": "\ud83d\udd33 CR Aspect Ratio"
+  }
+ },
+ "282": {
+  "inputs": {
+   "seed": 912852996130237,
+   "steps": 10,
+   "cfg": 1.2,
+   "sampler_name": "ddim",
+   "scheduler": "beta57",
+   "denoise": 1.0,
+   "model": [
+    "284",
+    0
+   ],
+   "positive": [
+    "167",
+    0
+   ],
+   "negative": [
+    "266",
+    0
+   ],
+   "latent_image": [
+    "281",
+    5
+   ]
+  },
+  "class_type": "KSampler",
+  "_meta": {
+   "title": "\u26a1KSampler\u26a1"
+  }
+ },
+ "284": {
+  "inputs": {
+   "__lm_autocomplete_meta_text": {
+    "version": 1,
+    "textWidgetName": "text",
+    "lastAccepted": {
+     "start": 34,
+     "end": 88,
+     "insertedText": "<lora:Styles of commercial advertising photography:1>,",
+     "textSnapshot": "<lora:realism_engine_krea2_v2:.7>\n<lora:Styles of commercial advertising photography:1>,"
+    }
+   },
+   "text": "<lora:realism_engine_krea2_v2:1.00> <lora:Styles of commercial advertising photography:0.50>",
+   "loras": {
+    "__value__": [
+     {
+      "name": "realism_engine_krea2_v2",
+      "strength": 1,
+      "active": true,
+      "expanded": false,
+      "clipStrength": 1,
+      "locked": false
+     },
+     {
+      "name": "Styles of commercial advertising photography",
+      "strength": "0.50",
+      "active": true,
+      "expanded": false,
+      "clipStrength": "0.50",
+      "locked": false
+     }
+    ]
+   },
+   "model": [
+    "300",
+    0
+   ],
+   "clip": [
+    "168",
+    0
+   ]
+  },
+  "class_type": "Lora Loader (LoraManager)",
+  "_meta": {
+   "title": "Lora Loader (LoraManager)"
+  }
+ },
+ "300": {
+  "inputs": {
+   "enabled": true,
+   "strength": 1.0,
+   "debug": false,
+   "model": [
+    "166",
+    0
+   ]
+  },
+  "class_type": "ComfyUI-Krea2T-Enhancer",
+  "_meta": {
+   "title": "ComfyUI-Krea2T-Enhancer"
+  }
+ },
+ "301": {
+  "inputs": {
+   "model": "seedvr2_ema_7b_sharp_fp16.safetensors",
+   "device": "cuda:0",
+   "blocks_to_swap": 16,
+   "swap_io_components": true,
+   "offload_device": "cpu",
+   "cache_model": false,
+   "attention_mode": "sdpa"
+  },
+  "class_type": "SeedVR2LoadDiTModel",
+  "_meta": {
+   "title": "SeedVR2 (Down)Load DiT Model"
+  }
+ },
+ "302": {
+  "inputs": {
+   "model": "ema_vae_fp16.safetensors",
+   "device": "cuda:0",
+   "encode_tiled": true,
+   "encode_tile_size": 1024,
+   "encode_tile_overlap": 128,
+   "decode_tiled": true,
+   "decode_tile_size": 1024,
+   "decode_tile_overlap": 128,
+   "tile_debug": "false",
+   "offload_device": "cpu",
+   "cache_model": false
+  },
+  "class_type": "SeedVR2LoadVAEModel",
+  "_meta": {
+   "title": "SeedVR2 (Down)Load VAE Model"
+  }
+ },
+ "303": {
+  "inputs": {
+   "seed": 100,
+   "new_resolution": 5120,
+   "tile_width": 1024,
+   "tile_height": 1024,
+   "mask_blur": 0,
+   "tile_padding": 64,
+   "tile_upscale_resolution": 2048,
+   "tiling_strategy": "Chess",
+   "anti_aliasing_strength": 0.0,
+   "blending_method": "auto",
+   "color_correction": "lab",
+   "image": [
+    "409",
+    0
+   ],
+   "dit": [
+    "301",
+    0
+   ],
+   "vae": [
+    "302",
+    0
+   ]
+  },
+  "class_type": "SeedVR2TilingUpscaler",
+  "_meta": {
+   "title": "SeedVR2 Tiling Upscaler"
+  }
+ },
+ "305": {
+  "inputs": {
+   "rgthree_comparer": {
+    "images": []
+   },
+   "image_a": [
+    "162",
+    0
+   ],
+   "image_b": [
+    "307",
+    0
+   ]
+  },
+  "class_type": "Image Comparer (rgthree)",
+  "_meta": {
+   "title": "Image Comparer (rgthree)"
+  }
+ },
+ "306": {
+  "inputs": {
+   "model_name": "bbox/face_yolov8m.pt"
+  },
+  "class_type": "UltralyticsDetectorProvider",
+  "_meta": {
+   "title": "UltralyticsDetectorProvider"
+  }
+ },
+ "307": {
+  "inputs": {
+   "guide_size": 1024.0,
+   "guide_size_for": true,
+   "max_size": 1536.0,
+   "seed": 42,
+   "steps": 10,
+   "cfg": 1.2,
+   "sampler_name": "ddim",
+   "scheduler": "beta57",
+   "denoise": 0.45,
+   "feather": 5,
+   "noise_mask": true,
+   "force_inpaint": true,
+   "bbox_threshold": 0.3,
+   "bbox_dilation": 10,
+   "bbox_crop_factor": 3.0,
+   "sam_detection_hint": "center-1",
+   "sam_dilation": 0,
+   "sam_threshold": 0.93,
+   "sam_bbox_expansion": 0,
+   "sam_mask_hint_threshold": 0.7,
+   "sam_mask_hint_use_negative": "False",
+   "drop_size": 10,
+   "wildcard": "",
+   "cycle": 1,
+   "inpaint_model": false,
+   "noise_mask_feather": 20,
+   "tiled_encode": false,
+   "tiled_decode": false,
+   "image": [
+    "303",
+    0
+   ],
+   "model": [
+    "284",
+    0
+   ],
+   "clip": [
+    "168",
+    0
+   ],
+   "vae": [
+    "158",
+    0
+   ],
+   "positive": [
+    "167",
+    0
+   ],
+   "negative": [
+    "266",
+    0
+   ],
+   "bbox_detector": [
+    "306",
+    0
+   ]
+  },
+  "class_type": "FaceDetailer",
+  "_meta": {
+   "title": "FaceDetailer"
+  }
+ },
+ "308": {
+  "inputs": {
+   "filename_prefix": "Krea2/krea2_final",
+   "images": [
+    "307",
+    0
+   ]
+  },
+  "class_type": "SaveImage",
+  "_meta": {
+   "title": "Save Image"
+  }
+ },
+ "401": {
+  "inputs": {
+   "unet_name": "Z-IMAGE\\z_image_turbo_bf16.safetensors",
+   "weight_dtype": "default"
+  },
+  "class_type": "UNETLoader",
+  "_meta": {
+   "title": "Load Diffusion Model"
+  }
+ },
+ "402": {
+  "inputs": {
+   "vae_name": "ae.safetensors"
+  },
+  "class_type": "VAELoader",
+  "_meta": {
+   "title": "Load VAE"
+  }
+ },
+ "403": {
+  "inputs": {
+   "clip_name": "qwen_3_4b.safetensors",
+   "type": "lumina2",
+   "device": "default"
+  },
+  "class_type": "CLIPLoader",
+  "_meta": {
+   "title": "Load CLIP"
+  }
+ },
+ "404": {
+  "inputs": {
+   "shift": 5.0,
+   "model": [
+    "401",
+    0
+   ]
+  },
+  "class_type": "ModelSamplingAuraFlow",
+  "_meta": {
+   "title": "ModelSamplingAuraFlow"
+  }
+ },
+ "405": {
+  "inputs": {
+   "text": "high quality, sharp focus, fine detail, clean",
+   "clip": [
+    "403",
+    0
+   ]
+  },
+  "class_type": "CLIPTextEncode",
+  "_meta": {
+   "title": "CLIP Text Encode (Prompt)"
+  }
+ },
+ "406": {
+  "inputs": {
+   "text": "blurry, ugly, low quality, artifacts",
+   "clip": [
+    "403",
+    0
+   ]
+  },
+  "class_type": "CLIPTextEncode",
+  "_meta": {
+   "title": "CLIP Text Encode (Prompt)"
+  }
+ },
+ "407": {
+  "inputs": {
+   "pixels": [
+    "162",
+    0
+   ],
+   "vae": [
+    "402",
+    0
+   ]
+  },
+  "class_type": "VAEEncode",
+  "_meta": {
+   "title": "VAE Encode"
+  }
+ },
+ "408": {
+  "inputs": {
+   "seed": 123456,
+   "steps": 20,
+   "cfg": 1.0,
+   "sampler_name": "dpmpp_sde",
+   "scheduler": "sgm_uniform",
+   "denoise": 0.1,
+   "model": [
+    "404",
+    0
+   ],
+   "positive": [
+    "405",
+    0
+   ],
+   "negative": [
+    "406",
+    0
+   ],
+   "latent_image": [
+    "407",
+    0
+   ]
+  },
+  "class_type": "KSampler",
+  "_meta": {
+   "title": "KSampler"
+  }
+ },
+ "409": {
+  "inputs": {
+   "samples": [
+    "408",
+    0
+   ],
+   "vae": [
+    "402",
+    0
+   ]
+  },
+  "class_type": "VAEDecode",
+  "_meta": {
+   "title": "VAE Decode"
+  }
+ }
+}

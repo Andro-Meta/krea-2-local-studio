@@ -9,11 +9,21 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PORT = int(os.environ.get("KREA_SERVER_PORT", "8200"))
 PUBLIC_PATH = "/krea"
 TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download/windows"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 URL_RE = re.compile(r"https://[\w.-]+\.ts\.net\S*")
+
+
+def current_server_port(default: int = 8200) -> int:
+    """Prefer the live KREA_SERVER_PORT from run.bat (random each launch)."""
+    raw = str(os.environ.get("KREA_SERVER_PORT", "") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return int(default)
+
+
+PORT = current_server_port()
 
 
 def find_tailscale() -> str | None:
@@ -131,7 +141,8 @@ def _krea_proxy_ports_from_funnel_output(output: str) -> list[int]:
     return ports
 
 
-def start_funnel(port: int = PORT) -> dict:
+def start_funnel(port: int | None = None) -> dict:
+    port = int(port if port is not None else current_server_port())
     args = ["funnel", f"--set-path={PUBLIC_PATH}", "--bg", "--yes", f"127.0.0.1:{port}"]
     res = _run_tailscale(args, timeout=45)
     output = (res.stdout + res.stderr).strip()
@@ -160,7 +171,8 @@ def start_funnel(port: int = PORT) -> dict:
     return {"ok": True, "url": url, "message": output}
 
 
-def local_krea_target_status(port: int = PORT) -> dict:
+def local_krea_target_status(port: int | None = None) -> dict:
+    port = int(port if port is not None else current_server_port())
     ports = [int(port)]
     try:
         status = funnel_status()
@@ -230,7 +242,8 @@ def public_funnel_probe(url: str) -> dict:
     }
 
 
-def repair_funnel(port: int = PORT) -> dict:
+def repair_funnel(port: int | None = None) -> dict:
+    port = int(port if port is not None else current_server_port())
     local = local_krea_target_status(port)
     tailscale = tailscale_status()
     up_result = {"ok": False, "message": ""}
@@ -242,6 +255,12 @@ def repair_funnel(port: int = PORT) -> dict:
     funnel_result = start_funnel(port) if local.get("ok") and tailscale.get("installed") else {"ok": False, "url": "", "message": "Local Krea or Tailscale is not ready."}
     funnel = funnel_status()
     public_probe = public_funnel_probe(funnel.get("url", "")) if funnel.get("running") else {"ok": False, "message": "Funnel is not running."}
+    if funnel.get("running") and not public_probe.get("ok"):
+        # Stale ingress session: re-register the node and probe again. Serve
+        # path config (including other apps' Funnel entries) is preserved.
+        cycle = cycle_tailscale_connection()
+        if cycle.get("ok"):
+            public_probe = public_funnel_probe_with_retries(funnel.get("url", ""), attempts=6, delay_seconds=5.0)
     ok = bool(local.get("ok") and local.get("auth_required") and tailscale.get("installed") and funnel.get("running") and public_probe.get("ok"))
     needs_admin_restart = bool(tailscale.get("installed") and funnel.get("running") and local.get("ok") and not public_probe.get("ok"))
     message = "Sharing is configured." if ok else (
@@ -271,3 +290,36 @@ def tailscale_up() -> dict:
     res = _run_tailscale(["up"], timeout=60)
     output = (res.stdout + res.stderr).strip()
     return {"ok": res.returncode == 0, "message": output}
+
+
+def cycle_tailscale_connection() -> dict:
+    """Re-register this node with Tailscale via `down` then `up`.
+
+    Heals the common Windows failure where the Funnel ingress session goes
+    stale (public URL returns 500 / closes TLS while `funnel status` looks
+    correct). Serve/Funnel path config is preserved — other apps sharing this
+    node (media stack, etc.) keep their entries; they just reconnect with us.
+    """
+    import time
+
+    down = _run_tailscale(["down"], timeout=30)
+    time.sleep(2)
+    up = _run_tailscale(["up"], timeout=60)
+    time.sleep(5)
+    ok = up.returncode == 0
+    message = "\n".join(part for part in [(down.stdout + down.stderr).strip(), (up.stdout + up.stderr).strip()] if part)
+    return {"ok": ok, "message": message or ("Tailscale connection cycled." if ok else "tailscale up failed.")}
+
+
+def public_funnel_probe_with_retries(url: str, *, attempts: int = 4, delay_seconds: float = 5.0) -> dict:
+    """Probe the public Funnel URL, tolerating ingress propagation delay."""
+    import time
+
+    result: dict = {"ok": False, "message": "No public Funnel URL is configured."}
+    for attempt in range(max(1, int(attempts))):
+        result = public_funnel_probe(url)
+        if result.get("ok"):
+            return result
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    return result

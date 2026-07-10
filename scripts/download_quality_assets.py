@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download Redraw quality benchmark/provider assets.")
     parser.add_argument(
         "--assets",
-        default="krea2_turbo_bf16,krea2_raw_bf16,flux_fill",
+        default="krea2_turbo_bf16,krea2_raw_bf16",
         help="Comma-separated asset ids, or 'all'.",
     )
     parser.add_argument("--check", action="store_true", help="Only report local status.")

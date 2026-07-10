@@ -17,6 +17,7 @@ class QualityAssetSpec:
     kind: Literal["file", "snapshot"]
     purpose: str
     allow_patterns: list[str] | None = None
+    required_paths: list[str] | None = None
     download_enabled: bool = True
     disabled_reason: str = ""
 
@@ -54,11 +55,11 @@ def asset_specs() -> list[QualityAssetSpec]:
         ),
         QualityAssetSpec(
             id="krea2_turbo_int8_convrot",
-            repo_id="Comfy-Org/Krea-2",
-            filename="diffusion_models/krea2_turbo_int8_convrot.safetensors",
-            local_path=diffusion_dir / "krea2_turbo_int8_convrot.safetensors",
+            repo_id="kakkkarotto/kreamania_v2-int8-convrot.safetensors",
+            filename="kreamania_v2-int8-convrot.safetensors",
+            local_path=diffusion_dir / "kreamania_v2-int8-convrot.safetensors",
             kind="file",
-            purpose="Krea 2 Turbo INT8 ConvRot for native PyTorch W8A8 loading",
+            purpose="Kreamania v2 Turbo INT8 ConvRot (default) for native PyTorch W8A8 loading",
         ),
         QualityAssetSpec(
             id="krea2_turbo_int8",
@@ -125,36 +126,12 @@ def asset_specs() -> list[QualityAssetSpec]:
             purpose="Abliterated Qwen3-VL FP8 text encoder from the referenced Krea2 Turbo workflow (experimental, higher safety risk)",
         ),
         QualityAssetSpec(
-            id="pid_gemma_text_encoder",
-            repo_id="Comfy-Org/PixelDiT",
-            filename="text_encoders/gemma_2_2b_it_elm_bf16.safetensors",
-            local_path=text_encoder_dir / "gemma_2_2b_it_elm_bf16.safetensors",
+            id="qwen3vl_krea2_fp8",
+            repo_id="Comfy-Org/Krea-2",
+            filename="text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+            local_path=text_encoder_dir / "qwen3vl_4b_fp8_scaled.safetensors",
             kind="file",
-            purpose="PiD/PixelDiT Gemma text encoder used by the optional PiD high-resolution decoder",
-        ),
-        QualityAssetSpec(
-            id="pid_qwenimage_decoder",
-            repo_id="Comfy-Org/PixelDiT",
-            filename="diffusion_models/pid_qwenimage_1024_to_4096_4step_bf16.safetensors",
-            local_path=diffusion_dir / "pid_qwenimage_1024_to_4096_4step_bf16.safetensors",
-            kind="file",
-            purpose="PiD Qwen-Image 1024-to-4096 4-step pixel diffusion decoder",
-        ),
-        QualityAssetSpec(
-            id="pid_qwenimage_official_checkpoint",
-            repo_id="nvidia/PiD",
-            filename="checkpoints/PiD_res2kto4k_sr4x_official_qwenimage_distill_4step/model_ema_bf16.pth",
-            local_path=MODELS_DIR / "pid" / "checkpoints" / "PiD_res2kto4k_sr4x_official_qwenimage_distill_4step" / "model_ema_bf16.pth",
-            kind="file",
-            purpose="Official PiD Qwen-Image checkpoint required by the native PiD runtime",
-        ),
-        QualityAssetSpec(
-            id="pid_qwenimage_vae_2d",
-            repo_id="nvidia/PiD",
-            filename="checkpoints/QwenImage_VAE_2d.pth",
-            local_path=MODELS_DIR / "pid" / "checkpoints" / "QwenImage_VAE_2d.pth",
-            kind="file",
-            purpose="Official 2D Qwen-Image VAE tokenizer required by PiD from-clean runtime",
+            purpose="Stock Krea 2 Qwen3-VL FP8 text encoder; preferred for identity-grounded Character Edit",
         ),
         QualityAssetSpec(
             id="krea2_realism_v1_lora",
@@ -170,9 +147,7 @@ def asset_specs() -> list[QualityAssetSpec]:
             filename="krea2filterbypass3.safetensors",
             local_path=MODELS_DIR / "loras" / "krea2filterbypass3.safetensors",
             kind="file",
-            purpose="Filter-bypass LoRA referenced by the workflow at strength 4.0",
-            download_enabled=False,
-            disabled_reason="Blocked: this asset is explicitly intended to bypass safety/filter behavior and should not be auto-downloaded by Krea Studio.",
+            purpose="Krea 2 prompt-adherence diff LoRA (community 'krea2filterbypass3'); the reference workflow applies it at strength 4.0 to sharpen prompt following and detail.",
         ),
         QualityAssetSpec(
             id="k2q_turbo_lora_rank64",
@@ -199,14 +174,22 @@ def asset_specs() -> list[QualityAssetSpec]:
             purpose="Experimental NK2E in-context edit LoRA for Redraw/img2img",
         ),
         QualityAssetSpec(
+            id="krea2_identity_edit_v1",
+            repo_id="conradlocke/krea2-identity-edit",
+            filename="krea2_identity_edit_v1.safetensors",
+            local_path=lora_dir / "krea2_identity_edit_v1.safetensors",
+            kind="file",
+            purpose="Identity-preserving Krea 2 instruction edit LoRA for Character Edit",
+        ),
+        QualityAssetSpec(
             id="k2q_filter_bypass_projectors",
             repo_id="silveroxides/K2Q",
             filename=None,
             local_path=lora_dir / "k2q_filter_bypass_projectors",
             kind="snapshot",
-            purpose="K2Q txtfusion projector bypass files are blocked from auto-download",
-            download_enabled=False,
-            disabled_reason="Blocked: projector bypass assets can weaken safety/filter behavior and are manual-only.",
+            purpose="K2Q txtfusion projector files that strengthen Krea 2 prompt adherence.",
+            allow_patterns=["txtfusion.projector_singlelayer/*"],
+            required_paths=["txtfusion.projector_singlelayer/krea2bypass_filtered_01.safetensors"],
         ),
         QualityAssetSpec(
             id="gguf_krea2_turbo_q4km",
@@ -232,27 +215,6 @@ def asset_specs() -> list[QualityAssetSpec]:
             kind="file",
             purpose="Optional Qwen3-VL 4B GGUF LLM for local prompt-helper servers",
         ),
-        QualityAssetSpec(
-            id="flux_fill",
-            repo_id="black-forest-labs/FLUX.1-Fill-dev",
-            filename=None,
-            local_path=LOCAL_AI_DIR / "flux1_fill_dev",
-            kind="snapshot",
-            purpose="FLUX Fill strict inpaint/outpaint provider",
-            allow_patterns=[
-                "model_index.json",
-                "scheduler/*",
-                "tokenizer/*",
-                "tokenizer_2/*",
-                "text_encoder/*",
-                "text_encoder_2/*",
-                "transformer/*",
-                "vae/*",
-                "*.safetensors",
-                "*.json",
-                "*.txt",
-            ],
-        ),
     ]
 
 
@@ -266,12 +228,13 @@ def asset_by_id(asset_id: str) -> QualityAssetSpec:
 def asset_installed(spec: QualityAssetSpec) -> bool:
     if spec.kind == "file":
         return spec.local_path.exists()
+    if spec.required_paths:
+        return all((spec.local_path / path).exists() for path in spec.required_paths)
     return (spec.local_path / "model_index.json").exists()
 
 
 def asset_status(spec: QualityAssetSpec, *, has_hf_token: bool = False) -> dict:
     installed = asset_installed(spec)
-    needs_token = spec.id == "flux_fill" and not installed and not has_hf_token
     return {
         "id": spec.id,
         "repo_id": spec.repo_id,
@@ -279,8 +242,8 @@ def asset_status(spec: QualityAssetSpec, *, has_hf_token: bool = False) -> dict:
         "local_path": str(spec.local_path),
         "purpose": spec.purpose,
         "installed": installed,
-        "needs_token": needs_token,
-        "gated": spec.id == "flux_fill",
+        "needs_token": False,
+        "gated": False,
         "setup_url": f"https://huggingface.co/{spec.repo_id}",
         "download_enabled": bool(spec.download_enabled),
         "disabled_reason": spec.disabled_reason,
