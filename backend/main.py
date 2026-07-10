@@ -2069,7 +2069,14 @@ async def xperiment_setup_endpoint():
     loras = [
         {"name": "Krea2-realism-V1", "filename": "Krea2-realism-V1.safetensors", "strength": 0.6, "block_filter": "late"},
     ]
-    bypass_installed = asset_installed(bypass_spec) and bypass_spec.local_path.stat().st_size > 0
+    try:
+        bypass_installed = (
+            asset_installed(bypass_spec)
+            and bypass_spec.local_path.exists()
+            and bypass_spec.local_path.stat().st_size > 0
+        )
+    except OSError:
+        bypass_installed = False
     if bypass_installed:
         loras.insert(0, {"name": "krea2filterbypass3", "filename": "krea2filterbypass3.safetensors", "strength": 4.0, "block_filter": "style_safe"})
     # Prefer int8 (user preference); keep gguf if that's what's configured.
