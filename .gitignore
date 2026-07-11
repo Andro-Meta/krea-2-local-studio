@@ -68,6 +68,7 @@ tools/stable-diffusion.cpp/
 .claude/
 .cursor/
 .vscode/
+.worktrees/
 docs/superpowers/
 
 # OS
