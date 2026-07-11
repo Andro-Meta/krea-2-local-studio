@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -618,22 +619,66 @@ async def set_moodboard_qwen_guidance(
         await db.commit()
 
 
-async def generate_and_store_moodboard_qwen_guidance(
-    moodboard_id: int,
+def _raise_if_cancelled(cancel_probe) -> None:
+    if cancel_probe is not None and cancel_probe():
+        raise RuntimeError("Moodboard operation cancelled.")
+
+
+def _persist_custom_images(
+    image_b64s: list[str],
     *,
-    db_path: Path = DB_PATH,
+    board_uuid: str,
+    storage_dir: Path,
+) -> list[str]:
+    board_dir = storage_dir / board_uuid
+    board_dir.mkdir(parents=True, exist_ok=True)
+    image_urls: list[str] = []
+    try:
+        for index, image_b64 in enumerate(image_b64s[:10], start=1):
+            raw = base64.b64decode(_strip_data_url(image_b64), validate=True)
+            ext = _image_extension(raw)
+            filename = f"ref_{index:02d}{ext}"
+            (board_dir / filename).write_bytes(raw)
+            image_urls.append(_custom_image_url(board_uuid, filename))
+    except Exception:
+        shutil.rmtree(board_dir, ignore_errors=True)
+        raise ValueError("Custom moodboard images must be valid base64 image data.")
+    return image_urls
+
+
+@dataclass
+class PreparedMoodboardTask:
+    operation: str
+    guidance_items: list[tuple[int, dict]] = field(default_factory=list)
+    board_uuid: str = ""
+    title: str = ""
+    taste_profile: str = ""
+    keywords: list[str] = field(default_factory=list)
+    image_urls: list[str] = field(default_factory=list)
+    guidance: dict = field(default_factory=dict)
+    temp_dir: Path | None = None
+    final_dir: Path | None = None
+
+    @property
+    def moderation_text(self) -> str:
+        values = [guidance for _item_id, guidance in self.guidance_items]
+        if self.guidance:
+            values.append(self.guidance)
+        return json.dumps(values, ensure_ascii=False)
+
+
+def _build_guidance_candidate(
+    item: dict,
+    *,
     generator=None,
+    prompt_id_cb=None,
+    cancel_probe=None,
 ) -> dict:
     from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
 
-    item = await get_moodboard(moodboard_id, db_path=db_path)
-    if not item:
-        raise ValueError("Moodboard not found.")
-
-    # Sample up to 8 images spread across the whole board (not just the first
-    # few): the leading images often share one subject, and guidance built from
-    # them overfits that subject instead of the board's style.
-    urls = _moodboard_image_urls([item.get("primary_image_url", ""), *item.get("image_urls", [])])
+    urls = _moodboard_image_urls(
+        [item.get("primary_image_url", ""), *item.get("image_urls", [])]
+    )
     if len(urls) > 8:
         step = len(urls) / 8
         urls = [urls[int(i * step)] for i in range(8)]
@@ -643,13 +688,14 @@ async def generate_and_store_moodboard_qwen_guidance(
             if str(url).startswith("/api/moodboards/custom-images/"):
                 image_b64s.append(fetch_moodboard_image_b64(url))
             else:
-                # Disk-cached fetch: batch re-enrichment resumes without
-                # re-downloading tens of thousands of CDN images.
-                image_b64s.append(base64.b64encode(fetch_cached_moodboard_image(url).read_bytes()).decode())
+                image_b64s.append(
+                    base64.b64encode(
+                        fetch_cached_moodboard_image(url).read_bytes()
+                    ).decode()
+                )
         except Exception:
             continue
-
-    guidance = generate_moodboard_guidance(
+    return generate_moodboard_guidance(
         [
             MoodboardSource(
                 title=str(item.get("title") or ""),
@@ -660,7 +706,360 @@ async def generate_and_store_moodboard_qwen_guidance(
         ],
         mode="official" if item.get("source") == "official" else "custom",
         generator=generator,
+        prompt_id_cb=prompt_id_cb,
+        cancel_probe=cancel_probe,
     )
+
+
+async def prepare_moodboard_guidance_task(
+    operation: str,
+    payload: dict,
+    *,
+    task_id: str,
+    db_path: Path = DB_PATH,
+    storage_dir: Path = CUSTOM_MOODBOARD_DIR,
+    prompt_id_cb=None,
+    cancel_probe=None,
+) -> PreparedMoodboardTask:
+    if operation in {"single", "missing"}:
+        if operation == "single":
+            ids = [int(payload["moodboard_id"])]
+        else:
+            safe_limit = max(1, min(int(payload.get("limit") or 25), 250))
+            async with aiosqlite.connect(str(db_path)) as db:
+                ids = [
+                    int(row[0])
+                    for row in await (
+                        await db.execute(
+                            """
+                            SELECT id FROM moodboards
+                            WHERE COALESCE(qwen_guidance_json, '') = ''
+                            ORDER BY source, title LIMIT ?
+                            """,
+                            (safe_limit,),
+                        )
+                    ).fetchall()
+                ]
+        prepared = PreparedMoodboardTask(operation=operation)
+        for moodboard_id in ids:
+            item = await get_moodboard(moodboard_id, db_path=db_path)
+            if not item:
+                raise ValueError("Moodboard not found.")
+            guidance = await asyncio.to_thread(
+                _build_guidance_candidate,
+                item,
+                prompt_id_cb=prompt_id_cb,
+                cancel_probe=cancel_probe,
+            )
+            prepared.guidance_items.append((moodboard_id, guidance))
+        return prepared
+
+    if operation == "mashup":
+        ids = list(dict.fromkeys(int(value) for value in payload["moodboard_ids"] if int(value) > 0))
+        if len(ids) < 2:
+            raise ValueError("Choose at least two moodboards to create a mashup.")
+        items = await _items_by_ids(ids, db_path=db_path)
+        if len(items) < 2:
+            raise ValueError("Choose at least two existing moodboards to create a mashup.")
+
+        def build_mashup() -> tuple[dict, list[str]]:
+            from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
+
+            weights = list(payload.get("weights") or [])
+            sources: list[MoodboardSource] = []
+            images: list[str] = []
+            for index, item in enumerate(items):
+                item_images: list[str] = []
+                for url in _moodboard_image_urls(
+                    [item.get("primary_image_url", ""), *item.get("image_urls", [])]
+                )[:2]:
+                    try:
+                        image = fetch_moodboard_image_b64(url, storage_dir=storage_dir)
+                        item_images.append(image)
+                        images.append(image)
+                    except Exception:
+                        continue
+                sources.append(
+                    MoodboardSource(
+                        title=str(item.get("title") or ""),
+                        taste_profile=str(item.get("taste_profile") or ""),
+                        keywords=list(item.get("keywords") or []),
+                        image_b64s=item_images,
+                        weight=float(weights[index]) if index < len(weights) else 1.0,
+                    )
+                )
+            guidance = generate_moodboard_guidance(
+                sources,
+                mode="mashup",
+                prompt_id_cb=prompt_id_cb,
+                cancel_probe=cancel_probe,
+            )
+            return guidance, images[:10]
+
+        guidance, image_b64s = await asyncio.to_thread(build_mashup)
+        custom_payload = {
+            "title": str(guidance.get("title") or "").strip(),
+            "taste_profile": str(guidance.get("taste_profile") or "").strip(),
+            "keywords": list(guidance.get("keywords") or []),
+            "image_b64s": image_b64s,
+            "prepared_guidance": guidance,
+        }
+    elif operation == "custom":
+        custom_payload = dict(payload)
+    else:
+        raise ValueError(f"Unknown moodboard operation: {operation}")
+
+    title = str(custom_payload.get("title") or "").strip()
+    taste_profile = str(custom_payload.get("taste_profile") or "").strip()
+    keywords = [
+        str(value).strip()
+        for value in custom_payload.get("keywords") or []
+        if str(value).strip()
+    ]
+    image_b64s = list(custom_payload.get("image_b64s") or [])
+    guidance = dict(custom_payload.get("prepared_guidance") or {})
+    if not guidance and image_b64s and (not title or not taste_profile):
+        from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
+
+        guidance = await asyncio.to_thread(
+            generate_moodboard_guidance,
+            [
+                MoodboardSource(
+                    title=title,
+                    taste_profile=taste_profile,
+                    keywords=keywords,
+                    image_b64s=image_b64s,
+                )
+            ],
+            mode="custom",
+            prompt_id_cb=prompt_id_cb,
+            cancel_probe=cancel_probe,
+        )
+        title = title or str(guidance.get("title") or "").strip()
+        taste_profile = taste_profile or str(guidance.get("taste_profile") or "").strip()
+        keywords = keywords or list(guidance.get("keywords") or [])
+    if not title or not image_b64s:
+        raise ValueError("Custom moodboard title and at least one image are required.")
+    board_uuid = str(uuidlib.uuid4())
+    temp_root = storage_dir / ".task-prep" / task_id
+    image_urls = await asyncio.to_thread(
+        _persist_custom_images,
+        image_b64s,
+        board_uuid=board_uuid,
+        storage_dir=temp_root,
+    )
+    return PreparedMoodboardTask(
+        operation=operation,
+        board_uuid=board_uuid,
+        title=title,
+        taste_profile=taste_profile,
+        keywords=keywords,
+        image_urls=image_urls,
+        guidance=guidance,
+        temp_dir=temp_root / board_uuid,
+        final_dir=storage_dir / board_uuid,
+    )
+
+
+async def cleanup_prepared_moodboard_task(prepared: PreparedMoodboardTask) -> None:
+    if prepared.temp_dir is not None:
+        task_root = prepared.temp_dir.parent
+        await asyncio.to_thread(shutil.rmtree, task_root, ignore_errors=True)
+
+
+async def reconcile_custom_moodboard_storage(
+    *,
+    db_path: Path = DB_PATH,
+    storage_dir: Path = CUSTOM_MOODBOARD_DIR,
+) -> dict[str, int]:
+    async with aiosqlite.connect(str(db_path)) as db:
+        rows = await (
+            await db.execute(
+                "SELECT id, uuid FROM moodboards WHERE source = 'custom'"
+            )
+        ).fetchall()
+    db_uuids = {str(row[1]): int(row[0]) for row in rows if str(row[1] or "")}
+
+    def reconcile_files() -> tuple[set[str], int, int]:
+        removed_prep = 0
+        removed_orphans = 0
+        prep_dir = storage_dir / ".task-prep"
+        if prep_dir.exists():
+            shutil.rmtree(prep_dir, ignore_errors=True)
+            removed_prep = 1
+        existing: set[str] = set()
+        if not storage_dir.exists():
+            return existing, removed_prep, removed_orphans
+        for path in storage_dir.iterdir():
+            if not path.is_dir() or path.name == ".task-prep":
+                continue
+            try:
+                parsed = uuidlib.UUID(path.name)
+            except (ValueError, AttributeError):
+                continue
+            if str(parsed) != path.name.lower():
+                continue
+            if path.name in db_uuids:
+                existing.add(path.name)
+            else:
+                shutil.rmtree(path, ignore_errors=True)
+                removed_orphans += 1
+        return existing, removed_prep, removed_orphans
+
+    existing, removed_prep, removed_orphans = await asyncio.to_thread(
+        reconcile_files
+    )
+    missing_ids = [
+        row_id for board_uuid, row_id in db_uuids.items() if board_uuid not in existing
+    ]
+    if missing_ids:
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.executemany(
+                "DELETE FROM moodboards WHERE id = ? AND source = 'custom'",
+                [(row_id,) for row_id in missing_ids],
+            )
+            await db.commit()
+    return {
+        "removed_prep": removed_prep,
+        "removed_orphan_dirs": removed_orphans,
+        "removed_missing_rows": len(missing_ids),
+    }
+
+
+async def commit_prepared_moodboard_task(
+    prepared: PreparedMoodboardTask,
+    *,
+    db_path: Path = DB_PATH,
+) -> dict:
+    if prepared.guidance_items:
+        now = _now_iso()
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            for moodboard_id, guidance in prepared.guidance_items:
+                await db.execute(
+                    """
+                    UPDATE moodboards SET qwen_guidance_json = ?,
+                        qwen_guidance_at = ?, qwen_guidance_version = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(guidance, sort_keys=True),
+                        now,
+                        int(guidance.get("guidance_version") or 1),
+                        now,
+                        moodboard_id,
+                    ),
+                )
+            await db.commit()
+        items = [
+            await get_moodboard(moodboard_id, db_path=db_path)
+            for moodboard_id, _guidance in prepared.guidance_items
+        ]
+        if prepared.operation == "single":
+            return items[0]
+        return {"processed": len(items), "items": items}
+
+    if prepared.temp_dir is None or prepared.final_dir is None:
+        raise RuntimeError("Prepared custom moodboard has no staged images.")
+    prepared.final_dir.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(prepared.temp_dir.replace, prepared.final_dir)
+    now = _now_iso()
+    url = f"custom://{prepared.board_uuid}"
+    try:
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                """
+                INSERT INTO moodboards
+                    (url, slug, uuid, title, taste_profile, keywords, primary_image_url,
+                     image_urls, related_urls, favorite, source, first_seen_at, last_seen_at,
+                     updated_at, sync_error, qwen_guidance_json, qwen_guidance_at,
+                     qwen_guidance_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 'custom', ?, ?, ?, '', ?, ?, ?)
+                """,
+                (
+                    url,
+                    f"custom-{prepared.board_uuid}",
+                    prepared.board_uuid,
+                    prepared.title,
+                    prepared.taste_profile,
+                    json.dumps(prepared.keywords),
+                    prepared.image_urls[0],
+                    json.dumps(prepared.image_urls),
+                    now,
+                    now,
+                    now,
+                    json.dumps(prepared.guidance, sort_keys=True) if prepared.guidance else "",
+                    now if prepared.guidance else "",
+                    int(prepared.guidance.get("guidance_version") or 0),
+                ),
+            )
+            moodboard_id = int(cursor.lastrowid)
+            await db.commit()
+    except Exception:
+        await asyncio.to_thread(shutil.rmtree, prepared.final_dir, ignore_errors=True)
+        raise
+    await cleanup_prepared_moodboard_task(prepared)
+    item = await get_moodboard(moodboard_id, db_path=db_path)
+    if not item:
+        raise RuntimeError("Committed moodboard could not be loaded.")
+    return item
+
+
+async def generate_and_store_moodboard_qwen_guidance(
+    moodboard_id: int,
+    *,
+    db_path: Path = DB_PATH,
+    generator=None,
+    prompt_id_cb=None,
+    cancel_probe=None,
+) -> dict:
+    from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
+
+    item = await get_moodboard(moodboard_id, db_path=db_path)
+    if not item:
+        raise ValueError("Moodboard not found.")
+
+    def build_guidance() -> dict:
+        # Fetching references and running Qwen are blocking operations. Keep
+        # only the surrounding aiosqlite reads/writes on the event loop.
+        urls = _moodboard_image_urls(
+            [item.get("primary_image_url", ""), *item.get("image_urls", [])]
+        )
+        if len(urls) > 8:
+            step = len(urls) / 8
+            urls = [urls[int(i * step)] for i in range(8)]
+        image_b64s: list[str] = []
+        for url in urls:
+            try:
+                if str(url).startswith("/api/moodboards/custom-images/"):
+                    image_b64s.append(fetch_moodboard_image_b64(url))
+                else:
+                    image_b64s.append(
+                        base64.b64encode(
+                            fetch_cached_moodboard_image(url).read_bytes()
+                        ).decode()
+                    )
+            except Exception:
+                continue
+        return generate_moodboard_guidance(
+            [
+                MoodboardSource(
+                    title=str(item.get("title") or ""),
+                    taste_profile=str(item.get("taste_profile") or ""),
+                    keywords=list(item.get("keywords") or []),
+                    image_b64s=image_b64s,
+                )
+            ],
+            mode="official" if item.get("source") == "official" else "custom",
+            generator=generator,
+            prompt_id_cb=prompt_id_cb,
+            cancel_probe=cancel_probe,
+        )
+
+    guidance = await asyncio.to_thread(build_guidance)
+    _raise_if_cancelled(cancel_probe)
     await set_moodboard_qwen_guidance(moodboard_id, guidance, db_path=db_path)
     refreshed = await get_moodboard(moodboard_id, db_path=db_path)
     if not refreshed:
@@ -673,6 +1072,8 @@ async def generate_missing_moodboard_qwen_guidance(
     limit: int = 25,
     db_path: Path = DB_PATH,
     generator=None,
+    prompt_id_cb=None,
+    cancel_probe=None,
 ) -> dict:
     safe_limit = max(1, min(int(limit or 25), 250))
     async with aiosqlite.connect(str(db_path)) as db:
@@ -694,6 +1095,8 @@ async def generate_missing_moodboard_qwen_guidance(
                 int(row[0]),
                 db_path=db_path,
                 generator=generator,
+                prompt_id_cb=prompt_id_cb,
+                cancel_probe=cancel_probe,
             )
         )
     return {"processed": len(items), "items": items}
@@ -708,18 +1111,24 @@ async def create_custom_moodboard(
     db_path: Path = DB_PATH,
     storage_dir: Path = CUSTOM_MOODBOARD_DIR,
     guidance_generator=None,
+    prompt_id_cb=None,
+    cancel_probe=None,
+    prepared_guidance: dict | None = None,
 ) -> dict:
     cleaned_title = str(title or "").strip()
     cleaned_taste_profile = str(taste_profile or "").strip()
     cleaned_keywords = [str(v).strip() for v in keywords or [] if str(v).strip()]
-    qwen_guidance: dict = {}
-    should_auto_author = not cleaned_title or not cleaned_taste_profile or (
-        guidance_generator is not None and not cleaned_keywords
+    qwen_guidance: dict = dict(prepared_guidance or {})
+    should_auto_author = not qwen_guidance and (
+        not cleaned_title
+        or not cleaned_taste_profile
+        or (guidance_generator is not None and not cleaned_keywords)
     )
     if image_b64s and should_auto_author:
         from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
 
-        qwen_guidance = generate_moodboard_guidance(
+        qwen_guidance = await asyncio.to_thread(
+            generate_moodboard_guidance,
             [
                 MoodboardSource(
                     title=cleaned_title,
@@ -730,7 +1139,10 @@ async def create_custom_moodboard(
             ],
             mode="custom",
             generator=guidance_generator,
+            prompt_id_cb=prompt_id_cb,
+            cancel_probe=cancel_probe,
         )
+        _raise_if_cancelled(cancel_probe)
         cleaned_title = cleaned_title or str(qwen_guidance.get("title") or "").strip()
         cleaned_taste_profile = cleaned_taste_profile or str(qwen_guidance.get("taste_profile") or "").strip()
         cleaned_keywords = cleaned_keywords or [str(v).strip() for v in qwen_guidance.get("keywords", []) if str(v).strip()]
@@ -740,50 +1152,55 @@ async def create_custom_moodboard(
         raise ValueError("Add at least one image to save a custom moodboard.")
     board_uuid = str(uuidlib.uuid4())
     board_dir = storage_dir / board_uuid
-    board_dir.mkdir(parents=True, exist_ok=True)
-    image_urls: list[str] = []
     try:
-        for index, image_b64 in enumerate(image_b64s[:10], start=1):
-            raw = base64.b64decode(_strip_data_url(image_b64), validate=True)
-            ext = _image_extension(raw)
-            filename = f"ref_{index:02d}{ext}"
-            (board_dir / filename).write_bytes(raw)
-            image_urls.append(_custom_image_url(board_uuid, filename))
+        _raise_if_cancelled(cancel_probe)
+        image_urls = await asyncio.to_thread(
+            _persist_custom_images,
+            image_b64s,
+            board_uuid=board_uuid,
+            storage_dir=storage_dir,
+        )
+        _raise_if_cancelled(cancel_probe)
     except Exception:
-        shutil.rmtree(board_dir, ignore_errors=True)
-        raise ValueError("Custom moodboard images must be valid base64 image data.")
+        await asyncio.to_thread(shutil.rmtree, board_dir, ignore_errors=True)
+        raise
 
     now = _now_iso()
     url = f"custom://{board_uuid}"
     slug = f"custom-{board_uuid}"
-    async with aiosqlite.connect(str(db_path)) as db:
-        await db.execute(
-            """
-            INSERT INTO moodboards
-                (url, slug, uuid, title, taste_profile, keywords, primary_image_url,
-                 image_urls, related_urls, favorite, source, first_seen_at, last_seen_at, updated_at, sync_error,
-                 qwen_guidance_json, qwen_guidance_at, qwen_guidance_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 'custom', ?, ?, ?, '', ?, ?, ?)
-            """,
-            (
-                url,
-                slug,
-                board_uuid,
-                cleaned_title,
-                cleaned_taste_profile,
-                json.dumps(cleaned_keywords),
-                image_urls[0],
-                json.dumps(image_urls),
-                now,
-                now,
-                now,
-                json.dumps(qwen_guidance, sort_keys=True) if qwen_guidance else "",
-                now if qwen_guidance else "",
-                int(qwen_guidance.get("guidance_version") or 0),
-            ),
-        )
-        row = await (await db.execute("SELECT * FROM moodboards WHERE url = ?", (url,))).fetchone()
-        await db.commit()
+    try:
+        async with aiosqlite.connect(str(db_path)) as db:
+            _raise_if_cancelled(cancel_probe)
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                """
+                INSERT INTO moodboards
+                    (url, slug, uuid, title, taste_profile, keywords, primary_image_url,
+                     image_urls, related_urls, favorite, source, first_seen_at, last_seen_at, updated_at, sync_error,
+                     qwen_guidance_json, qwen_guidance_at, qwen_guidance_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 'custom', ?, ?, ?, '', ?, ?, ?)
+                """,
+                (
+                    url,
+                    slug,
+                    board_uuid,
+                    cleaned_title,
+                    cleaned_taste_profile,
+                    json.dumps(cleaned_keywords),
+                    image_urls[0],
+                    json.dumps(image_urls),
+                    now,
+                    now,
+                    now,
+                    json.dumps(qwen_guidance, sort_keys=True) if qwen_guidance else "",
+                    now if qwen_guidance else "",
+                    int(qwen_guidance.get("guidance_version") or 0),
+                ),
+            )
+            await db.commit()
+    except Exception:
+        await asyncio.to_thread(shutil.rmtree, board_dir, ignore_errors=True)
+        raise
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute("SELECT * FROM moodboards WHERE url = ?", (url,))).fetchone()
@@ -814,6 +1231,8 @@ async def create_mashup_moodboard(
     db_path: Path = DB_PATH,
     storage_dir: Path = CUSTOM_MOODBOARD_DIR,
     guidance_generator=None,
+    prompt_id_cb=None,
+    cancel_probe=None,
 ) -> dict:
     from moodboard_enrichment import MoodboardSource, generate_moodboard_guidance
 
@@ -831,30 +1250,49 @@ async def create_mashup_moodboard(
     if len(items) < 2:
         raise ValueError("Choose at least two existing moodboards to create a mashup.")
 
-    normalized_weights = list(weights or [])
-    sources: list[MoodboardSource] = []
-    image_b64s: list[str] = []
-    for index, item in enumerate(items):
-        item_weight = float(normalized_weights[index]) if index < len(normalized_weights) else 1.0
-        item_images: list[str] = []
-        for url in _moodboard_image_urls([item.get("primary_image_url", ""), *item.get("image_urls", [])])[:2]:
-            try:
-                image_b64 = fetch_moodboard_image_b64(url, storage_dir=storage_dir)
-                item_images.append(image_b64)
-                image_b64s.append(image_b64)
-            except Exception:
-                continue
-        sources.append(
-            MoodboardSource(
-                title=str(item.get("title") or ""),
-                taste_profile=str(item.get("taste_profile") or ""),
-                keywords=list(item.get("keywords") or []),
-                image_b64s=item_images,
-                weight=item_weight,
+    def build_mashup() -> tuple[dict, list[str]]:
+        normalized_weights = list(weights or [])
+        sources: list[MoodboardSource] = []
+        image_b64s: list[str] = []
+        for index, item in enumerate(items):
+            item_weight = (
+                float(normalized_weights[index])
+                if index < len(normalized_weights)
+                else 1.0
             )
+            item_images: list[str] = []
+            urls = _moodboard_image_urls(
+                [item.get("primary_image_url", ""), *item.get("image_urls", [])]
+            )[:2]
+            for url in urls:
+                try:
+                    image_b64 = fetch_moodboard_image_b64(
+                        url, storage_dir=storage_dir
+                    )
+                    item_images.append(image_b64)
+                    image_b64s.append(image_b64)
+                except Exception:
+                    continue
+            sources.append(
+                MoodboardSource(
+                    title=str(item.get("title") or ""),
+                    taste_profile=str(item.get("taste_profile") or ""),
+                    keywords=list(item.get("keywords") or []),
+                    image_b64s=item_images,
+                    weight=item_weight,
+                )
+            )
+        guidance = generate_moodboard_guidance(
+            sources,
+            mode="mashup",
+            generator=guidance_generator,
+            prompt_id_cb=prompt_id_cb,
+            cancel_probe=cancel_probe,
         )
+        return guidance, image_b64s
 
-    guidance = generate_moodboard_guidance(sources, mode="mashup", generator=guidance_generator)
+    guidance, image_b64s = await asyncio.to_thread(build_mashup)
+    _raise_if_cancelled(cancel_probe)
     created = await create_custom_moodboard(
         title=str(guidance.get("title") or "").strip(),
         taste_profile=str(guidance.get("taste_profile") or "").strip(),
@@ -862,8 +1300,9 @@ async def create_mashup_moodboard(
         image_b64s=image_b64s[:10],
         db_path=db_path,
         storage_dir=storage_dir,
+        cancel_probe=cancel_probe,
+        prepared_guidance=guidance,
     )
-    await set_moodboard_qwen_guidance(created["id"], guidance, db_path=db_path)
     refreshed = await get_moodboard(created["id"], db_path=db_path)
     if not refreshed:
         raise ValueError("Mashup moodboard was not saved.")

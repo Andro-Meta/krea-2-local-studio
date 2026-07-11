@@ -18,6 +18,7 @@ import os
 import time
 import uuid
 from typing import Callable, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -32,6 +33,16 @@ logger = logging.getLogger("krea2.comfy")
 WS_IMAGE_NODE = "save_ws"
 
 ProgressCb = Optional[Callable[[int, int], None]]
+PromptIdCb = Optional[Callable[[str], None]]
+
+
+def _notify_prompt_id(prompt_id_cb: PromptIdCb, prompt_id: str) -> None:
+    if not prompt_id_cb:
+        return
+    try:
+        prompt_id_cb(prompt_id)
+    except Exception:
+        logger.debug("prompt_id_cb raised", exc_info=True)
 
 
 def _env_file_comfy_url() -> str:
@@ -96,41 +107,57 @@ def free_comfy_vram(unload_models: bool = True, free_memory: bool = True, timeou
         return False
 
 
-def interrupt_comfy(timeout: float = 10.0) -> bool:
-    """Interrupt whatever prompt ComfyUI is currently running (best-effort).
-
-    ComfyUI's /interrupt is global: it stops the in-flight prompt, which makes the
-    active run's websocket loop raise, so the queued worker can finish and move on.
-    """
+def comfy_cancel_capability(
+    base_url: str | None = None, timeout: float = 5.0
+) -> bool:
+    """Probe the required atomic-cancel endpoint with an unguessable job ID."""
+    base = (base_url or comfy_base_url()).rstrip("/")
+    probe_id = f"krea-capability-{uuid.uuid4().hex}"
     try:
-        r = requests.post(f"{comfy_base_url()}/interrupt", timeout=timeout)
-        return r.status_code == 200
+        response = requests.post(
+            f"{base}/api/jobs/{probe_id}/cancel",
+            json={},
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            return False
+        payload = response.json()
+        return (
+            isinstance(payload, dict)
+            and type(payload.get("cancelled")) is bool
+        )
     except Exception:
-        logger.debug("ComfyUI interrupt request failed", exc_info=True)
+        logger.debug("Atomic cancel capability probe failed", exc_info=True)
         return False
 
 
-def cancel_prompt(prompt_id: str, base_url: str | None = None, timeout: float = 10.0) -> bool:
-    """Cancel ONE specific prompt without touching others.
+def comfy_atomic_cancel_available(
+    base_url: str | None = None, timeout: float = 5.0
+) -> bool:
+    return comfy_cancel_capability(base_url=base_url, timeout=timeout)
 
-    If it is still pending in ComfyUI's internal queue, delete it there; only
-    fall back to the global /interrupt when it is the prompt currently
-    executing. This keeps a timed-out helper graph (wand/planner) from
-    interrupting another user's in-flight generation.
-    """
+
+def cancel_prompt(prompt_id: str, base_url: str | None = None, timeout: float = 10.0) -> bool:
+    """Cancel one prompt only when the atomic endpoint confirms it acted."""
+    if not prompt_id or not str(prompt_id).strip():
+        return False
     base = (base_url or comfy_base_url()).rstrip("/")
     try:
-        q = requests.get(f"{base}/queue", timeout=timeout).json()
-        pending_ids = {item[1] for item in q.get("queue_pending", []) or [] if len(item) > 1}
-        running_ids = {item[1] for item in q.get("queue_running", []) or [] if len(item) > 1}
-        if prompt_id in pending_ids:
-            requests.post(f"{base}/queue", json={"delete": [prompt_id]}, timeout=timeout)
-            return True
-        if prompt_id in running_ids:
-            r = requests.post(f"{base}/interrupt", timeout=timeout)
-            return r.status_code == 200
+        encoded_id = quote(str(prompt_id), safe="")
+        response = requests.post(
+            f"{base}/api/jobs/{encoded_id}/cancel",
+            timeout=timeout,
+        )
     except Exception:
         logger.debug("cancel_prompt(%s) failed", prompt_id, exc_info=True)
+        return False
+
+    if 200 <= response.status_code < 300:
+        try:
+            return bool(response.json().get("cancelled", False))
+        except Exception:
+            logger.debug("Invalid atomic cancel response for %s", prompt_id, exc_info=True)
+            return False
     return False
 
 
@@ -167,12 +194,6 @@ class ComfyClient:
             raise ComfyExecutionError(f"ComfyUI did not return a prompt_id: {data}")
         return prompt_id
 
-    def interrupt(self) -> None:
-        try:
-            requests.post(f"{self.base}/interrupt", timeout=10)
-        except Exception:
-            logger.debug("ComfyUI interrupt request failed", exc_info=True)
-
     def get_history(self, prompt_id: str) -> dict:
         r = requests.get(f"{self.base}/history/{prompt_id}", timeout=30)
         r.raise_for_status()
@@ -191,6 +212,7 @@ class ComfyClient:
         progress_cb: ProgressCb = None,
         image_node_id: str = WS_IMAGE_NODE,
         timeout: int = 1800,
+        prompt_id_cb: PromptIdCb = None,
     ) -> list[bytes]:
         """Submit a graph, stream progress, and return a list of PNG byte blobs."""
         if not comfy_available():
@@ -199,19 +221,27 @@ class ComfyClient:
             )
         if websocket is None:
             logger.warning("websocket-client not installed; falling back to HTTP polling (no live progress).")
-            return self._run_polling(graph, progress_cb, timeout)
-        return self._run_ws(graph, progress_cb, image_node_id, timeout)
+            return self._run_polling(graph, progress_cb, timeout, prompt_id_cb)
+        return self._run_ws(graph, progress_cb, image_node_id, timeout, prompt_id_cb)
 
-    def _run_ws(self, graph, progress_cb, image_node_id, timeout) -> list[bytes]:
+    def _run_ws(
+        self,
+        graph,
+        progress_cb,
+        image_node_id,
+        timeout,
+        prompt_id_cb: PromptIdCb = None,
+    ) -> list[bytes]:
         ws = websocket.WebSocket()
         try:
             ws.connect(f"{_ws_base(self.base)}/ws?clientId={self.client_id}", timeout=30)
         except Exception as exc:
             logger.warning("ComfyUI websocket connect failed (%s); polling instead.", exc)
-            return self._run_polling(graph, progress_cb, timeout)
+            return self._run_polling(graph, progress_cb, timeout, prompt_id_cb)
         ws.settimeout(timeout)
         try:
             prompt_id = self._post_prompt(graph)
+            _notify_prompt_id(prompt_id_cb, prompt_id)
             images: list[bytes] = []
             current_node = ""
             deadline = time.time() + timeout
@@ -260,8 +290,15 @@ class ComfyClient:
             except Exception:
                 pass
 
-    def _run_polling(self, graph, progress_cb, timeout) -> list[bytes]:
+    def _run_polling(
+        self,
+        graph,
+        progress_cb,
+        timeout,
+        prompt_id_cb: PromptIdCb = None,
+    ) -> list[bytes]:
         prompt_id = self._post_prompt(graph)
+        _notify_prompt_id(prompt_id_cb, prompt_id)
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:

@@ -13,6 +13,34 @@ if str(BACKEND) not in sys.path:
 from generation_queue import GenerationQueue  # noqa: E402
 
 
+class GenerationQueueCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_accepted_enqueue_returns_plain_record_dict(self):
+        async def handler(_job_id, _payload):
+            return None
+
+        q = GenerationQueue(handler)
+        result = q.enqueue("a", {}, username="alice", role="user")
+
+        self.assertIs(type(result), dict)
+        self.assertEqual(result["status"], "queued")
+
+    async def test_legacy_enqueue_accepts_more_than_per_user_limit(self):
+        async def handler(_job_id, _payload):
+            return None
+
+        q = GenerationQueue(handler)
+        try:
+            results = [
+                q.enqueue(f"job-{index}", {}, username="alice", role="user")
+                for index in range(9)
+            ]
+        except Exception as exc:
+            self.fail(f"legacy enqueue unexpectedly rejected work: {exc}")
+
+        self.assertTrue(all(type(result) is dict for result in results))
+        self.assertEqual(q.status("job-8")["status"], "queued")
+
+
 class GenerationQueueCancelTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_queued_job_is_dequeued(self):
         started = asyncio.Event()

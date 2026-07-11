@@ -31,6 +31,7 @@ scripts/_*.py
 data/custom_moodboards/
 data/civitai_lora_cache.json
 data/prompt_recipes.json
+data/private/
 
 # Personal reference dumps and test images in docs
 docs/Discord-Banodoco-6-27/

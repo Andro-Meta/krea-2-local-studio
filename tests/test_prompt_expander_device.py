@@ -43,6 +43,63 @@ class PromptExpanderDeviceTests(unittest.TestCase):
         with patch.object(settings, "local_qwen_device", "auto"):
             with self.assertRaisesRegex(RuntimeError, "Auto mode no longer falls back to CPU"):
                 prompt_expander._resolve_local_qwen_device(_FakeTorch(free_gb=8.0))
+    def test_shared_classifier_is_precise(self) -> None:
+        import torch
+        from gpu_recovery import is_cuda_oom
+
+        self.assertTrue(is_cuda_oom(torch.cuda.OutOfMemoryError("allocation")))
+        self.assertTrue(is_cuda_oom(RuntimeError("CUDA out of memory")))
+        self.assertFalse(is_cuda_oom(RuntimeError("CPU out of memory")))
+
+    def test_prompt_expander_reraises_cuda_oom_but_soft_fails_other_errors(self):
+        import prompt_expander
+
+        with patch(
+            "comfy_qwen_vl.expand_prompt_comfy",
+            side_effect=RuntimeError("CUDA out of memory"),
+        ), self.assertRaisesRegex(RuntimeError, "CUDA out of memory"):
+            prompt_expander.expand_prompt_comfy("fox")
+
+        with patch(
+            "comfy_qwen_vl.expand_prompt_comfy",
+            side_effect=RuntimeError("ordinary failure"),
+        ):
+            result = prompt_expander.expand_prompt_comfy("fox")
+        self.assertIn("ordinary failure", result.error)
+
+    def test_prompt_planner_reraises_cuda_oom_but_keeps_heuristic_fallback(self):
+        import prompt_planner
+
+        with patch(
+            "comfy_qwen_vl.expand_prompt_comfy",
+            side_effect=RuntimeError("CUDA error: out of memory"),
+        ), self.assertRaisesRegex(RuntimeError, "out of memory"):
+            prompt_planner.plan_prompt_comfy("fox")
+
+        with patch(
+            "comfy_qwen_vl.expand_prompt_comfy",
+            side_effect=RuntimeError("ordinary failure"),
+        ):
+            result = prompt_planner.plan_prompt_comfy("fox")
+        self.assertEqual(result.backend, "heuristic")
+        self.assertIn("ordinary failure", result.error)
+
+    def test_moodboard_reraises_cuda_oom_without_transformers_fallback(self):
+        import moodboard_enrichment
+        from settings import settings
+
+        with (
+            patch.object(settings, "local_llm_backend", "comfy"),
+            patch.object(
+                moodboard_enrichment,
+                "_comfy_qwen_generate",
+                side_effect=RuntimeError("out of memory on CUDA"),
+            ),
+            patch.object(moodboard_enrichment, "_local_qwen_generate") as local,
+            self.assertRaisesRegex(RuntimeError, "out of memory"),
+        ):
+            moodboard_enrichment._qwen_generate("prompt", [])
+        local.assert_not_called()
 
     def test_auto_uses_cuda_when_vram_is_plentiful(self) -> None:
         import prompt_expander
@@ -127,48 +184,40 @@ class PromptExpanderDeviceTests(unittest.TestCase):
         self.assertTrue(result.changed)
         unload.assert_called_once()
 
-    def test_local_helper_preempts_and_reloads_loaded_krea_model(self) -> None:
-        import main
-        from settings import settings
+    def test_explicit_transformers_cuda_frees_comfy_before_model_load(self) -> None:
+        import prompt_expander
 
-        class FakePipeline:
-            _loaded_quant = "int8"
-            _loading = False
+        with (
+            patch.object(prompt_expander, "_resolve_local_qwen_device", return_value="cuda"),
+            patch.object(prompt_expander, "free_comfy_vram") as free,
+            patch("settings.settings.local_llm_backend", "transformers"),
+            patch(
+                "transformers.AutoTokenizer.from_pretrained",
+                side_effect=RuntimeError("stop after free"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop after free"):
+                prompt_expander._load_local_qwen.__wrapped__("fake-model")
 
-            def __init__(self, checkpoint: str):
-                self._loaded_checkpoint = checkpoint
-                self.calls: list[str] = []
+        free.assert_called_once_with(unload_models=True, free_memory=True)
 
-            def is_loaded(self):
-                return True
+    def test_transformers_cuda_aborts_when_comfy_vram_release_fails(self) -> None:
+        import prompt_expander
 
-            def unload(self):
-                self.calls.append("unload")
+        with (
+            patch.object(prompt_expander, "_resolve_local_qwen_device", return_value="cuda"),
+            patch.object(prompt_expander, "free_comfy_vram", return_value=False),
+            patch("settings.settings.local_llm_backend", "transformers"),
+            patch("transformers.AutoTokenizer.from_pretrained") as tokenizer_loader,
+            patch("transformers.Qwen3VLProcessor.from_pretrained") as processor_loader,
+            patch("transformers.Qwen3VLForConditionalGeneration.from_pretrained") as model_loader,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ComfyUI VRAM"):
+                prompt_expander._load_local_qwen.__wrapped__("fake-model")
 
-            def load(self, checkpoint, quantization, **_kwargs):
-                self.calls.append(f"load:{Path(checkpoint).name}:{quantization}")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            checkpoint = Path(tmp) / "model.safetensors"
-            checkpoint.write_bytes(b"x")
-            fake = FakePipeline(str(checkpoint))
-
-            async def run():
-                with (
-                    patch.object(main, "pipeline", fake),
-                    patch.object(main, "generation_queue", None),
-                    patch.object(main, "clear_cuda_cache") as clear,
-                    patch.object(settings, "local_llm_backend", "transformers"),
-                    patch.object(settings, "local_qwen_device", "auto"),
-                ):
-                    result = await main._run_helper_with_optional_krea_preempt("local", lambda: "ok")
-                return result, clear.called
-
-            result, cleared = asyncio.run(run())
-
-        self.assertEqual(result, "ok")
-        self.assertTrue(cleared)
-        self.assertEqual(fake.calls, ["unload", "load:model.safetensors:int8"])
+        tokenizer_loader.assert_not_called()
+        processor_loader.assert_not_called()
+        model_loader.assert_not_called()
 
 
 if __name__ == "__main__":

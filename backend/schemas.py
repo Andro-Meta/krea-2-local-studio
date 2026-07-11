@@ -226,6 +226,13 @@ class GenerationRequest(BaseModel):
     seed_variance_cutoff_strength: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class HelperBenchmarkRequest(BaseModel):
+    models: List[str] = Field(default_factory=list, min_length=1, max_length=4)
+    precisions: List[str] = Field(default_factory=list, min_length=1, max_length=4)
+    repeats: int = Field(default=3, ge=1, le=20)
+    subsequent_krea: bool = False
+
+
 class GalleryItem(BaseModel):
     id: int
     filename: str
@@ -528,6 +535,8 @@ class SettingsUpdate(BaseModel):
     prompt_expander_backend: Optional[str] = None
     local_llm_backend: Optional[Literal["comfy", "transformers", "gguf_server"]] = None
     comfy_qwen_model: Optional[str] = None
+    comfy_qwen_quant: Optional[str] = None
+    krea_comfy_warmup: Optional[bool] = None
     local_qwen_model_id: Optional[str] = None
     local_qwen_device: Optional[Literal["auto", "cuda", "cpu"]] = None
     gguf_helper_base_url: Optional[str] = None

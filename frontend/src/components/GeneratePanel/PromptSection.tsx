@@ -1,12 +1,45 @@
-import React, { useEffect, useState } from 'react'
-import { Alert, Box, Button, Checkbox, Chip, CircularProgress, Collapse, FormControlLabel, MenuItem, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
+import React, { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
+import { Alert, Box, Button, Checkbox, Chip, CircularProgress, Collapse, FormControlLabel, LinearProgress, MenuItem, Paper, Slider, Snackbar, Stack, TextField, Tooltip, Typography } from '@mui/material'
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
 import TipsAndUpdatesIcon from '@mui/icons-material/TipsAndUpdates'
 import { useStore } from '../../store'
-import { apiFetch, type MoodboardSuggestion, type PromptPlan } from '../../api'
+import { apiFetch, connectWS, type GpuTaskResponse, type MoodboardSuggestion, type PromptPlan } from '../../api'
+import {
+  activeGpuTaskStorageKey,
+  canDeliverTaskResult,
+  reconcileActiveTaskIdentity,
+} from '../../lib/activeTaskPersistence'
+import { createTaskWatcher, type TaskWatcher } from '../../lib/taskWatcher'
+import {
+  applyGuardedPromptMutation,
+  initialWandTaskState,
+  parsePersistedWandTask,
+  reduceWandTaskState,
+  serializePersistedWandTask,
+  wandCancelAriaLabel,
+  wandProgressAriaLabel,
+  wandStatusAnnouncement,
+  type WandResult,
+  type WandSubmission,
+} from '../../lib/wandTaskState'
 import CreatePromptFromImage from '../CreatePromptFromImage'
 
 const ABLITERATED_QWEN = 'huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated'
+const WAND_TASK_KIND = 'prompt_expand'
+
+function persistWandTask(storageKey: string | null, submission: WandSubmission): boolean {
+  if (!storageKey) return false
+  localStorage.setItem(storageKey, serializePersistedWandTask(submission))
+  return true
+}
+
+function clearPersistedWandTask(storageKey: string | null, expectedJobId: string): boolean {
+  if (!storageKey) return false
+  const persisted = parsePersistedWandTask(localStorage.getItem(storageKey))
+  if (persisted?.jobId !== expectedJobId) return false
+  localStorage.removeItem(storageKey)
+  return true
+}
 
 function wandChoiceFromModel(modelId: string) {
   if (!modelId) return 'default'
@@ -21,7 +54,8 @@ function modelFromWandChoice(choice: string, current: string) {
 
 export default function PromptSection() {
   const { params, setParam, setParams, setPromptBusy, moodboardSuggestions, setMoodboardSuggestions } = useStore()
-  const [expanding, setExpanding] = useState(false)
+  const [wandState, dispatchWand] = useReducer(reduceWandTaskState, initialWandTaskState)
+  const [submittingWand, setSubmittingWand] = useState(false)
   const [planning, setPlanning] = useState(false)
   const [plan, setPlan] = useState<PromptPlan | null>(null)
   const [notice, setNotice] = useState<{ message: string; severity: 'success' | 'warning' | 'error' } | null>(null)
@@ -32,6 +66,17 @@ export default function PromptSection() {
   const [wandDevice, setWandDevice] = useState<'auto' | 'cuda' | 'cpu'>('auto')
   const [showWandAdvanced, setShowWandAdvanced] = useState(false)
   const [showPromptTools, setShowPromptTools] = useState(false)
+  const [activeTaskKey, setActiveTaskKey] = useState<string | null>(null)
+  const watcherRef = useRef<TaskWatcher | null>(null)
+  const watchedJobIdRef = useRef<string | null>(null)
+  const watchedStorageKeyRef = useRef<string | null>(null)
+  const watchedSubmissionRef = useRef<WandSubmission | null>(null)
+  const resolvedStorageKeyRef = useRef<string | null>(null)
+  const activeTaskKeyRef = useRef<string | null>(null)
+  const submittingWandRef = useRef(false)
+  const promptLockedRef = useRef(false)
+  const promptRef = useRef(params.prompt)
+  const promptRevisionRef = useRef(0)
   // Snapshot of server-side wand settings so we only PUT /api/settings (an
   // admin-only endpoint) when the user actually changed something here.
   const [serverWand, setServerWand] = useState<{ model: string; backend: string; llm: string; device: string } | null>(null)
@@ -53,11 +98,256 @@ export default function PromptSection() {
       .catch(() => undefined)
   }, [])
 
-  const handleExpand = async () => {
-    if (!params.prompt || expanding) return
-    const originalPrompt = params.prompt
-    setExpanding(true)
+  useEffect(() => {
+    if (promptRef.current === params.prompt) return
+    promptRef.current = params.prompt
+    promptRevisionRef.current += 1
+  }, [params.prompt])
+
+  const writePrompt = useCallback((prompt: string, trackUserRevision = true) => {
+    return applyGuardedPromptMutation(promptLockedRef.current, value => {
+      if (trackUserRevision) promptRevisionRef.current += 1
+      promptRef.current = value
+      setParam('prompt', value)
+    }, prompt)
+  }, [setParam])
+
+  useEffect(() => {
+    let disposed = false
+    let inFlight = false
+    let rerunRequested = false
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null
+    const resolveAuth = () => {
+      if (disposed) return
+      if (inFlight) {
+        rerunRequested = true
+        return
+      }
+      inFlight = true
+      apiFetch.authMe()
+        .then(session => {
+          if (!disposed) {
+            const nextKey = activeGpuTaskStorageKey(session?.username, WAND_TASK_KIND)
+            if (
+              activeTaskKeyRef.current === null
+              && watcherRef.current
+              && watchedStorageKeyRef.current === null
+              && watchedSubmissionRef.current
+            ) {
+              persistWandTask(nextKey, watchedSubmissionRef.current)
+              watchedStorageKeyRef.current = nextKey
+            }
+            activeTaskKeyRef.current = nextKey
+            setActiveTaskKey(nextKey)
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false
+          if (disposed || !rerunRequested) return
+          rerunRequested = false
+          refreshTimer = setTimeout(resolveAuth, 75)
+        })
+    }
+    const scheduleAuthRefresh = () => {
+      if (disposed) return
+      if (refreshTimer !== null) clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(resolveAuth, 75)
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') scheduleAuthRefresh()
+    }
+    resolveAuth()
+    window.addEventListener('online', scheduleAuthRefresh)
+    window.addEventListener('focus', scheduleAuthRefresh)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      disposed = true
+      if (refreshTimer !== null) clearTimeout(refreshTimer)
+      window.removeEventListener('online', scheduleAuthRefresh)
+      window.removeEventListener('focus', scheduleAuthRefresh)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
+
+  const watchWandTask = useCallback((
+    submission: WandSubmission,
+    storageKey: string | null,
+    initialSnapshot?: GpuTaskResponse<WandResult>,
+  ) => {
+    watcherRef.current?.stop()
+    watchedJobIdRef.current = submission.jobId
+    watchedStorageKeyRef.current = storageKey
+    watchedSubmissionRef.current = submission
+    persistWandTask(storageKey, submission)
+    dispatchWand({ type: 'enqueued', submission })
+    if (initialSnapshot) dispatchWand({ type: 'snapshot', snapshot: initialSnapshot })
+
+    promptLockedRef.current = initialSnapshot?.status === 'running'
+      || initialSnapshot?.status === 'finalizing'
     setPromptBusy(true)
+    const watcher = createTaskWatcher<WandResult>({
+      jobId: submission.jobId,
+      fetchSnapshot: () => apiFetch.jobStatus(submission.jobId) as Promise<GpuTaskResponse<WandResult>>,
+      openSocket: (onSnapshot, onClose) => connectWS(
+        submission.jobId,
+        data => onSnapshot(data as Partial<GpuTaskResponse<WandResult>>),
+        onClose,
+      ),
+      onSnapshot: snapshot => {
+        if (
+          watchedJobIdRef.current !== submission.jobId
+          || !canDeliverTaskResult(activeTaskKeyRef.current, watchedStorageKeyRef.current)
+        ) return
+        promptLockedRef.current = promptLockedRef.current
+          || snapshot.status === 'running'
+          || snapshot.status === 'finalizing'
+        setPromptBusy(true)
+        dispatchWand({ type: 'snapshot', snapshot })
+      },
+      onTerminal: snapshot => {
+        if (
+          watchedJobIdRef.current !== submission.jobId
+          || !canDeliverTaskResult(activeTaskKeyRef.current, watchedStorageKeyRef.current)
+        ) return
+        clearPersistedWandTask(watchedStorageKeyRef.current, submission.jobId)
+        watcherRef.current = null
+        watchedJobIdRef.current = null
+        watchedStorageKeyRef.current = null
+        watchedSubmissionRef.current = null
+        promptLockedRef.current = false
+        setPromptBusy(false)
+
+        if (snapshot.status === 'done' && snapshot.result) {
+          dispatchWand({
+            type: 'completed',
+            currentPrompt: promptRef.current,
+            currentRevision: promptRevisionRef.current,
+            result: snapshot.result,
+          })
+          if (snapshot.result.error) {
+            setNotice({ severity: 'warning', message: snapshot.result.error })
+          } else if (!snapshot.result.changed || !snapshot.result.expanded) {
+            setNotice({ severity: 'warning', message: 'The wand did not return a different prompt.' })
+          }
+          return
+        }
+
+        dispatchWand({ type: 'terminal' })
+        if (snapshot.status === 'cancelled') {
+          setNotice({ severity: 'warning', message: 'Magic Wand was cancelled.' })
+        } else if (snapshot.status === 'blocked') {
+          setNotice({ severity: 'warning', message: snapshot.error || 'Magic Wand was blocked by the safety filter.' })
+        } else {
+          setNotice({ severity: 'error', message: snapshot.error || 'Prompt expansion failed.' })
+        }
+      },
+      onConnectionNote: note => {
+        if (
+          note
+          && canDeliverTaskResult(activeTaskKeyRef.current, watchedStorageKeyRef.current)
+        ) setNotice({ severity: 'warning', message: note })
+      },
+      onError: error => {
+        if (
+          watchedJobIdRef.current !== submission.jobId
+          || !canDeliverTaskResult(activeTaskKeyRef.current, watchedStorageKeyRef.current)
+        ) return
+        clearPersistedWandTask(watchedStorageKeyRef.current, submission.jobId)
+        watcherRef.current = null
+        watchedJobIdRef.current = null
+        watchedStorageKeyRef.current = null
+        watchedSubmissionRef.current = null
+        promptLockedRef.current = false
+        setPromptBusy(false)
+        dispatchWand({ type: 'terminal' })
+        setNotice({ severity: 'error', message: error.message })
+      },
+      acknowledgeAfterDelivery: snapshot =>
+        snapshot.status === 'done'
+          ? apiFetch.ackJob(submission.jobId).then(() => undefined).catch(() => undefined)
+          : undefined,
+    })
+    watcherRef.current = watcher
+    watcher.start()
+  }, [setPromptBusy])
+
+  useEffect(() => {
+    if (!activeTaskKey) return
+    const transition = reconcileActiveTaskIdentity({
+      previousResolvedKey: resolvedStorageKeyRef.current,
+      nextResolvedKey: activeTaskKey,
+      watcherActive: watcherRef.current !== null,
+      watchedStorageKey: watchedStorageKeyRef.current,
+    })
+    resolvedStorageKeyRef.current = activeTaskKey
+
+    if (transition.stopWatcher) {
+      watcherRef.current?.stop()
+      watcherRef.current = null
+      watchedJobIdRef.current = null
+      watchedStorageKeyRef.current = null
+      watchedSubmissionRef.current = null
+      promptLockedRef.current = false
+    }
+    if (transition.identityChanged) {
+      setPromptBusy(false)
+      setPreWandPrompt('')
+      setMoodboardSuggestions([])
+      setNotice(null)
+      dispatchWand({ type: 'identity-changed' })
+    }
+
+    if (transition.adoptStorageKey) {
+      const submission = watchedSubmissionRef.current
+      if (submission) {
+        persistWandTask(transition.adoptStorageKey, submission)
+        watchedStorageKeyRef.current = transition.adoptStorageKey
+      }
+      return
+    }
+
+    if (!transition.consultStorageKey) return
+    const raw = localStorage.getItem(transition.consultStorageKey)
+    if (!raw) return
+    const submission = parsePersistedWandTask(raw)
+    if (!submission) {
+      localStorage.removeItem(transition.consultStorageKey)
+      return
+    }
+    promptRevisionRef.current = Math.max(promptRevisionRef.current, submission.submittedRevision)
+    watchWandTask(submission, transition.consultStorageKey)
+  }, [activeTaskKey, setMoodboardSuggestions, setPromptBusy, watchWandTask])
+
+  useEffect(() => () => {
+    watcherRef.current?.stop()
+    promptLockedRef.current = false
+    setPromptBusy(false)
+  }, [setPromptBusy])
+
+  useLayoutEffect(() => {
+    if (!wandState.autoApplied) return
+    const { originalPrompt, result } = wandState.autoApplied
+    if (!writePrompt(result.expanded, false)) return
+    setPreWandPrompt(originalPrompt)
+    setMoodboardSuggestions(result.suggested_moodboards ?? [])
+    const label = result.backend === 'openrouter'
+      ? 'OpenRouter'
+      : result.backend === 'ideogram-json'
+        ? 'Ideogram JSON'
+        : localLlmBackend === 'gguf_server'
+          ? 'local GGUF helper'
+          : localLlmBackend === 'comfy'
+            ? 'ComfyUI QwenVL'
+            : 'Local Qwen3-VL'
+    setNotice({ severity: 'success', message: `Prompt expanded with ${label}.` })
+    dispatchWand({ type: 'auto-applied' })
+  }, [localLlmBackend, setMoodboardSuggestions, wandState.autoApplied, writePrompt])
+
+  const handleExpand = async () => {
+    if (!promptRef.current || submittingWandRef.current || watcherRef.current) return
+    submittingWandRef.current = true
+    setSubmittingWand(true)
     try {
       const wandChanged = !serverWand
         || serverWand.model !== wandModel || serverWand.backend !== wandBackend
@@ -77,33 +367,67 @@ export default function PromptSection() {
           setNotice({ severity: 'warning', message: 'Wand settings are admin-only; using the server defaults for this expansion.' })
         }
       }
-      const { expanded, changed, error, backend, suggested_moodboards } = await apiFetch.expandPrompt(params.prompt, wandBackend)
-      setMoodboardSuggestions(suggested_moodboards ?? [])
-      if (changed && expanded) {
-        setPreWandPrompt(originalPrompt)
-        setParam('prompt', expanded)
-        const label = wandBackend === 'local' && localLlmBackend === 'transformers' && wandChoiceFromModel(wandModel) === 'abliterated'
-          ? 'Abliterated Qwen3-VL'
-          : backend === 'openrouter' ? 'OpenRouter' : backend === 'ideogram-json' ? 'Ideogram JSON' : localLlmBackend === 'gguf_server' ? 'local GGUF helper' : localLlmBackend === 'comfy' ? 'ComfyUI QwenVL' : 'Local Qwen3-VL'
-        setNotice({ severity: 'success', message: `Prompt expanded with ${label}.` })
-      } else if (error) {
-        setNotice({ severity: 'warning', message: error })
-      } else {
-        setNotice({ severity: 'warning', message: 'The wand did not return a different prompt.' })
-      }
+      const submittedPrompt = promptRef.current
+      const submittedRevision = promptRevisionRef.current
+      const queued = await apiFetch.submitExpandPrompt(submittedPrompt, wandBackend)
+      const submission = { jobId: queued.job_id, submittedPrompt, submittedRevision }
+      watchWandTask(submission, activeTaskKeyRef.current, {
+        job_id: queued.job_id,
+        status: queued.status,
+        progress: 0,
+        images: [],
+        task_kind: queued.task_kind,
+        queue_position: queued.queue_position,
+        queue_length: queued.queue_length,
+      })
     } catch (err) {
       setNotice({ severity: 'error', message: err instanceof Error ? err.message : 'Prompt expansion failed.' })
     } finally {
-      setExpanding(false)
-      setPromptBusy(false)
+      submittingWandRef.current = false
+      setSubmittingWand(false)
+    }
+  }
+
+  const cancelWand = async () => {
+    const active = wandState.active
+    if (!active || active.cancelPending || !['queued', 'running'].includes(active.snapshot.status)) return
+    dispatchWand({ type: 'cancel-requested' })
+    try {
+      await apiFetch.cancelJob(active.submission.jobId)
+    } catch {
+      dispatchWand({ type: 'cancel-failed' })
+      setNotice({ severity: 'error', message: 'Could not cancel Magic Wand.' })
     }
   }
 
   const undoMagicWand = () => {
     if (!preWandPrompt) return
-    setParam('prompt', preWandPrompt)
+    if (!writePrompt(preWandPrompt)) return
     setPreWandPrompt('')
     setNotice({ severity: 'success', message: 'Restored the prompt from before Magic Wand.' })
+  }
+
+  const applyPendingWand = () => {
+    const pending = wandState.pending
+    if (!pending) return
+    const undoSource = promptRef.current
+    if (!writePrompt(pending.result.expanded)) return
+    setPreWandPrompt(undoSource)
+    setMoodboardSuggestions(pending.result.suggested_moodboards ?? [])
+    dispatchWand({ type: 'discard-pending' })
+    setNotice({ severity: 'success', message: 'Applied the completed Magic Wand result.' })
+  }
+
+  const copyPendingWand = async () => {
+    const expanded = wandState.pending?.result.expanded
+    if (!expanded) return
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(expanded)
+      setNotice({ severity: 'success', message: 'Magic Wand result copied.' })
+    } catch {
+      setNotice({ severity: 'error', message: 'Could not copy the Magic Wand result to the clipboard.' })
+    }
   }
 
   const applyMoodboardSuggestion = (board: MoodboardSuggestion) => {
@@ -152,6 +476,25 @@ export default function PromptSection() {
   // Xperiment setup lives in QuickPresets (the "Xperiment" chip); the old
   // duplicate handler here was never wired to any UI and has been removed.
 
+  const activeWand = wandState.active
+  const wandStatus = activeWand?.snapshot.status
+  const wandButtonLabel = submittingWand
+    ? 'Submitting Magic Wand…'
+    : wandStatus === 'queued'
+      ? activeWand?.snapshot.queue_position
+        ? `Queued #${activeWand.snapshot.queue_position}`
+        : 'Queued'
+      : wandStatus === 'cancellation_requested'
+        ? 'Cancelling Magic Wand…'
+        : activeWand
+          ? 'Magic Wand running…'
+          : 'Magic wand'
+  const canCancelWand = !!activeWand && ['queued', 'running'].includes(activeWand.snapshot.status)
+  const promptLocked = !!activeWand?.promptLocked
+  const wandAnnouncement = activeWand
+    ? wandStatusAnnouncement(activeWand.snapshot, activeWand.cancelPending)
+    : ''
+
   return (
     <Stack spacing={1}>
       <Paper variant="outlined" sx={{ p: 1.25, bgcolor: 'background.default' }}>
@@ -162,7 +505,13 @@ export default function PromptSection() {
               Upload an image and the local Qwen3-VL reverse-engineers a prompt to recreate it. Add optional guidance to focus on — or change — specific parts; leave it blank for a full auto prompt.
             </Typography>
           </Box>
-          <CreatePromptFromImage value={params.prompt} onChange={prompt => setParam('prompt', prompt)} label="Create from image" withGuidance />
+          <CreatePromptFromImage
+            value={params.prompt}
+            onChange={prompt => { writePrompt(prompt) }}
+            disabled={promptLocked}
+            label="Create from image"
+            withGuidance
+          />
         </Stack>
       </Paper>
       <Stack spacing={1}>
@@ -173,7 +522,8 @@ export default function PromptSection() {
           maxRows={8}
           fullWidth
           value={params.prompt}
-          onChange={e => setParam('prompt', e.target.value)}
+          onChange={e => { writePrompt(e.target.value) }}
+          disabled={promptLocked}
           placeholder="Describe the image you want to create…"
         />
         {activeMoodboards.length > 0 && (
@@ -198,12 +548,24 @@ export default function PromptSection() {
           <Button
             variant="outlined"
             onClick={handleExpand}
-            disabled={expanding || !params.prompt}
-            startIcon={expanding ? <CircularProgress size={16} color="inherit" /> : <AutoFixHighIcon />}
+            disabled={submittingWand || !!activeWand || !params.prompt}
+            startIcon={submittingWand || !!activeWand ? <CircularProgress size={16} color="inherit" /> : <AutoFixHighIcon />}
             sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}
           >
-            Magic wand
+            {wandButtonLabel}
           </Button>
+          {canCancelWand && (
+            <Button
+              variant="text"
+              color="warning"
+              onClick={cancelWand}
+              disabled={activeWand.cancelPending}
+              aria-label={wandCancelAriaLabel(activeWand.cancelPending)}
+              sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}
+            >
+              {activeWand.cancelPending ? 'Cancelling…' : 'Cancel Wand'}
+            </Button>
+          )}
           <Tooltip
             title={
               <span>
@@ -222,6 +584,7 @@ export default function PromptSection() {
               variant="text"
               size="small"
               onClick={undoMagicWand}
+              disabled={promptLocked}
               sx={{ alignSelf: { xs: 'stretch', md: 'flex-start' }, minHeight: 40 }}
             >
               Undo Magic Wand
@@ -231,6 +594,44 @@ export default function PromptSection() {
         <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: -0.25 }}>
           Magic Wand expands your prompt and can suggest matching moodboards. Applying a suggestion makes it visible above.
         </Typography>
+        {activeWand && (
+          <Paper variant="outlined" sx={{ p: 1, borderColor: 'rgba(208,188,255,0.35)', bgcolor: 'rgba(208,188,255,0.05)' }}>
+            <Stack spacing={0.75}>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {wandAnnouncement}
+              </Typography>
+              <LinearProgress
+                variant={activeWand.snapshot.status === 'running' && activeWand.snapshot.progress > 0 ? 'determinate' : 'indeterminate'}
+                value={activeWand.snapshot.progress}
+                aria-label={wandProgressAriaLabel(activeWand.snapshot.status)}
+                sx={{ height: 3, borderRadius: 2 }}
+              />
+            </Stack>
+          </Paper>
+        )}
+        {wandState.pending && (
+          <Paper variant="outlined" sx={{ p: 1.25, borderColor: 'warning.main', bgcolor: 'rgba(255,183,77,0.06)' }}>
+            <Stack spacing={1}>
+              <Alert severity="warning" variant="outlined">
+                Magic Wand finished, but your prompt changed while it was queued. Review the result before applying it.
+              </Alert>
+              <TextField label="Original submission" value={wandState.pending.originalPrompt} multiline minRows={2} size="small" fullWidth InputProps={{ readOnly: true }} />
+              <TextField label="Current prompt when completed" value={wandState.pending.currentPrompt} multiline minRows={2} size="small" fullWidth InputProps={{ readOnly: true }} />
+              <TextField label="Magic Wand result" value={wandState.pending.result.expanded} multiline minRows={3} size="small" fullWidth InputProps={{ readOnly: true }} />
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                <Button variant="contained" size="small" onClick={applyPendingWand} disabled={promptLocked}>Apply result</Button>
+                <Button variant="outlined" size="small" onClick={copyPendingWand}>Copy result</Button>
+                <Button variant="text" size="small" onClick={() => dispatchWand({ type: 'discard-pending' })}>Discard</Button>
+              </Stack>
+            </Stack>
+          </Paper>
+        )}
         {moodboardSuggestions.length > 0 && (
           <Paper variant="outlined" sx={{ p: 1, borderColor: 'rgba(202,196,208,0.18)', bgcolor: 'rgba(255,255,255,0.03)' }}>
             <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.75 }}>
@@ -302,8 +703,8 @@ export default function PromptSection() {
                   Subject: {plan.subject || 'n/a'} · Composition: {plan.composition || 'n/a'} · Lighting: {plan.lighting || 'n/a'}
                 </Typography>
                 <Stack direction="row" spacing={1}>
-                  <Button size="small" variant="contained" onClick={() => {
-                    setParam('prompt', plan.planned_prompt)
+                  <Button size="small" variant="contained" disabled={promptLocked} onClick={() => {
+                    if (!writePrompt(plan.planned_prompt)) return
                     if (plan.negative_prompt && !params.negative_prompt) setParam('negative_prompt', plan.negative_prompt)
                   }}>
                     Apply planned prompt

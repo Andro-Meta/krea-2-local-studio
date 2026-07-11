@@ -14,6 +14,43 @@ import sharing_service  # noqa: E402
 
 
 class SharingServiceTests(unittest.TestCase):
+    def test_tailscale_connected_requires_running_backend_and_identity(self) -> None:
+        class Result:
+            returncode = 0
+            stderr = ""
+
+            def __init__(self, state: str, *, dns: str = "machine.tail.ts.net.", ips=None):
+                import json
+
+                self.stdout = json.dumps(
+                    {
+                        "BackendState": state,
+                        "Self": {"DNSName": dns, "TailscaleIPs": ["100.64.0.1"] if ips is None else ips},
+                    }
+                )
+
+        with (
+            patch("sharing_service.find_tailscale", return_value="tailscale"),
+            patch("sharing_service._run_tailscale", return_value=Result("Running")),
+        ):
+            self.assertTrue(sharing_service.tailscale_status()["connected"])
+
+        for state in ("NeedsLogin", "Stopped", "NoState"):
+            with (
+                self.subTest(state=state),
+                patch("sharing_service.find_tailscale", return_value="tailscale"),
+                patch("sharing_service._run_tailscale", return_value=Result(state)),
+            ):
+                self.assertFalse(sharing_service.tailscale_status()["connected"])
+
+        for dns, ips in (("", ["100.64.0.1"]), ("machine.tail.ts.net.", [])):
+            with (
+                self.subTest(dns=dns, ips=ips),
+                patch("sharing_service.find_tailscale", return_value="tailscale"),
+                patch("sharing_service._run_tailscale", return_value=Result("Running", dns=dns, ips=ips)),
+            ):
+                self.assertFalse(sharing_service.tailscale_status()["connected"])
+
     def test_start_funnel_uses_krea_path_and_local_port(self) -> None:
         calls = []
 
@@ -141,7 +178,7 @@ class SharingServiceTests(unittest.TestCase):
         def fake_run(args, timeout=30):
             calls.append(args)
             if args[:2] == ["status", "--json"]:
-                return Result(stdout='{"Self":{"DNSName":"diffusion.tail.ts.net."}}')
+                return Result(stdout='{"BackendState":"Running","Self":{"DNSName":"diffusion.tail.ts.net.","TailscaleIPs":["100.64.0.1"]}}')
             if args[:2] == ["funnel", "status"]:
                 return Result(stdout="https://diffusion.tail.ts.net/krea\n")
             if args[:1] == ["up"]:
@@ -174,7 +211,7 @@ class SharingServiceTests(unittest.TestCase):
 
         def fake_run(args, timeout=30):
             if args[:2] == ["status", "--json"]:
-                return Result(stdout='{"Self":{"DNSName":"diffusion.tail.ts.net."}}')
+                return Result(stdout='{"BackendState":"Running","Self":{"DNSName":"diffusion.tail.ts.net.","TailscaleIPs":["100.64.0.1"]}}')
             if args[:2] == ["funnel", "status"]:
                 return Result(stdout="https://diffusion.tail.ts.net/krea\n")
             if args[:1] == ["up"]:

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import io
+import json
 import logging
 import os
 import random
@@ -32,7 +34,21 @@ if str(_BACKEND) not in sys.path:
 
 from crash_reporter import archive_stale_generation_breadcrumbs, clear_generation_breadcrumb, disable_fault_logging, enable_fault_logging, stale_generation_breadcrumbs, write_generation_breadcrumb
 from gallery import delete_image, get_gallery, get_image_record_by_filename, init_db, save_image, set_favorite
-from generation_queue import GenerationQueue
+from gpu_task_queue import BACKGROUND, INTERACTIVE, EnqueueResult, GpuTaskQueue
+from gpu_recovery import is_cuda_oom
+from gpu_tasks import (
+    BACKGROUND_ENRICHMENT,
+    DEPTH_PREVIEW,
+    GENERATION,
+    HELPER_BENCHMARK,
+    IMAGE_DESCRIBE,
+    MODEL_WARMUP,
+    MOODBOARD_GUIDANCE,
+    PROMPT_EXPAND,
+    PROMPT_PLAN,
+    UPSCALE,
+    foreign_summary,
+)
 # Phase 1: native in-process DiT pipeline is deprecated. Keep a stub so memory /
 # system-report call sites stay intact without importing torch + krea2 at startup.
 from comfy_pipeline_stub import pipeline
@@ -42,19 +58,20 @@ from moodboards_catalog import (
     CUSTOM_MOODBOARD_DIR,
     KREA_MOODBOARD_GALLERY_URL,
     MOODBOARD_SEED_PATH,
-    create_mashup_moodboard,
     create_custom_moodboard,
+    cleanup_prepared_moodboard_task,
+    commit_prepared_moodboard_task,
     delete_custom_moodboard,
     export_moodboard_seed,
     fetch_moodboard_image_b64,
-    generate_and_store_moodboard_qwen_guidance,
-    generate_missing_moodboard_qwen_guidance,
     get_moodboard,
     fetch_cached_moodboard_image,
     import_moodboard_urls,
     init_moodboard_db,
     latest_moodboard_discovery,
     list_moodboards,
+    prepare_moodboard_guidance_task,
+    reconcile_custom_moodboard_storage,
     set_moodboard_favorite,
     should_sync_moodboards,
 )
@@ -71,6 +88,7 @@ from schemas import (
     ExpandPromptResponse,
     FavoriteRequest,
     GenerationRequest,
+    HelperBenchmarkRequest,
     LoadModelRequest,
     MemoryStopProcessRequest,
     CustomMoodboardRequest,
@@ -99,18 +117,25 @@ from schemas import (
 )
 from settings import BASE_DIR, DIST_DIR, LOGS_DIR, LORAS_DIR, MODELS_DIR, OUTPUTS_DIR, settings
 from share_auth import (
+    BootstrapCredentialDeletionError,
     add_user,
     get_user_role,
     is_admin,
     is_valid_username,
     list_user_records,
     remove_user,
+    resolve_bootstrap_credential_path,
     set_user_role,
-    verify_user,
+    verify_login,
 )
+from runtime_hardening import FunnelHealthMonitor, auto_repair_configured, funnel_interval_healthy
 from support_models import download_support_models, support_model_status
 from comfy_config import use_comfy_backend
-from comfy_client import comfy_available, free_comfy_vram
+from comfy_client import (
+    comfy_available,
+    comfy_atomic_cancel_available,
+    free_comfy_vram,
+)
 from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, repair_funnel, start_funnel, stop_funnel, tailscale_status, tailscale_up
 from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_lora_filename
 from system_check import get_system_report
@@ -157,6 +182,10 @@ PUBLIC_BASE_PATH = "/" + os.environ.get("KREA_PUBLIC_BASE_PATH", "/").strip("/")
 if PUBLIC_BASE_PATH == "/.":
     PUBLIC_BASE_PATH = "/"
 SHARE_AUTH_FILE = Path(os.environ.get("KREA_SHARE_AUTH_FILE", str(BASE_DIR / "share_auth.json")))
+BOOTSTRAP_CREDENTIAL_FILE = resolve_bootstrap_credential_path(BASE_DIR)
+_funnel_health_monitor = FunnelHealthMonitor(
+    enabled=auto_repair_configured(os.environ.get("KREA_SHARE_AUTO_FUNNEL_ENABLED"))
+)
 SHARE_COOKIE = "krea_share_session"
 SHARE_COOKIE_SECURE = os.environ.get("KREA_SHARE_COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
 SHARE_SESSION_TTL_SECONDS = 12 * 60 * 60
@@ -352,7 +381,20 @@ async def share_login(req: ShareLoginRequest, response: Response):
     if not SHARE_AUTH_ENABLED:
         return {"ok": True, "share_auth": False}
     username = req.username.strip()
-    if not is_valid_username(username) or not verify_user(SHARE_AUTH_FILE, username, req.password):
+    try:
+        authenticated = is_valid_username(username) and verify_login(
+            SHARE_AUTH_FILE,
+            username,
+            req.password,
+            bootstrap_credential_path=BOOTSTRAP_CREDENTIAL_FILE,
+        )
+    except BootstrapCredentialDeletionError as exc:
+        logger.error("Bootstrap credential deletion failed; session issuance denied.")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not remove the one-time bootstrap credential. Login was not completed; retry.",
+        ) from exc
+    if not authenticated:
         raise HTTPException(401, "Invalid username or password")
     token = secrets.token_urlsafe(32)
     _share_sessions[token] = (username, time.time() + SHARE_SESSION_TTL_SECONDS)
@@ -441,6 +483,7 @@ async def sharing_tailscale_up():
 
 @app.post("/api/sharing/funnel/start")
 async def sharing_funnel_start():
+    _funnel_health_monitor.enable()
     result = start_funnel()
     if not result.get("ok"):
         raise HTTPException(502, result.get("message", "Tailscale Funnel failed to start."))
@@ -449,11 +492,13 @@ async def sharing_funnel_start():
 
 @app.post("/api/sharing/funnel/repair")
 async def sharing_funnel_repair():
+    _funnel_health_monitor.enable()
     return repair_funnel()
 
 
 @app.post("/api/sharing/funnel/stop")
 async def sharing_funnel_stop():
+    _funnel_health_monitor.disable()
     return stop_funnel()
 
 # ---------------------------------------------------------------------------
@@ -462,12 +507,14 @@ async def sharing_funnel_stop():
 
 _jobs: dict[str, dict] = {}
 _JOBS_MAX = 200  # ponytail: simple FIFO cap; raise if clients poll very old jobs
-generation_queue: GenerationQueue | None = None
+_TERMINAL_JOB_STATUSES = {"done", "error", "blocked", "cancelled"}
+generation_queue: GpuTaskQueue | None = None
+_model_warmup_job_id: str | None = None
+_last_model_signature: dict | None = None
+_last_warm_state: dict = {"status": "never", "updated_at": None}
 
-# Single GPU lease: ComfyUI work that does NOT go through the generation queue
-# (upscale, depth preview, helper LLM graphs, moodboard enrichment) must hold
-# this so it cannot unload models or compete mid-flight with a queued
-# generation. The queued generation handler holds it for each job.
+# Defense-in-depth GPU lease held by the unified queue worker around every
+# dispatch. Endpoints never acquire it, preventing nested-lease deadlocks.
 GPU_LEASE = asyncio.Lock()
 
 
@@ -482,8 +529,15 @@ def _job_owned_by(job: dict, username: str | None, is_admin: bool) -> bool:
     return (job.get("username") or None) == (username or None)
 
 
-def _new_job(username: str | None = None, role: str = "admin") -> str:
+def _new_job(
+    username: str | None = None,
+    role: str = "admin",
+    *,
+    task_kind: str = GENERATION,
+    summary: str = "",
+) -> str:
     jid = uuid.uuid4().hex
+    now = time.time()
     _jobs[jid] = {
         "status": "queued",
         "progress": 0,
@@ -492,21 +546,43 @@ def _new_job(username: str | None = None, role: str = "admin") -> str:
         "seed": None,
         "username": username,
         "role": role,
+        "task_kind": task_kind,
+        "priority_class": INTERACTIVE,
+        "summary": summary,
+        "result": None,
+        "comfy_prompt_id": None,
+        "queued_at": now,
+        "started_at": None,
+        "finished_at": None,
         "moderation_event_id": None,
     }
-    # Evict oldest FINISHED jobs to bound memory (dicts keep insertion order).
-    # Skip queued/running jobs AND children of unfinished batches: evicting a
-    # done child while its parent batch is still running would break the
-    # parent's progress aggregation.
+    # Evict only explicitly terminal records. Unknown/future phases are
+    # conservatively non-terminal, and unfinished batches retain all members.
     if len(_jobs) > _JOBS_MAX:
         for old_id, old_job in list(_jobs.items()):
             if len(_jobs) <= _JOBS_MAX or old_id == jid:
                 break
-            if old_job.get("status") in {"queued", "running"}:
+            if old_job.get("status") not in _TERMINAL_JOB_STATUSES:
+                continue
+            child_ids = list(old_job.get("child_job_ids") or [])
+            if child_ids and any(
+                (_jobs.get(str(child_id)) or {}).get("status")
+                not in _TERMINAL_JOB_STATUSES
+                for child_id in child_ids
+            ):
                 continue
             parent_id = old_job.get("parent_job_id")
-            if parent_id and (_jobs.get(str(parent_id)) or {}).get("status") in {"queued", "running"}:
-                continue
+            if parent_id:
+                parent = _jobs.get(str(parent_id))
+                if parent and (
+                    parent.get("status") not in _TERMINAL_JOB_STATUSES
+                    or any(
+                        (_jobs.get(str(child_id)) or {}).get("status")
+                        not in _TERMINAL_JOB_STATUSES
+                        for child_id in list(parent.get("child_job_ids") or [])
+                    )
+                ):
+                    continue
             del _jobs[old_id]
     return jid
 
@@ -602,59 +678,343 @@ def build_int8_variant_children(req: GenerationRequest) -> list[GenerationReques
     return children
 
 
+def _capacity_error(result: EnqueueResult) -> HTTPException:
+    return HTTPException(
+        429,
+        {
+            "message": "GPU task capacity reached.",
+            "reason": result.reason,
+            "limit": result.limit,
+            "active_count": result.active_count,
+        },
+    )
+
+
+def _enqueue_gpu_task(
+    job_id: str,
+    payload: dict,
+    *,
+    username: str | None,
+    role: str | None,
+    task_kind: str = GENERATION,
+    priority_class: str = INTERACTIVE,
+) -> EnqueueResult:
+    if generation_queue is None:
+        _jobs.pop(job_id, None)
+        raise HTTPException(503, "Generation queue is not ready yet.")
+    result = generation_queue.enqueue(
+        job_id,
+        payload,
+        username=username,
+        role=role,
+        task_kind=task_kind,
+        priority_class=priority_class,
+    )
+    if not result.accepted:
+        _jobs.pop(job_id, None)
+        raise _capacity_error(result)
+    return result
+
+
+async def _preempt_model_warmup() -> None:
+    """Yield the queue to interactive work without a process-wide interrupt."""
+    if generation_queue is None or not _model_warmup_job_id:
+        return
+    warmup_id = _model_warmup_job_id
+    state = generation_queue.status(warmup_id)
+    if state.get("status") == "queued":
+        generation_queue.request_cancel(warmup_id)
+        job = _jobs.get(warmup_id)
+        if job is not None:
+            job["status"] = "cancelled"
+            job["finished_at"] = time.time()
+        logger.info("Krea warmup transition: cancelled before start")
+        return
+    if state.get("status") != "running":
+        return
+
+    generation_queue.request_cancel(warmup_id)
+    job = _jobs.get(warmup_id)
+    if job is None:
+        return
+    job["status"] = "cancellation_requested"
+    job["cancel_requested"] = True
+    logger.info("Krea warmup transition: cancellation requested")
+    prompt_id = job.get("comfy_prompt_id")
+    if prompt_id:
+        from comfy_client import cancel_prompt
+
+        job["cancellation_dispatching"] = True
+        try:
+            job["cancellation_dispatched"] = await asyncio.to_thread(
+                cancel_prompt, prompt_id
+            )
+        finally:
+            job["cancellation_dispatching"] = False
+
+
+async def _enqueue_interactive_gpu_task(
+    job_id: str,
+    payload: dict,
+    *,
+    username: str | None,
+    role: str | None,
+    task_kind: str = GENERATION,
+) -> EnqueueResult:
+    """Async admission boundary where an optional warmup may be preempted."""
+    await _preempt_model_warmup()
+    return _enqueue_gpu_task(
+        job_id,
+        payload,
+        username=username,
+        role=role,
+        task_kind=task_kind,
+        priority_class=INTERACTIVE,
+    )
+
+
+async def _enqueue_helper_task(
+    request: Request,
+    *,
+    task_kind: str,
+    summary: str,
+    payload: dict,
+) -> dict:
+    username, role, _is_admin = _request_user_role(request)
+    job_id = _new_job(
+        username=username,
+        role=role,
+        task_kind=task_kind,
+        summary=summary,
+    )
+    queue_state = await _enqueue_interactive_gpu_task(
+        job_id,
+        payload,
+        username=username,
+        role=role,
+        task_kind=task_kind,
+    )
+    _sync_queue_state_to_jobs()
+    await ws_manager.broadcast(job_id, {"type": "queue", **_jobs[job_id]})
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "task_kind": task_kind,
+        "queue_position": queue_state.get("queue_position"),
+        "queue_length": queue_state.get("queue_length"),
+    }
+
+
+def _enqueue_background_enrichment() -> str | None:
+    """Queue one idle enrichment batch unless an equivalent task is unfinished."""
+    if generation_queue is None:
+        return None
+    if any(
+        job.get("task_kind") == BACKGROUND_ENRICHMENT
+        and job.get("status") not in _TERMINAL_JOB_STATUSES
+        for job in _jobs.values()
+    ):
+        return None
+    job_id = _new_job(
+        role="admin",
+        task_kind=BACKGROUND_ENRICHMENT,
+        summary="Background moodboard enrichment",
+    )
+    job = _jobs[job_id]
+    job["priority_class"] = BACKGROUND
+    job["operation"] = "missing"
+    try:
+        _enqueue_gpu_task(
+            job_id,
+            {"operation": "missing", "limit": 1},
+            username=None,
+            role="admin",
+            task_kind=BACKGROUND_ENRICHMENT,
+            priority_class=BACKGROUND,
+        )
+    except HTTPException:
+        return None
+    _sync_queue_state_to_jobs()
+    return job_id
+
+
+def _enqueue_model_warmup() -> str | None:
+    """Queue the single opt-in startup warmup at background priority."""
+    global _model_warmup_job_id
+    if not getattr(settings, "krea_comfy_warmup", False) or generation_queue is None:
+        return None
+    if _model_warmup_job_id is not None:
+        return None
+    job_id = _new_job(
+        role="admin",
+        task_kind=MODEL_WARMUP,
+        summary="Krea model warmup",
+    )
+    _model_warmup_job_id = job_id
+    job = _jobs[job_id]
+    job["priority_class"] = BACKGROUND
+    job["diagnostic_only"] = True
+    try:
+        _enqueue_gpu_task(
+            job_id,
+            {},
+            username=None,
+            role="admin",
+            task_kind=MODEL_WARMUP,
+            priority_class=BACKGROUND,
+        )
+    except HTTPException:
+        _model_warmup_job_id = None
+        return None
+    _sync_queue_state_to_jobs()
+    logger.info("Krea warmup transition: queued")
+    return job_id
+
+
 def _refresh_parent_batch_job(parent_job_id: str) -> dict | None:
     parent = _jobs.get(parent_job_id)
     if not parent or not parent.get("child_job_ids"):
         return parent
+    _sync_queue_state_to_jobs()
     child_ids = list(parent.get("child_job_ids") or [])
     children = [_jobs.get(child_id) for child_id in child_ids]
+    terminal_parent_status = (
+        parent.get("status")
+        if parent.get("status") in _TERMINAL_JOB_STATUSES
+        else None
+    )
     done_children = [child for child in children if child and child.get("status") == "done"]
     blocked = next((child for child in children if child and child.get("status") == "blocked"), None)
     errored = next((child for child in children if child and child.get("status") == "error"), None)
+    statuses = [child.get("status") if child else "queued" for child in children]
 
-    parent["images"] = [child.get("images", [""])[0] for child in done_children if child.get("images")]
-    parent["metadata"] = [child.get("metadata", [{}])[0] for child in done_children if child.get("metadata")]
+    parent["completed_count"] = len(done_children)
+    if not parent.get("result_acknowledged_at"):
+        parent["images"] = [child.get("images", [""])[0] for child in done_children if child.get("images")]
+        parent["metadata"] = [child.get("metadata", [{}])[0] for child in done_children if child.get("metadata")]
+        parent["num_images"] = len(parent["images"])
+    else:
+        parent["images"] = []
     parent["progress"] = int(len(done_children) / max(len(child_ids), 1) * 100)
-    if blocked:
+    queued_positions = [
+        child.get("queue_position")
+        for child in children
+        if child and child.get("queue_position") is not None
+    ]
+    queue_lengths = [
+        child.get("queue_length")
+        for child in children
+        if child and child.get("status") not in _TERMINAL_JOB_STATUSES
+        and child.get("queue_length") is not None
+    ]
+    parent["queue_position"] = min(queued_positions, default=None)
+    parent["queue_length"] = max(queue_lengths, default=0)
+    all_terminal = bool(statuses) and all(
+        status in _TERMINAL_JOB_STATUSES for status in statuses
+    )
+
+    if terminal_parent_status:
+        parent["status"] = terminal_parent_status
+    elif not all_terminal:
+        parent.pop("error", None)
+        if any(status == "running" for status in statuses):
+            parent["status"] = "running"
+        elif any(status == "finalizing" for status in statuses):
+            parent["status"] = "finalizing"
+        elif any(status == "cancellation_requested" for status in statuses):
+            parent["status"] = "running"
+        else:
+            parent["status"] = "queued"
+    elif blocked:
         parent["status"] = "blocked"
         parent["error"] = blocked.get("error")
     elif errored:
         parent["status"] = "error"
         parent["error"] = errored.get("error")
-    elif len(done_children) == len(child_ids):
+    elif statuses and all(status == "done" for status in statuses):
         parent["status"] = "done"
         parent["progress"] = 100
+    elif (
+        statuses
+        and all(status in {"done", "cancelled"} for status in statuses)
+        and any(status == "cancelled" for status in statuses)
+    ):
+        parent["status"] = "cancelled"
+    elif (
+        parent.get("cancel_requested")
+        and all_terminal
+    ):
+        parent["status"] = "cancelled"
     else:
-        parent["status"] = "queued" if any(child and child.get("status") == "queued" for child in children) else "running"
-    if parent["status"] in {"done", "blocked", "error"} and not parent.get("finished_at"):
+        parent["status"] = "cancelled"
+    if parent["status"] in _TERMINAL_JOB_STATUSES and not parent.get("finished_at"):
         child_finishes = [child.get("finished_at") for child in children if child and child.get("finished_at")]
         parent["finished_at"] = max(child_finishes) if child_finishes else time.time()
     return parent
 
 
-async def _enqueue_batch_children(job_id: str, children: list[GenerationRequest], batch_meta: dict,
-                                  username: str | None, role: str | None) -> dict:
+async def _enqueue_batch_children(
+    children: list[GenerationRequest],
+    batch_meta: dict,
+    username: str | None,
+    role: str | None,
+    summary: str,
+) -> dict:
     """Enqueue a list of single-image child requests under a parent batch job and
     return the parent queue payload. Shared by safe-queue and INT8-sweep batches."""
+    if generation_queue is None:
+        raise HTTPException(503, "Generation queue is not ready yet.")
+    await _preempt_model_warmup()
+    capacity = generation_queue.check_capacity(
+        username, INTERACTIVE, len(children)
+    )
+    if not capacity.accepted:
+        raise _capacity_error(capacity)
+
+    job_id = _new_job(
+        username=username,
+        role=role or "user",
+        task_kind=GENERATION,
+        summary=summary,
+    )
     parent_job = _jobs[job_id]
     parent_job["status"] = "queued"
     parent_job["batch"] = batch_meta
     child_job_ids: list[str] = []
     child_positions: list[int | None] = []
-    for index, child_req in enumerate(children):
-        child_job_id = _new_job(username=username, role=role)
-        child_job = _jobs[child_job_id]
-        child_job["parent_job_id"] = job_id
-        child_job["batch_index"] = index
-        child_job["batch_count"] = len(children)
-        queue_state = generation_queue.enqueue(
-            child_job_id,
-            {"req": child_req, "username": username, "role": role, "parent_job_id": job_id, "batch_index": index},
-            username=username,
-            role=role,
-        )
-        child_job_ids.append(child_job_id)
-        child_positions.append(queue_state.get("queue_position"))
+    try:
+        for index, child_req in enumerate(children):
+            child_job_id = _new_job(
+                username=username,
+                role=role or "user",
+                task_kind=GENERATION,
+                summary=_job_summary(child_req),
+            )
+            child_job = _jobs[child_job_id]
+            child_job["parent_job_id"] = job_id
+            child_job["batch_index"] = index
+            child_job["batch_count"] = len(children)
+            queue_state = _enqueue_gpu_task(
+                child_job_id,
+                {
+                    "req": child_req,
+                    "username": username,
+                    "role": role,
+                    "parent_job_id": job_id,
+                    "batch_index": index,
+                },
+                username=username,
+                role=role,
+                task_kind=GENERATION,
+            )
+            child_job_ids.append(child_job_id)
+            child_positions.append(queue_state.get("queue_position"))
+    except HTTPException:
+        for child_job_id in child_job_ids:
+            generation_queue.cancel(child_job_id)
+            _jobs.pop(child_job_id, None)
+        _jobs.pop(job_id, None)
+        raise
     parent_job["child_job_ids"] = child_job_ids
     parent_job["queue_position"] = min((pos for pos in child_positions if pos is not None), default=None)
     parent_job["queue_length"] = max((pos for pos in child_positions if pos is not None), default=len(child_job_ids))
@@ -682,8 +1042,13 @@ def _sync_queue_state_to_jobs() -> None:
             "queue_position": state.get("queue_position"),
             "queue_length": state.get("queue_length"),
             "active_job_id": state.get("active_job_id"),
+            "task_kind": state.get("task_kind", job.get("task_kind", GENERATION)),
+            "priority_class": state.get(
+                "priority_class", job.get("priority_class", INTERACTIVE)
+            ),
             "queued_at": state.get("queued_at"),
             "started_at": state.get("started_at"),
+            "finished_at": state.get("finished_at"),
         })
 
 
@@ -694,18 +1059,188 @@ async def _broadcast_queue_state() -> None:
             await ws_manager.broadcast(job_id, {"type": "queue", **job})
 
 
-async def _queued_generation_handler(job_id: str, payload: dict) -> None:
-    await _broadcast_queue_state()
-    # Hold the GPU lease for the whole job so non-queued ComfyUI work (upscale,
-    # depth preview, helper LLMs, moodboard enrichment) cannot unload models or
-    # inject prompts mid-generation.
-    async with GPU_LEASE:
-        await _run_generation(
-            job_id,
-            payload["req"],
-            username=payload.get("username"),
-            role=payload.get("role", "user"),
+def _active_generation_running() -> bool:
+    """Report only an active generation, never the current helper's GPU lease."""
+    if generation_queue is None or generation_queue.active_job_id is None:
+        return False
+    state = generation_queue.status(generation_queue.active_job_id)
+    return (
+        state.get("status") == "running"
+        and state.get("task_kind") == GENERATION
+    )
+
+
+async def _execute_model_warmup(prompt_id_cb) -> None:
+    """Load the configured INT8 Krea/CLIP/VAE chain with a disposable render."""
+    global _last_model_signature, _last_warm_state
+    from comfy_workflows import (
+        KREA2_CLIP_NAME,
+        _vae_name,
+        comfy_generate,
+        resolve_unet,
+    )
+
+    req = GenerationRequest(
+        prompt="A neutral gray sphere on a plain background.",
+        width=64,
+        height=64,
+        steps=1,
+        cfg=0.0,
+        seed=1,
+        checkpoint="turbo",
+        quantization="int8",
+        diffusion_engine="native_int8_convrot",
+        use_rebalance=False,
+    )
+    unet, _dtype, _is_gguf, gguf_name = resolve_unet(req)
+    signature = {
+        "unet": gguf_name or unet,
+        "clip": KREA2_CLIP_NAME,
+        "vae": _vae_name(),
+        "quantization": req.quantization,
+    }
+    _last_warm_state = {
+        "status": "running",
+        "updated_at": time.time(),
+        "signature": signature,
+    }
+    logger.info("Krea warmup transition: running signature=%s", signature)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: comfy_generate(
+            req,
+            save_outputs=False,
+            username=None,
+            prompt_id_cb=prompt_id_cb,
+        ),
+    )
+    _last_model_signature = signature
+    _last_warm_state = {
+        "status": "done",
+        "updated_at": time.time(),
+        "signature": signature,
+    }
+    logger.info("Krea warmup transition: done signature=%s", signature)
+
+
+async def _validate_comfy_task_dispatch(
+    job_id: str, task_kind: str, payload: dict
+) -> bool:
+    req = payload.get("req")
+    if (
+        task_kind == UPSCALE
+        and getattr(req, "method", None) == "realesrgan"
+        and not comfy_available()
+    ):
+        return True
+
+    if not comfy_available():
+        error = (
+            "ComfyUI is unreachable; this GPU task was not submitted. "
+            "Restore ComfyUI and retry."
         )
+    elif not comfy_atomic_cancel_available():
+        error = (
+            "ComfyUI does not support required atomic cancellation; this GPU "
+            "task was not submitted. Update/reinstall ComfyUI and retry."
+        )
+    else:
+        return True
+
+    job = _jobs.get(job_id)
+    if job is not None:
+        job["status"] = "error"
+        job["error"] = error
+        job["result"] = None
+        job["finished_at"] = time.time()
+    await ws_manager.broadcast(
+        job_id,
+        {
+            "type": "error",
+            "task_kind": task_kind,
+            "result": None,
+            "error": error,
+        },
+    )
+    return False
+
+
+async def _queued_gpu_task_handler(job_id: str, payload: dict) -> None:
+    await _broadcast_queue_state()
+    async with GPU_LEASE:
+        task_kind = (_jobs.get(job_id) or {}).get("task_kind", GENERATION)
+        if not await _validate_comfy_task_dispatch(
+            job_id, task_kind, payload
+        ):
+            return
+        if task_kind == GENERATION:
+            await _run_generation(
+                job_id,
+                payload["req"],
+                username=payload.get("username"),
+                role=payload.get("role", "user"),
+            )
+        elif task_kind in {PROMPT_EXPAND, PROMPT_PLAN, IMAGE_DESCRIBE}:
+            await _run_helper_task(job_id, payload)
+        elif task_kind == MODEL_WARMUP:
+            global _last_warm_state
+            job = _jobs[job_id]
+            job["status"] = "running"
+            try:
+                await _run_gpu_operation_with_oom_retry(
+                    job_id,
+                    lambda: _execute_model_warmup(
+                        _task_prompt_id_callback(job_id)
+                    ),
+                )
+                cancelled = (
+                    generation_queue is not None
+                    and generation_queue.cancel_requested(job_id)
+                )
+                job["status"] = "cancelled" if cancelled else "done"
+                if cancelled:
+                    _last_warm_state = {
+                        "status": "cancelled",
+                        "updated_at": time.time(),
+                        "signature": _last_model_signature,
+                    }
+                    logger.info("Krea warmup transition: cancelled")
+            except Exception as exc:
+                job["status"] = (
+                    "cancelled"
+                    if generation_queue is not None
+                    and generation_queue.cancel_requested(job_id)
+                    else "error"
+                )
+                error_text = str(exc).replace("\r", " ").replace("\n", " ")[:240]
+                job["error"] = error_text or type(exc).__name__
+                _last_warm_state = {
+                    "status": job["status"],
+                    "updated_at": time.time(),
+                    "error": job["error"],
+                }
+                logger.warning(
+                    "Krea warmup transition: %s (%s)",
+                    job["status"],
+                    type(exc).__name__,
+                )
+                raise
+            finally:
+                job["images"] = []
+                job["result"] = None
+                job["comfy_prompt_id"] = None
+                job["finished_at"] = time.time()
+        elif task_kind in {
+            UPSCALE,
+            DEPTH_PREVIEW,
+            MOODBOARD_GUIDANCE,
+            BACKGROUND_ENRICHMENT,
+            HELPER_BENCHMARK,
+        }:
+            await _run_auxiliary_task(job_id, payload)
+        else:
+            raise RuntimeError(f"Unsupported GPU task kind: {task_kind}")
     await _broadcast_queue_state()
 
 
@@ -718,7 +1253,6 @@ class WSManager:
         self._sockets: dict[str, list[WebSocket]] = {}
 
     async def connect(self, job_id: str, ws: WebSocket):
-        await ws.accept()
         self._sockets.setdefault(job_id, []).append(ws)
 
     def disconnect(self, job_id: str, ws: WebSocket):
@@ -726,18 +1260,40 @@ class WSManager:
         if socks and ws in socks:
             socks.remove(ws)
 
-    async def broadcast(self, job_id: str, data: dict):
+    async def broadcast(self, job_id: str, data: dict) -> int:
         dead = []
+        sent = 0
         for ws in self._sockets.get(job_id, []):
             try:
                 await ws.send_json(data)
+                sent += 1
             except Exception:
                 dead.append(ws)
         for ws in dead:
             self.disconnect(job_id, ws)
+        return sent
 
 
 ws_manager = WSManager()
+
+
+def _record_terminal_ws_delivery(job_id: str, data: dict, sent: int) -> None:
+    if sent < 1:
+        return
+    status = data.get("status") or data.get("type")
+    has_result_payload = data.get("result") is not None or bool(data.get("images"))
+    if status not in _TERMINAL_JOB_STATUSES or not has_result_payload:
+        return
+    job = _jobs.get(job_id)
+    # WSManager only registers sockets after ws_endpoint's ownership check.
+    if job is not None:
+        job["result_delivered_at"] = job.get("result_delivered_at") or time.time()
+
+
+async def _broadcast_job_event(job_id: str, data: dict) -> int:
+    sent = await ws_manager.broadcast(job_id, data)
+    _record_terminal_ws_delivery(job_id, data, sent)
+    return sent
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -757,17 +1313,24 @@ async def startup():
     await init_db()
     await init_moderation_db()
     await init_moodboard_db()
+    await reconcile_custom_moodboard_storage()
+    comfy_reachable = comfy_available()
+    if comfy_reachable and not comfy_atomic_cancel_available():
+        if comfy_available():
+            raise RuntimeError(
+                "Atomic ComfyUI cancellation is unavailable: the configured "
+                "ComfyUI is too old or mismatched. Update/reinstall it."
+            )
+        logger.warning(
+            "ComfyUI became unreachable during atomic-cancel validation; "
+            "continuing with existing unavailable behavior."
+        )
     if generation_queue is None:
-        generation_queue = GenerationQueue(_queued_generation_handler)
+        generation_queue = GpuTaskQueue(_queued_gpu_task_handler)
         asyncio.create_task(generation_queue.run())
-    # Helper LLM graphs must never free Comfy VRAM while a generation is
-    # executing (or any leased GPU work is in flight).
     try:
         import comfy_qwen_vl
-        comfy_qwen_vl.set_generation_busy_probe(
-            lambda: GPU_LEASE.locked()
-            or (generation_queue is not None and generation_queue.active_job_id is not None)
-        )
+        comfy_qwen_vl.set_generation_busy_probe(_active_generation_running)
     except Exception:
         logger.debug("Could not install Comfy helper busy probe", exc_info=True)
     logger.info(
@@ -786,6 +1349,11 @@ async def startup():
     if use_comfy_backend():
         logger.info("ComfyUI backend active; skipping in-process native model auto-load. Comfy at %s available=%s",
                     os.environ.get("KREA_COMFY_URL", "http://127.0.0.1:8188"), comfy_available())
+        if getattr(settings, "krea_comfy_warmup", False):
+            try:
+                _enqueue_model_warmup()
+            except Exception:
+                logger.exception("Optional Krea startup warmup enqueue failed")
     else:
         cp = settings.krea2_auto_checkpoint or settings.krea2_turbo_path
         if cp and Path(cp).exists():
@@ -844,62 +1412,65 @@ async def _funnel_health_loop() -> None:
 
     Phones drop off for hours; when they come back, a stale Funnel ingress
     session (the recurring Windows failure) would greet them with TLS errors
-    until someone clicked Repair. This probes the public URL every 5 minutes
-    and runs the full self-heal (rebind + tailscale down/up cycle) whenever
-    the funnel claims to be up but the public URL doesn't answer."""
+    until someone clicked Repair. This checks Tailscale connectivity, Funnel
+    binding/URL, and the public URL every 5 minutes, then requires three failed
+    health intervals before repair. Repair attempts use bounded increasing
+    backoff, and an explicit GUI stop disables repair until Start/Repair."""
     if not SHARE_AUTH_ENABLED:
         return
-    from sharing_service import funnel_status, public_funnel_probe_with_retries, repair_funnel
+    from sharing_service import funnel_status, public_funnel_probe_with_retries, repair_funnel, tailscale_status
 
     await asyncio.sleep(300)  # share_startup owns the initial bring-up
     loop = asyncio.get_event_loop()
     while True:
         try:
+            tailscale = await loop.run_in_executor(None, tailscale_status)
             funnel = await loop.run_in_executor(None, funnel_status)
-            if funnel.get("running") and funnel.get("url"):
-                # Two probes 10s apart so a transient blip doesn't trigger a
-                # tailscale down/up cycle (which would drop live connections).
+            probe_ok: bool | None = None
+            if tailscale.get("connected") and funnel.get("running") and funnel.get("url"):
                 probe = await loop.run_in_executor(
                     None,
                     lambda: public_funnel_probe_with_retries(funnel.get("url", ""), attempts=2, delay_seconds=10.0),
                 )
-                if not probe.get("ok"):
-                    logger.warning("Public Funnel unhealthy (%s); running self-heal.", probe.get("message"))
-                    result = await loop.run_in_executor(None, repair_funnel)
-                    logger.info("Funnel self-heal: ok=%s — %s", result.get("ok"), result.get("message"))
+                probe_ok = bool(probe.get("ok"))
+            healthy = bool(tailscale.get("connected")) and funnel_interval_healthy(funnel, probe_ok)
+            now = time.monotonic()
+            repair_due = _funnel_health_monitor.observe(healthy, now=now)
+            if _funnel_health_monitor.enabled and not healthy:
+                state = _funnel_health_monitor.state
+                logger.warning(
+                    "Sharing health interval failed (%d/%d); repair_due=%s.",
+                    state.failed_intervals,
+                    state.failure_threshold,
+                    repair_due,
+                )
+            if repair_due:
+                state = _funnel_health_monitor.state
+                delay = _funnel_health_monitor.record_repair(now=now)
+                logger.warning(
+                    "Sharing failed %d consecutive intervals; running self-heal. "
+                    "Further repair is backed off for %d seconds.",
+                    state.failure_threshold,
+                    delay,
+                )
+                result = await loop.run_in_executor(None, repair_funnel)
+                logger.info("Funnel self-heal completed: ok=%s.", result.get("ok"))
         except Exception:
-            logger.exception("Funnel health check failed")
+            logger.exception("Funnel health interval failed unexpectedly")
         await asyncio.sleep(300)
 
 
 async def _moodboard_enrich_loop() -> None:
-    """Precompute Qwen guidance for moodboards missing it, in small idle batches.
-
-    Runs only when enabled and the studio is idle. Tiny batches + long sleeps
-    keep it from contending with generation; stops once nothing is missing."""
+    """Offer one low-priority enrichment task to the unified GPU queue."""
     await asyncio.sleep(180)  # let startup / auto-load settle first
     while True:
         try:
-            if getattr(settings, "krea2_moodboard_auto_enrich", True) and not _generation_busy():
-                # One board per lease hold: a 4-board batch would block upscales,
-                # wand calls, and queued generations for the whole batch.
-                processed_total = 0
-                for _ in range(4):
-                    if _generation_busy():
-                        break
-                    async with GPU_LEASE:
-                        if _generation_busy():  # re-check after any lease wait
-                            break
-                        result = await generate_missing_moodboard_qwen_guidance(limit=1)
-                    processed_total += int(result.get("processed", 0))
-                    if int(result.get("processed", 0)) == 0:
-                        break
-                    await asyncio.sleep(1)  # give waiting GPU work a chance to grab the lease
-                if processed_total == 0:
-                    await asyncio.sleep(60 * 60)  # nothing left; idle check hourly
-                    continue
+            if getattr(settings, "krea2_moodboard_auto_enrich", True):
+                job_id = _enqueue_background_enrichment()
+                if job_id:
+                    await ws_manager.broadcast(job_id, {"type": "queue", **_jobs[job_id]})
         except Exception:
-            logger.exception("Background moodboard enrichment batch failed")
+            logger.exception("Background moodboard enrichment enqueue failed")
         await asyncio.sleep(300)
 
 
@@ -907,62 +1478,106 @@ async def _moodboard_enrich_loop() -> None:
 # Generation endpoints
 # ---------------------------------------------------------------------------
 
+@app.post("/api/admin/helper-benchmark", status_code=202)
+async def enqueue_helper_benchmark(
+    req: HelperBenchmarkRequest, request: Request
+):
+    username, role, admin = _request_user_role(request)
+    if not admin:
+        raise HTTPException(403, "Admin access required.")
+    return await _enqueue_helper_task(
+        request,
+        task_kind=HELPER_BENCHMARK,
+        summary="Qwen helper benchmark",
+        payload=req.model_dump(),
+    )
+
+
+def _collect_generation_input_images(req: GenerationRequest) -> list[str]:
+    """Collect user-supplied content images used by a generation request."""
+    values: list[str] = []
+
+    def add(value) -> None:
+        if isinstance(value, str) and value.strip():
+            values.append(value)
+
+    for name in (
+        "init_image_b64",
+        "incontext_image_b64",
+        "character_edit_source_b64",
+        "character_edit_reference_b64",
+        "style_transfer_image_b64",
+        "ref_image1_b64",
+        "ref_image2_b64",
+        "ref_image3_b64",
+    ):
+        add(getattr(req, name, None))
+    for item in req.character_edit_regions:
+        add(item.reference_b64)
+    for item in req.style_references:
+        add(item.image_b64)
+    for value in req.moodboard_images:
+        add(value)
+
+    # Masks are deliberately excluded: these schema fields are grayscale
+    # spatial selectors rather than image content shown to the model.
+    return list(dict.fromkeys(values))
+
+
+async def _decode_generation_input_images(req: GenerationRequest) -> list[Image.Image]:
+    values = _collect_generation_input_images(req)
+    if not values:
+        return []
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _job_images_from_b64(values))
+
+
+async def _enforce_child_generation_inputs(
+    req: GenerationRequest, *, username: str | None, role: str
+) -> None:
+    if role != "child":
+        return
+    images = await _decode_generation_input_images(req)
+    if not images:
+        return
+    decision = moderate_images(images, role="child")
+    if decision.allowed:
+        return
+    await save_moderation_event(
+        username=username or "local",
+        role="child",
+        event_type=decision.event_type,
+        action="block_generation_input",
+        prompt=req.prompt,
+        negative_prompt=req.negative_prompt,
+        mode=req.mode,
+        scores=decision.scores,
+        reason=decision.reason,
+        job_id=None,
+    )
+    raise HTTPException(
+        403,
+        "One or more images were blocked by the child safety filter and sent to an admin for review.",
+    )
+
+
 @app.post("/api/generate")
 async def generate(req: GenerationRequest, request: Request):
     if getattr(req, "diffusion_engine", "native_pytorch") == "native_pytorch" and settings.diffusion_engine != "native_pytorch":
         fields = getattr(req, "model_fields_set", getattr(req, "__fields_set__", set()))
         if "diffusion_engine" not in fields:
             req.diffusion_engine = settings.diffusion_engine
-    # Inline planner/expander: run in an executor so a slow helper LLM can't
-    # freeze the event loop. GPU safety comes from the busy-probe inside
-    # comfy_qwen_vl (no VRAM free while a generation runs; the helper graph
-    # queues behind it in ComfyUI's serial queue).
-    _helper_loop = asyncio.get_event_loop()
-    if req.use_prompt_planner:
-        helper_backend = "gguf-server" if settings.local_llm_backend == "gguf_server" else "local"
-        plan = await _helper_loop.run_in_executor(None, lambda: plan_prompt(
-            req.prompt,
-            enabled=True,
-            max_tokens=int(getattr(req, "prompt_planner_max_tokens", 700)),
-            backend=helper_backend,
-            gguf_helper_base_url=settings.gguf_helper_base_url,
-            gguf_helper_model=settings.gguf_helper_model,
-            gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
-        ))
-        req.prompt_planner_output = plan.model_dump()
-        if not req.prompt_planner_lock_original and plan.planned_prompt:
-            req.prompt = plan.planned_prompt
-        if plan.negative_prompt and not req.negative_prompt.strip():
-            req.negative_prompt = plan.negative_prompt
-
-    # Optional prompt expansion
-    if req.use_prompt_expander:
-        helper_backend = (
-            "gguf-server"
-            if settings.local_llm_backend == "gguf_server" and settings.prompt_expander_backend == "local"
-            else settings.prompt_expander_backend
-        )
-        result = await _helper_loop.run_in_executor(None, lambda: expand_prompt_result(
-            req.prompt,
-            backend=helper_backend,
-            openrouter_api_key=_secret_value("OPENROUTER_API_KEY", "openrouter_api_key"),
-            openrouter_model=settings.openrouter_model,
-            openrouter_free_only=settings.openrouter_free_only,
-            ideogram_api_key=_secret_value("IDEOGRAM_API_KEY", "ideogram_api_key"),
-            gguf_helper_base_url=settings.gguf_helper_base_url,
-            gguf_helper_model=settings.gguf_helper_model,
-            gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
-        ))
-        if result.error:
-            raise HTTPException(502, result.error)
-        req.prompt = result.expanded
 
     username, role, _is_admin = _request_user_role(request)
-    job_id = _new_job(username=username, role=role)
-    _jobs[job_id]["summary"] = _job_summary(req)
-
+    summary = _job_summary(req)
     decision = moderate_prompt(req.prompt, req.negative_prompt, role=role)
     if not decision.allowed:
+        job_id = _new_job(
+            username=username,
+            role=role,
+            task_kind=GENERATION,
+            summary=summary,
+        )
         event_id = await save_moderation_event(
             username=username or "local",
             role=role,
@@ -981,6 +1596,8 @@ async def generate(req: GenerationRequest, request: Request):
         job["moderation_event_id"] = event_id
         await ws_manager.broadcast(job_id, {"type": "blocked", "error": job["error"], "moderation_event_id": event_id})
         return {"job_id": job_id, "status": "blocked", "moderation_event_id": event_id}
+
+    await _enforce_child_generation_inputs(req, username=username, role=role)
 
     if generation_queue is None:
         raise HTTPException(503, "Generation queue is not ready yet.")
@@ -1009,17 +1626,33 @@ async def generate(req: GenerationRequest, request: Request):
     if int8_batch_eligible(req):
         children = build_int8_variant_children(req)
         return await _enqueue_batch_children(
-            job_id, children,
+            children,
             {"mode": "safe_queue", "count": len(children), "parallel": False, "int8_variants": True},
-            username, role,
+            username,
+            role,
+            summary,
         )
     if req.batch_mode == "safe_queue" and int(req.num_images or 1) > 1:
         return await _enqueue_batch_children(
-            job_id, build_safe_batch_children(req),
+            build_safe_batch_children(req),
             {"mode": "safe_queue", "count": int(req.num_images), "parallel": False},
-            username, role,
+            username,
+            role,
+            summary,
         )
-    queue_state = generation_queue.enqueue(job_id, {"req": req, "username": username, "role": role}, username=username, role=role)
+    job_id = _new_job(
+        username=username,
+        role=role,
+        task_kind=GENERATION,
+        summary=summary,
+    )
+    queue_state = await _enqueue_interactive_gpu_task(
+        job_id,
+        {"req": req, "username": username, "role": role},
+        username=username,
+        role=role,
+        task_kind=GENERATION,
+    )
     _sync_queue_state_to_jobs()
     job = _jobs[job_id]
     await ws_manager.broadcast(job_id, {"type": "queue", **job})
@@ -1062,6 +1695,626 @@ async def _enforce_child_images(images: list[Image.Image], request: Request, *, 
         scores=decision.scores, reason=decision.reason, job_id=None,
     )
     raise HTTPException(403, "This image was blocked by the child safety filter and sent to an admin for review.")
+
+
+def _task_prompt_id_callback(job_id: str):
+    def callback(prompt_id: str) -> None:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        job["comfy_prompt_id"] = prompt_id
+        if (
+            generation_queue is not None
+            and generation_queue.cancel_requested(job_id)
+            and not job.get("cancellation_dispatching")
+        ):
+            from comfy_client import cancel_prompt
+
+            dispatched = cancel_prompt(prompt_id)
+            job["cancellation_dispatched"] = dispatched
+            if dispatched:
+                job["status"] = "cancelled"
+
+    return callback
+
+
+async def _moderate_worker_text(job_id: str, text: str, *, action: str) -> bool:
+    job = _jobs[job_id]
+    if job.get("role") != "child" or not (text or "").strip():
+        return True
+    decision = moderate_prompt(text, "", role="child")
+    if decision.allowed:
+        return True
+    event_id = await save_moderation_event(
+        username=job.get("username") or "local",
+        role="child",
+        event_type=decision.event_type,
+        action=action,
+        prompt=text,
+        negative_prompt="",
+        mode="helper",
+        scores=decision.scores,
+        reason=decision.reason,
+        job_id=job_id,
+    )
+    job["status"] = "blocked"
+    job["result"] = None
+    job["error"] = "This helper output was blocked by the child safety filter and sent to an admin for review."
+    job["moderation_event_id"] = event_id
+    return False
+
+
+async def _moodboard_suggestions(prompt: str) -> list[dict]:
+    suggestions: list[dict] = []
+    try:
+        found = await list_moodboards(prompt, page_size=48)
+        pool = list(found.get("items", []) or [])
+        locked = pool[:4]
+        rotating = pool[4:48]
+        random.shuffle(rotating)
+        for item in (locked + rotating)[:12]:
+            guidance = item.get("qwen_guidance") or {}
+            reason = str(guidance.get("prompt_guidance") or item.get("taste_profile") or "")
+            suggestions.append({
+                "id": int(item["id"]),
+                "uuid": str(item.get("uuid") or ""),
+                "title": str(item.get("title") or f"Moodboard #{item['id']}"),
+                "reason": reason[:180],
+                "preview_image_urls": list(item.get("preview_image_urls") or [])[:4],
+            })
+    except Exception:
+        logger.debug("Moodboard suggestions failed during prompt expansion", exc_info=True)
+    return suggestions
+
+
+async def _run_helper_task(job_id: str, payload: dict) -> None:
+    job = _jobs[job_id]
+    task_kind = job["task_kind"]
+    job["status"] = "running"
+    job["started_at"] = job.get("started_at") or time.time()
+    callback = _task_prompt_id_callback(job_id)
+    loop = asyncio.get_event_loop()
+
+    async def run_sync(fn):
+        return await _run_gpu_operation_with_oom_retry(
+            job_id, lambda: loop.run_in_executor(None, fn)
+        )
+
+    try:
+        if task_kind == PROMPT_EXPAND:
+            backend = payload["backend"]
+            expanded = await run_sync(
+                lambda: expand_prompt_result(
+                    payload["prompt"],
+                    backend=backend,
+                    openrouter_api_key=_secret_value("OPENROUTER_API_KEY", "openrouter_api_key"),
+                    openrouter_model=settings.openrouter_model,
+                    openrouter_free_only=settings.openrouter_free_only,
+                    ideogram_api_key=_secret_value("IDEOGRAM_API_KEY", "ideogram_api_key"),
+                    gguf_helper_base_url=settings.gguf_helper_base_url,
+                    gguf_helper_model=settings.gguf_helper_model,
+                    gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
+                    prompt_id_cb=callback,
+                ),
+            )
+            result = {
+                "expanded": expanded.expanded,
+                "changed": expanded.changed,
+                "error": expanded.error,
+                "backend": expanded.backend,
+                "suggested_moodboards": (
+                    await _moodboard_suggestions(payload["prompt"])
+                    if payload.get("suggest_moodboards") and payload["prompt"].strip()
+                    else []
+                ),
+                "sign_copy_pass": getattr(expanded, "sign_copy_pass", None),
+            }
+            output_text = result["expanded"]
+            moderation_action = "block_expand_output"
+        elif task_kind == PROMPT_PLAN:
+            planned = await run_sync(
+                lambda: plan_prompt(
+                    payload["prompt"],
+                    enabled=True,
+                    max_tokens=payload["max_tokens"],
+                    backend=payload["backend"],
+                    gguf_helper_base_url=settings.gguf_helper_base_url,
+                    gguf_helper_model=settings.gguf_helper_model,
+                    gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
+                    prompt_id_cb=callback,
+                ),
+            )
+            result = planned.model_dump()
+            output_text = "\n".join(
+                (result.get("planned_prompt", ""), result.get("negative_prompt", ""))
+            )
+            moderation_action = "block_plan_output"
+        elif task_kind == IMAGE_DESCRIBE:
+            if payload["backend"] == "openrouter":
+                result = await run_sync(
+                    lambda: describe_image_openrouter(
+                        payload["image_b64"],
+                        _secret_value("OPENROUTER_API_KEY", "openrouter_api_key"),
+                        payload["mode"],
+                        payload["guidance"],
+                    ),
+                )
+            else:
+                result = await run_sync(
+                    lambda: describe_image_local(
+                        payload["image_b64"],
+                        payload["mode"],
+                        payload["guidance"],
+                        prompt_id_cb=callback,
+                    ),
+                )
+            output_text = str(result.get("prompt") or "")
+            moderation_action = "block_describe_output"
+        else:
+            raise RuntimeError(f"Unsupported helper task kind: {task_kind}")
+
+        moderation_allowed = await _moderate_worker_text(
+            job_id, output_text, action=moderation_action
+        )
+        if generation_queue is not None:
+            if not generation_queue.begin_finalizing(job_id):
+                job["status"] = "cancelled"
+                job["result"] = None
+                job["error"] = None
+                await ws_manager.broadcast(
+                    job_id,
+                    {"type": "cancelled", "task_kind": task_kind, "result": None},
+                )
+                return
+            job["status"] = "finalizing"
+            await ws_manager.broadcast(
+                job_id,
+                {
+                    "type": "status",
+                    "status": "finalizing",
+                    "task_kind": task_kind,
+                    "result": None,
+                },
+            )
+        if not moderation_allowed:
+            job["status"] = "blocked"
+            await ws_manager.broadcast(
+                job_id,
+                {
+                    "type": "blocked",
+                    "task_kind": task_kind,
+                    "result": None,
+                    "error": job["error"],
+                    "moderation_event_id": job["moderation_event_id"],
+                },
+            )
+            return
+        job["result"] = result
+        job["status"] = "done"
+        job["progress"] = 100
+        await _broadcast_job_event(
+            job_id,
+            {"type": "done", "task_kind": task_kind, "result": result},
+        )
+    except Exception as exc:
+        cancelled_error = any(
+            marker in str(exc).lower()
+            for marker in ("interrupt", "cancelled", "canceled")
+        )
+        if cancelled_error or (
+            generation_queue is not None
+            and generation_queue.cancel_requested(job_id)
+        ):
+            job["status"] = "cancelled"
+            job["result"] = None
+            await ws_manager.broadcast(
+                job_id,
+                {"type": "cancelled", "task_kind": task_kind, "result": None},
+            )
+        else:
+            logger.exception("Helper task %s failed", job_id)
+            job["status"] = "error"
+            job["error"] = str(exc)
+            job["result"] = None
+            await ws_manager.broadcast(
+                job_id,
+                {
+                    "type": "error",
+                    "task_kind": task_kind,
+                    "result": None,
+                    "error": str(exc),
+                },
+            )
+    finally:
+        if job.get("status") in {"done", "blocked", "error", "cancelled"}:
+            job["finished_at"] = job.get("finished_at") or time.time()
+            job["comfy_prompt_id"] = None
+
+
+def _upscale_result_payload(
+    req: UpscaleRequest, result: Image.Image
+) -> tuple[dict, list[Image.Image]]:
+    from output_saver import encode_images
+
+    metadata = {
+        "schema_version": 1,
+        "app": "Krea 2 Studio",
+        "operation": "upscale",
+        "prompt": req.prompt,
+        "method": req.method,
+        "scale": req.scale,
+        "upscale_by": req.upscale_by,
+        "denoise": req.denoise,
+        "tile_size": req.tile_size,
+        "tile_width": req.tile_width,
+        "tile_height": req.tile_height,
+        "tile_padding": req.tile_padding,
+        "mask_blur": req.mask_blur,
+        "seam_mode": req.seam_mode,
+        "tile_mode": req.tile_mode,
+        "sampler": req.sampler,
+        "scheduler": req.scheduler,
+        "steps": req.steps,
+        "cfg": req.cfg,
+        "tiled_decode": req.tiled_decode,
+        "seam_fix": req.seam_fix,
+        "source_gallery_id": req.gallery_id,
+        "width": result.width,
+        "height": result.height,
+    }
+    encoded, _ = encode_images(
+        [result], OUTPUTS_DIR, save_outputs=False, metadata=[metadata]
+    )
+    return {"image_b64": encoded[0], "metadata": metadata}, [result]
+
+
+async def _execute_cpu_realesrgan(
+    req: UpscaleRequest,
+    source: Image.Image | None = None,
+) -> tuple[dict, list[Image.Image]]:
+    from upscaler import b64_to_pil, upscale_realesrgan
+
+    loop = asyncio.get_event_loop()
+    def run_pipeline() -> tuple[dict, list[Image.Image]]:
+        decoded = source if source is not None else b64_to_pil(req.image_b64)
+        result = upscale_realesrgan(decoded, MODELS_DIR, req.scale)
+        return _upscale_result_payload(req, result)
+
+    return await loop.run_in_executor(None, run_pipeline)
+
+
+async def _decode_upscale_image(image_b64: str) -> Image.Image:
+    from upscaler import b64_to_pil
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: b64_to_pil(image_b64))
+
+
+async def _execute_upscale(req: UpscaleRequest, prompt_id_cb) -> tuple[dict, list[Image.Image]]:
+    if not comfy_available():
+        if req.method == "realesrgan":
+            return await _execute_cpu_realesrgan(req)
+        raise RuntimeError(
+            f"Upscale method '{req.method}' requires ComfyUI. Start ComfyUI and retry."
+        )
+    from comfy_workflows import comfy_upscale
+
+    method = "esrgan" if req.method == "realesrgan" else req.method
+    upscale_by = (
+        float(req.scale) if req.method == "realesrgan" else req.upscale_by
+    )
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: comfy_upscale(
+            method,
+            req.image_b64,
+            prompt=req.prompt,
+            upscale_by=upscale_by,
+            denoise=req.denoise,
+            steps=req.steps,
+            cfg=req.cfg,
+            sampler=req.sampler,
+            scheduler=req.scheduler,
+            tile_width=req.tile_width or req.tile_size,
+            tile_height=req.tile_height or req.tile_size,
+            tile_padding=req.tile_padding,
+            mask_blur=req.mask_blur,
+            seam_mode=req.seam_mode,
+            tile_mode=req.tile_mode,
+            tiled_decode=req.tiled_decode,
+            prompt_id_cb=prompt_id_cb,
+        ),
+    )
+    return _upscale_result_payload(req, result)
+
+
+async def _execute_depth_preview(payload: dict, prompt_id_cb) -> tuple[dict, list[Image.Image]]:
+    if not use_comfy_backend():
+        raise RuntimeError("Depth preview requires the ComfyUI backend.")
+    if not comfy_available():
+        raise RuntimeError("ComfyUI is not available.")
+    from comfy_workflows import comfy_depth_preview
+
+    loop = asyncio.get_event_loop()
+    image = await loop.run_in_executor(
+        None,
+        lambda: comfy_depth_preview(
+            payload["image_b64"],
+            estimator=payload["estimator"],
+            resolution=payload["resolution"],
+            invert=payload["invert"],
+            prompt_id_cb=prompt_id_cb,
+        ),
+    )
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return {
+        "image_b64": "data:image/png;base64,"
+        + base64.b64encode(buf.getvalue()).decode()
+    }, [image]
+
+
+async def _execute_helper_benchmark(
+    payload: dict, prompt_id_cb, cancel_probe
+) -> dict:
+    scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from benchmark_qwen_helper import execute_benchmark_payload
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: execute_benchmark_payload(
+            copy.deepcopy(payload),
+            prompt_id_cb=prompt_id_cb,
+            cancel_probe=cancel_probe,
+        ),
+    )
+
+
+async def _prepare_moodboard_task(
+    job_id: str, payload: dict, prompt_id_cb, cancel_probe
+):
+    return await prepare_moodboard_guidance_task(
+        payload["operation"],
+        payload,
+        task_id=job_id,
+        prompt_id_cb=prompt_id_cb,
+        cancel_probe=cancel_probe,
+    )
+
+
+async def _commit_prepared_moodboard_task(prepared):
+    return await commit_prepared_moodboard_task(prepared)
+
+
+async def _cleanup_prepared_moodboard_task(prepared) -> None:
+    await cleanup_prepared_moodboard_task(prepared)
+
+
+async def _finish_prepared_moodboard_task(job_id: str, prepared):
+    job = _jobs[job_id]
+    task_kind = job["task_kind"]
+    moderation_allowed = await _moderate_worker_text(
+        job_id,
+        prepared.moderation_text,
+        action="block_moodboard_guidance_output",
+    )
+    if generation_queue is not None:
+        if not generation_queue.begin_finalizing(job_id):
+            job["status"] = "cancelled"
+            job["result"] = None
+            job["error"] = None
+            await ws_manager.broadcast(
+                job_id,
+                {"type": "cancelled", "task_kind": task_kind, "result": None},
+            )
+            return None
+        job["status"] = "finalizing"
+        await ws_manager.broadcast(
+            job_id,
+            {
+                "type": "status",
+                "status": "finalizing",
+                "task_kind": task_kind,
+                "result": None,
+            },
+        )
+    if not moderation_allowed:
+        job["status"] = "blocked"
+        await ws_manager.broadcast(
+            job_id,
+            {
+                "type": "blocked",
+                "task_kind": task_kind,
+                "result": None,
+                "error": job["error"],
+                "moderation_event_id": job["moderation_event_id"],
+            },
+        )
+        return None
+    return await _commit_prepared_moodboard_task(prepared)
+
+
+async def _moderate_worker_images(
+    job_id: str, images: list[Image.Image], *, action: str, prompt: str = ""
+) -> bool:
+    job = _jobs[job_id]
+    if job.get("role") != "child" or not images:
+        return True
+    decision = moderate_images(images, role="child")
+    if decision.allowed:
+        return True
+    event_id = await save_moderation_event(
+        username=job.get("username") or "local",
+        role="child",
+        event_type=decision.event_type,
+        action=action,
+        prompt=prompt,
+        negative_prompt="",
+        mode="helper",
+        scores=decision.scores,
+        reason=decision.reason,
+        job_id=job_id,
+    )
+    job["status"] = "blocked"
+    job["result"] = None
+    job["error"] = (
+        "This image was blocked by the child safety filter and sent to an admin for review."
+    )
+    job["moderation_event_id"] = event_id
+    return False
+
+
+async def _run_auxiliary_task(job_id: str, payload: dict) -> None:
+    job = _jobs[job_id]
+    task_kind = job["task_kind"]
+    job["status"] = "running"
+    job["started_at"] = job.get("started_at") or time.time()
+    callback = _task_prompt_id_callback(job_id)
+    await ws_manager.broadcast(
+        job_id, {"type": "status", "status": "running", "task_kind": task_kind}
+    )
+    prepared_moodboard = None
+    finalizing_started = False
+    try:
+        images: list[Image.Image] = []
+        if task_kind == UPSCALE:
+            result, images = await _run_gpu_operation_with_oom_retry(
+                job_id, lambda: _execute_upscale(payload["req"], callback)
+            )
+            moderation_allowed = await _moderate_worker_images(
+                job_id,
+                images,
+                action="block_upscale_output",
+                prompt=payload["req"].prompt or "",
+            )
+        elif task_kind == DEPTH_PREVIEW:
+            result, images = await _run_gpu_operation_with_oom_retry(
+                job_id, lambda: _execute_depth_preview(payload, callback)
+            )
+            moderation_allowed = True
+        elif task_kind == HELPER_BENCHMARK:
+            result = await _run_gpu_operation_with_oom_retry(
+                job_id,
+                lambda: _execute_helper_benchmark(
+                    payload,
+                    callback,
+                    lambda: bool(
+                        generation_queue
+                        and generation_queue.cancel_requested(job_id)
+                    ),
+                ),
+            )
+            moderation_allowed = True
+        elif task_kind in {MOODBOARD_GUIDANCE, BACKGROUND_ENRICHMENT}:
+            prepared_moodboard = await _run_gpu_operation_with_oom_retry(
+                job_id,
+                lambda: _prepare_moodboard_task(
+                    job_id,
+                    payload,
+                    callback,
+                    lambda: bool(
+                        generation_queue
+                        and generation_queue.cancel_requested(job_id)
+                    ),
+                ),
+            )
+            result = await _finish_prepared_moodboard_task(
+                job_id, prepared_moodboard
+            )
+            if job.get("status") in {"cancelled", "blocked"}:
+                return
+            finalizing_started = job.get("status") == "finalizing"
+            moderation_allowed = True
+        else:
+            raise RuntimeError(f"Unsupported auxiliary GPU task kind: {task_kind}")
+
+        if generation_queue is not None and not finalizing_started:
+            if not generation_queue.begin_finalizing(job_id):
+                job["status"] = "cancelled"
+                job["result"] = None
+                job["error"] = None
+                await ws_manager.broadcast(
+                    job_id,
+                    {"type": "cancelled", "task_kind": task_kind, "result": None},
+                )
+                return
+            job["status"] = "finalizing"
+            await ws_manager.broadcast(
+                job_id,
+                {
+                    "type": "status",
+                    "status": "finalizing",
+                    "task_kind": task_kind,
+                    "result": None,
+                },
+            )
+        if not moderation_allowed:
+            job["status"] = "blocked"
+            await ws_manager.broadcast(
+                job_id,
+                {
+                    "type": "blocked",
+                    "task_kind": task_kind,
+                    "result": None,
+                    "error": job["error"],
+                    "moderation_event_id": job["moderation_event_id"],
+                },
+            )
+            return
+        job["result"] = result
+        job["status"] = "done"
+        job["progress"] = 100
+        await _broadcast_job_event(
+            job_id, {"type": "done", "task_kind": task_kind, "result": result}
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        cancelled_error = any(
+            marker in str(exc).lower()
+            for marker in ("interrupt", "cancelled", "canceled")
+        )
+        if cancelled_error or (
+            generation_queue is not None
+            and generation_queue.cancel_requested(job_id)
+        ):
+            job["status"] = "cancelled"
+            job["result"] = None
+            await ws_manager.broadcast(
+                job_id,
+                {"type": "cancelled", "task_kind": task_kind, "result": None},
+            )
+        else:
+            logger.exception("Auxiliary task %s failed", job_id)
+            job["status"] = "error"
+            job["error"] = str(exc)
+            job["result"] = None
+            await ws_manager.broadcast(
+                job_id,
+                {
+                    "type": "error",
+                    "task_kind": task_kind,
+                    "result": None,
+                    "error": str(exc),
+                },
+            )
+    finally:
+        if prepared_moodboard is not None:
+            try:
+                await _cleanup_prepared_moodboard_task(prepared_moodboard)
+            except Exception:
+                logger.warning(
+                    "Could not clean moodboard staging for task %s",
+                    job_id,
+                    exc_info=True,
+                )
+        if job.get("status") in _TERMINAL_JOB_STATUSES:
+            job["finished_at"] = job.get("finished_at") or time.time()
+            job["comfy_prompt_id"] = None
 
 
 def _job_images_from_b64(results: list[str]) -> list[Image.Image]:
@@ -1109,6 +2362,75 @@ def _safe_served_filename(filename: str) -> str | None:
     return "/".join(parts)
 
 
+async def _run_gpu_operation_with_oom_retry(
+    job_id: str, operation, *, cleanup=None
+):
+    """Run one GPU operation with one precise CUDA-OOM recovery attempt."""
+    first_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            return await operation()
+        except Exception as exc:
+            if cleanup is not None:
+                cleaned = cleanup()
+                if asyncio.iscoroutine(cleaned):
+                    await cleaned
+            cancelled = bool(
+                generation_queue is not None
+                and generation_queue.cancel_requested(job_id)
+            )
+            job = _jobs.get(job_id, {})
+            can_retry = (
+                attempt == 0
+                and is_cuda_oom(exc)
+                and not cancelled
+                and job.get("status") != "finalizing"
+            )
+            if not can_retry:
+                raise
+            first_error = exc
+            recovery = job.setdefault("_recovery", {})
+            recovery["oom_attempts"] = 1
+            recovery["last_error"] = str(exc)
+            logger.warning(
+                "CUDA OOM for %s task %s; freeing ComfyUI VRAM before one retry",
+                job.get("task_kind", "gpu"),
+                job_id,
+            )
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: free_comfy_vram(
+                        unload_models=True, free_memory=True
+                    ),
+                )
+            except Exception:
+                logger.warning(
+                    "ComfyUI VRAM cleanup failed for task %s; retrying once",
+                    job_id,
+                    exc_info=True,
+                )
+            if (
+                generation_queue is not None
+                and generation_queue.cancel_requested(job_id)
+            ):
+                raise first_error
+    raise first_error or RuntimeError("GPU operation failed")
+
+
+def _cleanup_failed_generation_artifacts(paths: set[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning(
+                "Could not remove failed generation artifact %s",
+                path,
+                exc_info=True,
+            )
+
+
 async def _run_generation(job_id: str, req: GenerationRequest, *, username: str | None = None, role: str = "user"):
     job = _jobs[job_id]
     job["status"] = "running"
@@ -1125,7 +2447,106 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             loop,
         )
 
+    def prompt_id_cb(prompt_id: str) -> None:
+        job["comfy_prompt_id"] = prompt_id
+        # Cancellation may have arrived between starting the executor work and
+        # ComfyUI accepting the prompt. Once its exact ID exists, cancel only it.
+        if generation_queue is not None and generation_queue.cancel_requested(job_id):
+            from comfy_client import cancel_prompt
+            dispatched = cancel_prompt(prompt_id)
+            job["cancellation_dispatched"] = dispatched
+            if dispatched and job.get("status") not in {"done", "blocked", "error"}:
+                job["status"] = "cancelled"
+
     try:
+        # Planner and expander are dependencies of this already-admitted
+        # generation. They execute here so the request remains one GPU task.
+        if bool(getattr(req, "use_prompt_planner", False)):
+            helper_backend = (
+                "gguf-server"
+                if settings.local_llm_backend == "gguf_server"
+                else "local"
+            )
+            plan = await _run_gpu_operation_with_oom_retry(
+                job_id,
+                lambda: loop.run_in_executor(
+                    None,
+                    lambda: plan_prompt(
+                    req.prompt,
+                    enabled=True,
+                    max_tokens=int(getattr(req, "prompt_planner_max_tokens", 700)),
+                    backend=helper_backend,
+                    gguf_helper_base_url=settings.gguf_helper_base_url,
+                    gguf_helper_model=settings.gguf_helper_model,
+                    gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
+                        prompt_id_cb=prompt_id_cb,
+                    ),
+                ),
+            )
+            planned_text = "\n".join((plan.planned_prompt, plan.negative_prompt))
+            if not await _moderate_worker_text(
+                job_id, planned_text, action="block_plan_output"
+            ):
+                await ws_manager.broadcast(
+                    job_id,
+                    {
+                        "type": "blocked",
+                        "task_kind": GENERATION,
+                        "result": None,
+                        "error": job["error"],
+                        "moderation_event_id": job["moderation_event_id"],
+                    },
+                )
+                return
+            req.prompt_planner_output = plan.model_dump()
+            if not req.prompt_planner_lock_original and plan.planned_prompt:
+                req.prompt = plan.planned_prompt
+            if plan.negative_prompt and not req.negative_prompt.strip():
+                req.negative_prompt = plan.negative_prompt
+
+        if bool(getattr(req, "use_prompt_expander", False)):
+            helper_backend = (
+                "gguf-server"
+                if settings.local_llm_backend == "gguf_server"
+                and settings.prompt_expander_backend == "local"
+                else settings.prompt_expander_backend
+            )
+            expanded = await _run_gpu_operation_with_oom_retry(
+                job_id,
+                lambda: loop.run_in_executor(
+                    None,
+                    lambda: expand_prompt_result(
+                    req.prompt,
+                    backend=helper_backend,
+                    openrouter_api_key=_secret_value("OPENROUTER_API_KEY", "openrouter_api_key"),
+                    openrouter_model=settings.openrouter_model,
+                    openrouter_free_only=settings.openrouter_free_only,
+                    ideogram_api_key=_secret_value("IDEOGRAM_API_KEY", "ideogram_api_key"),
+                    gguf_helper_base_url=settings.gguf_helper_base_url,
+                    gguf_helper_model=settings.gguf_helper_model,
+                    gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
+                        prompt_id_cb=prompt_id_cb,
+                    ),
+                ),
+            )
+            if expanded.error:
+                raise RuntimeError(expanded.error)
+            if not await _moderate_worker_text(
+                job_id, expanded.expanded, action="block_expand_output"
+            ):
+                await ws_manager.broadcast(
+                    job_id,
+                    {
+                        "type": "blocked",
+                        "task_kind": GENERATION,
+                        "result": None,
+                        "error": job["error"],
+                        "moderation_event_id": job["moderation_event_id"],
+                    },
+                )
+                return
+            req.prompt = expanded.expanded
+
         write_generation_breadcrumb(
             LOGS_DIR,
             job_id=job_id,
@@ -1150,13 +2571,70 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             from comfy_workflows import comfy_generate
             job["edit_provider"] = "comfyui"
             _owner = username if SHARE_AUTH_ENABLED else None
-            results, seed, filenames, lora_reports, metadata = await loop.run_in_executor(
-                None, lambda: comfy_generate(req, progress_cb=progress_cb, username=_owner)
+            original_payload = copy.deepcopy(req)
+            attempt_artifacts: set[Path] = set()
+
+            async def generate_once():
+                nonlocal req
+                attempt_req = copy.deepcopy(original_payload)
+                attempt_artifacts.clear()
+
+                def track_output(filename: str) -> None:
+                    safe_filename = _safe_served_filename(str(filename or ""))
+                    if safe_filename:
+                        attempt_artifacts.add(OUTPUTS_DIR / safe_filename)
+
+                generated = await loop.run_in_executor(
+                    None,
+                    lambda: comfy_generate(
+                        attempt_req,
+                        progress_cb=progress_cb,
+                        username=_owner,
+                        prompt_id_cb=prompt_id_cb,
+                        output_file_cb=track_output,
+                    ),
+                )
+                req = attempt_req
+                return generated
+
+            results, seed, filenames, lora_reports, metadata = (
+                await _run_gpu_operation_with_oom_retry(
+                    job_id,
+                    generate_once,
+                    cleanup=lambda: _cleanup_failed_generation_artifacts(
+                        set(attempt_artifacts)
+                    ),
+                )
             )
         else:
             raise RuntimeError(
                 "Native Studio generation is deprecated. ComfyUI is required "
                 "ComfyUI is the generation engine. Start ComfyUI and retry."
+            )
+        # This is the cancellation cutoff. Once finalizing starts, cancellation
+        # is closed while gallery persistence finishes; no result is public yet.
+        if generation_queue is not None:
+            if not generation_queue.begin_finalizing(job_id):
+                for filename in filenames or []:
+                    safe_filename = _safe_served_filename(str(filename or ""))
+                    if safe_filename:
+                        try:
+                            (OUTPUTS_DIR / safe_filename).unlink(missing_ok=True)
+                        except OSError:
+                            logger.warning(
+                                "Could not remove cancelled generation output %s",
+                                safe_filename,
+                                exc_info=True,
+                            )
+                job["images"] = []
+                job["metadata"] = []
+                job["result"] = None
+                job["status"] = "cancelled"
+                await ws_manager.broadcast(job_id, {"type": "cancelled"})
+                return
+            job["status"] = "finalizing"
+            await ws_manager.broadcast(
+                job_id, {"type": "status", "status": "finalizing"}
             )
         missing_outputs = [fname for fname in (filenames or []) if fname and not (OUTPUTS_DIR / fname).exists()]
         write_generation_breadcrumb(
@@ -1204,14 +2682,8 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
                     if parent:
                         await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
                 return
-        job["images"] = results
-        job["seed"] = seed
-        job["metadata"] = metadata
-        job["status"] = "done"
-        job["progress"] = 100
         # Surface LoRAs that were requested but not applied (wrong model/format).
         lora_warnings = [r for r in (lora_reports or []) if not r.get("applied")]
-        job["lora_warnings"] = lora_warnings
 
         # Save gallery DB entries (files already written by inference.py).
         # The sampler uses seed+i per image, so record the matching per-image seed.
@@ -1235,7 +2707,13 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             except Exception:
                 logger.exception(f"Gallery save failed for {fname}")
 
-        await ws_manager.broadcast(job_id, {
+        job["images"] = results
+        job["seed"] = seed
+        job["metadata"] = metadata
+        job["status"] = "done"
+        job["progress"] = 100
+        job["lora_warnings"] = lora_warnings
+        await _broadcast_job_event(job_id, {
             "type": "done", "images": results, "seed": seed, "metadata": metadata,
             "lora_warnings": lora_warnings,
             "edit_provider": job.get("edit_provider"),
@@ -1245,7 +2723,7 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
         if parent_job_id:
             parent = _refresh_parent_batch_job(str(parent_job_id))
             if parent:
-                await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
+                await _broadcast_job_event(str(parent_job_id), {"type": "batch", **parent})
 
     except Exception as e:
         # A user cancel interrupts ComfyUI, which surfaces here as an exception.
@@ -1264,12 +2742,13 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
         if parent_job_id:
             parent = _refresh_parent_batch_job(str(parent_job_id))
             if parent:
-                await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
+                await _broadcast_job_event(str(parent_job_id), {"type": "batch", **parent})
     finally:
         if job.get("status") in {"done", "blocked", "error", "cancelled"}:
             if not job.get("finished_at"):
                 job["finished_at"] = time.time()
             clear_generation_breadcrumb(LOGS_DIR, job_id=job_id)
+            job["comfy_prompt_id"] = None
 
 
 @app.get("/api/generate/{job_id}")
@@ -1283,7 +2762,72 @@ async def job_status(job_id: str, request: Request):
         raise HTTPException(404, "Job not found")
     if job.get("child_job_ids"):
         _refresh_parent_batch_job(job_id)
+    if job.get("status") in _TERMINAL_JOB_STATUSES:
+        job["result_delivered_at"] = job.get("result_delivered_at") or time.time()
     return job
+
+
+def _without_large_result_payloads(value):
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if (
+                lowered in {"images", "image_b64", "image_b64s"}
+                or lowered.endswith("_image_b64")
+                or lowered.endswith("_images_b64")
+            ):
+                continue
+            cleaned[key] = _without_large_result_payloads(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_without_large_result_payloads(item) for item in value]
+    return value
+
+
+def _acknowledge_job_payload(job: dict, acknowledged_at: float) -> None:
+    job["num_images"] = max(
+        int(job.get("num_images", 0) or 0),
+        len(job.get("images") or []),
+    )
+    job["images"] = []
+    job["result"] = _without_large_result_payloads(job.get("result"))
+    job["metadata"] = _without_large_result_payloads(job.get("metadata"))
+    job["result_delivered_at"] = job.get("result_delivered_at") or acknowledged_at
+    job["result_acknowledged_at"] = acknowledged_at
+    job.pop("thumb", None)
+
+
+@app.post("/api/generate/{job_id}/ack")
+async def acknowledge_job_result(job_id: str, request: Request):
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    username, _role, is_admin = _request_user_role(request)
+    if not _job_owned_by(job, username, is_admin):
+        raise HTTPException(404, "Job not found")
+    if job.get("status") not in _TERMINAL_JOB_STATUSES:
+        raise HTTPException(409, "Job result is not terminal yet.")
+    if not job.get("result_delivered_at"):
+        raise HTTPException(409, "Job result has not been delivered yet.")
+    acknowledged_at = time.time()
+    if job.get("child_job_ids"):
+        children = [
+            _jobs.get(str(child_id))
+            for child_id in job.get("child_job_ids") or []
+        ]
+        job["completed_count"] = sum(
+            1 for child in children if child and child.get("status") == "done"
+        )
+        for child in children:
+            if (
+                child
+                and child.get("status") in _TERMINAL_JOB_STATUSES
+                and _job_owned_by(child, username, is_admin)
+            ):
+                _acknowledge_job_payload(child, acknowledged_at)
+    _acknowledge_job_payload(job, acknowledged_at)
+    return {"ok": True, "job_id": job_id, "status": job.get("status")}
 
 
 @app.get("/api/jobs")
@@ -1315,7 +2859,9 @@ async def list_jobs(request: Request, limit: int = 24):
                 "queue_length": job.get("queue_length"),
                 "seed": None,
                 "error": None,
-                "summary": "Another user's generation",
+                "summary": foreign_summary(
+                    str(job.get("task_kind") or GENERATION)
+                ),
                 "thumb": "",
                 "is_batch": False,
                 "batch_count": None,
@@ -1338,17 +2884,33 @@ async def list_jobs(request: Request, limit: int = 24):
             "seed": job.get("seed"),
             "error": job.get("error"),
             "summary": job.get("summary", ""),
+            "task_kind": job.get("task_kind", GENERATION),
+            "priority_class": job.get("priority_class", INTERACTIVE),
             "thumb": thumb or "",
             "is_batch": bool(job.get("child_job_ids")),
             "batch_count": (job.get("batch") or {}).get("count"),
-            "num_images": len(job.get("images") or []),
+            "num_images": int(
+                job.get("num_images", len(job.get("images") or [])) or 0
+            ),
             "queued_at": job.get("queued_at"),
             "started_at": job.get("started_at"),
             "finished_at": job.get("finished_at"),
         })
         if len(out) >= max(1, min(int(limit or 24), 100)):
             break
-    return {"jobs": out}
+    admission = (
+        generation_queue.admission(username)
+        if generation_queue is not None
+        else {
+            "per_user_active": 0,
+            "per_user_limit": 8,
+            "global_interactive_active": 0,
+            "global_interactive_limit": 64,
+            "global_background_active": 0,
+            "global_background_limit": 4,
+        }
+    )
+    return {"jobs": out, "admission": admission}
 
 
 @app.post("/api/generate/{job_id}/cancel")
@@ -1363,28 +2925,63 @@ async def cancel_generation_job(job_id: str, request: Request):
     if not _job_owned_by(job, username, is_admin):
         raise HTTPException(404, "Job not found")
     targets = list(job.get("child_job_ids") or []) or [job_id]
+    if job.get("child_job_ids"):
+        job["cancel_requested"] = True
     cancelled = 0
-    interrupt_running = False
+    accepted = 0
+    actions: list[tuple[str, str, str]] = []
     for tid in targets:
         if generation_queue is None:
             break
+        child = _jobs.get(tid)
+        if child and child.get("status") in _TERMINAL_JOB_STATUSES:
+            continue
         outcome = generation_queue.request_cancel(tid)
         if outcome == "none":
             continue
+        accepted += 1
+        prompt_id = ""
         if outcome == "interrupt":
-            interrupt_running = True
-        cancelled += 1
+            child = _jobs.get(tid)
+            prompt_id = str((child or {}).get("comfy_prompt_id") or "")
+        actions.append((tid, outcome, prompt_id))
+
+    # Sync queue positions first, then apply Studio's more precise cancellation
+    # states so a still-running task is not prematurely presented as terminal.
+    _sync_queue_state_to_jobs()
+    from comfy_client import cancel_prompt
+    loop = asyncio.get_event_loop()
+    for tid, outcome, prompt_id in actions:
         child = _jobs.get(tid)
-        if child:
+        if not child:
+            continue
+        if outcome == "dequeued":
+            cancelled += 1
             child["status"] = "cancelled"
             child["queue_position"] = None
-            child.setdefault("finished_at", time.time())
+            if not child.get("finished_at"):
+                child["finished_at"] = time.time()
             await ws_manager.broadcast(tid, {"type": "cancelled"})
+            continue
 
-    if interrupt_running:
-        # ComfyUI /interrupt is a blocking HTTP call; keep the event loop free.
-        from comfy_client import interrupt_comfy
-        await asyncio.get_event_loop().run_in_executor(None, interrupt_comfy)
+        dispatched = False
+        if prompt_id:
+            dispatched = await loop.run_in_executor(
+                None,
+                lambda pid=prompt_id: cancel_prompt(pid),
+            )
+        child["cancellation_dispatched"] = dispatched
+        if dispatched:
+            cancelled += 1
+            child["status"] = "cancelled"
+            child["queue_position"] = None
+            await ws_manager.broadcast(tid, {"type": "cancelled"})
+        elif child.get("status") not in {"done", "blocked", "error", "cancelled"}:
+            child["status"] = "cancellation_requested"
+            await ws_manager.broadcast(
+                tid,
+                {"type": "status", "status": "cancellation_requested"},
+            )
 
     if job.get("child_job_ids"):
         _refresh_parent_batch_job(job_id)
@@ -1394,14 +2991,20 @@ async def cancel_generation_job(job_id: str, request: Request):
     elif cancelled:
         job["status"] = "cancelled"
         job["queue_position"] = None
-        job.setdefault("finished_at", time.time())
-    _sync_queue_state_to_jobs()
-    return {"ok": cancelled > 0, "job_id": job_id, "status": job.get("status"), "cancelled": cancelled}
+    return {
+        "ok": accepted > 0,
+        "job_id": job_id,
+        "status": job.get("status"),
+        "cancelled": cancelled,
+    }
 
 
 @app.websocket("/ws/{job_id}")
 async def ws_endpoint(ws: WebSocket, job_id: str):
     _strip_public_base_path(ws.scope)
+    # Complete the handshake before a policy close so browsers can observe
+    # code 1008 instead of seeing an opaque HTTP handshake rejection.
+    await ws.accept()
     ws_user: str | None = None
     if SHARE_AUTH_ENABLED:
         ws_user = _auth_username_from_cookie(ws.cookies.get(SHARE_COOKIE))
@@ -1409,18 +3012,21 @@ async def ws_endpoint(ws: WebSocket, job_id: str):
             await ws.close(code=1008)
             return
     job = _jobs.get(job_id)
+    if job is None:
+        # Unknown and unauthorized jobs share the same policy close, with no
+        # payload or reason that could reveal whether an id exists.
+        await ws.close(code=1008)
+        return
     if SHARE_AUTH_ENABLED:
-        if job is None:
-            # Unknown job: don't let clients park sockets on arbitrary ids.
-            await ws.close(code=1008)
-            return
         role = get_user_role(SHARE_AUTH_FILE, ws_user) or "user"
         if not _job_owned_by(job, ws_user, role == "admin"):
             await ws.close(code=1008)
             return
     await ws_manager.connect(job_id, ws)
     if job:
-        await ws.send_json({"type": "init", **job})
+        initial = {"type": "init", **job}
+        await ws.send_json(initial)
+        _record_terminal_ws_delivery(job_id, initial, 1)
     try:
         while True:
             await ws.receive_text()
@@ -1659,53 +3265,83 @@ async def favorite_moodboard(moodboard_id: int, req: FavoriteRequest, request: R
     return {"ok": True}
 
 
-@app.post("/api/moodboards/{moodboard_id}/qwen-guidance", response_model=MoodboardItem)
-async def qwen_guidance_moodboard(moodboard_id: int):
+@app.post("/api/moodboards/{moodboard_id}/qwen-guidance", status_code=202)
+async def qwen_guidance_moodboard(moodboard_id: int, request: Request):
+    queued = await _enqueue_helper_task(
+        request,
+        task_kind=MOODBOARD_GUIDANCE,
+        summary=f"Moodboard guidance · #{moodboard_id}",
+        payload={"operation": "single", "moodboard_id": moodboard_id},
+    )
+    _jobs[queued["job_id"]]["operation"] = "single"
+    return queued
+
+
+@app.post("/api/moodboards/qwen-guidance-missing", status_code=202)
+async def qwen_guidance_missing(req: MoodboardGuidanceMissingRequest, request: Request):
+    queued = await _enqueue_helper_task(
+        request,
+        task_kind=MOODBOARD_GUIDANCE,
+        summary=f"Moodboard guidance · {req.limit} missing",
+        payload={"operation": "missing", "limit": req.limit},
+    )
+    _jobs[queued["job_id"]]["operation"] = "missing"
+    return queued
+
+
+@app.post("/api/moodboards/mashup", status_code=202)
+async def mashup_moodboard(req: MoodboardMashupRequest, request: Request):
+    if len(set(req.moodboard_ids)) < 2:
+        raise HTTPException(400, "Choose at least two moodboards to create a mashup.")
+    queued = await _enqueue_helper_task(
+        request,
+        task_kind=MOODBOARD_GUIDANCE,
+        summary="Moodboard mashup",
+        payload={
+            "operation": "mashup",
+            "moodboard_ids": req.moodboard_ids,
+            "weights": req.weights,
+        },
+    )
+    _jobs[queued["job_id"]]["operation"] = "mashup"
+    return queued
+
+
+@app.post("/api/moodboards/custom")
+async def create_custom_moodboard_endpoint(
+    req: CustomMoodboardRequest, request: Request, response: Response
+):
+    await _enforce_child_images(
+        _job_images_from_b64(req.image_b64s),
+        request,
+        action="block_moodboard_input",
+    )
+    needs_guidance = bool(req.image_b64s) and (
+        not req.title.strip() or not req.taste_profile.strip()
+    )
+    if needs_guidance:
+        queued = await _enqueue_helper_task(
+            request,
+            task_kind=MOODBOARD_GUIDANCE,
+            summary="Custom moodboard authoring",
+            payload={
+                "operation": "custom",
+                "title": req.title,
+                "taste_profile": req.taste_profile,
+                "keywords": req.keywords,
+                "image_b64s": req.image_b64s,
+            },
+        )
+        _jobs[queued["job_id"]]["operation"] = "custom"
+        response.status_code = 202
+        return queued
     try:
-        # Qwen guidance runs a Comfy QwenVL graph (and frees Comfy VRAM first),
-        # so it must hold the GPU lease like every other non-queued GPU task.
-        async with GPU_LEASE:
-            return await generate_and_store_moodboard_qwen_guidance(moodboard_id)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except Exception as exc:
-        logger.exception("Qwen moodboard guidance failed")
-        raise HTTPException(502, f"Qwen moodboard guidance failed: {exc}") from exc
-
-
-@app.post("/api/moodboards/qwen-guidance-missing")
-async def qwen_guidance_missing(req: MoodboardGuidanceMissingRequest):
-    try:
-        async with GPU_LEASE:
-            return await generate_missing_moodboard_qwen_guidance(limit=req.limit)
-    except Exception as exc:
-        logger.exception("Qwen moodboard guidance batch failed")
-        raise HTTPException(502, f"Qwen moodboard guidance batch failed: {exc}") from exc
-
-
-@app.post("/api/moodboards/mashup", response_model=MoodboardItem)
-async def mashup_moodboard(req: MoodboardMashupRequest):
-    try:
-        async with GPU_LEASE:
-            return await create_mashup_moodboard(moodboard_ids=req.moodboard_ids, weights=req.weights)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except Exception as exc:
-        logger.exception("Qwen moodboard mashup failed")
-        raise HTTPException(502, f"Qwen moodboard mashup failed: {exc}") from exc
-
-
-@app.post("/api/moodboards/custom", response_model=MoodboardItem)
-async def create_custom_moodboard_endpoint(req: CustomMoodboardRequest):
-    try:
-        # May auto-author metadata with the Comfy QwenVL helper.
-        async with GPU_LEASE:
-            return await create_custom_moodboard(
-                title=req.title,
-                taste_profile=req.taste_profile,
-                keywords=req.keywords,
-                image_b64s=req.image_b64s,
-            )
+        return await create_custom_moodboard(
+            title=req.title,
+            taste_profile=req.taste_profile,
+            keywords=req.keywords,
+            image_b64s=req.image_b64s,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -1958,79 +3594,35 @@ async def import_lora_url(req: LoraImportRequest):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/upscale")
-async def upscale(req: UpscaleRequest, request: Request):
-    from upscaler import b64_to_pil, upscale_realesrgan
-    from output_saver import encode_images
-
-    img = b64_to_pil(req.image_b64)
-    await _enforce_child_text(req.prompt or "", request, action="block_upscale_prompt")
-    await _enforce_child_images([img], request, action="block_upscale_input", prompt=req.prompt or "")
-    loop = asyncio.get_event_loop()
-
-    # Model/VAE-dependent methods run as ComfyUI graphs. realesrgan also runs
-    # through Comfy (ImageUpscaleWithModel) when it is up, with the in-process
-    # implementation kept only as a fallback. Native DiT upscale paths are
-    # deprecated.
-    if req.method in {"tiled_vae", "model_refine", "ultimate", "refine_2pass", "wan_vae_2x", "seedvr2"} or (
-        req.method == "realesrgan" and comfy_available()
-    ):
-        if not comfy_available():
-            raise HTTPException(
-                503,
-                f"Upscale method '{req.method}' requires ComfyUI. Start ComfyUI and retry.",
-            )
-        from comfy_workflows import comfy_upscale
-        method = "esrgan" if req.method == "realesrgan" else req.method
-        upscale_by = float(req.scale) if req.method == "realesrgan" else req.upscale_by
-        # Wait for the GPU lease so an upscale never runs (or frees VRAM) while
-        # a queued generation is mid-flight on ComfyUI.
-        async with GPU_LEASE:
-            result = await loop.run_in_executor(
-                None, lambda: comfy_upscale(
-                    method, req.image_b64, prompt=req.prompt, upscale_by=upscale_by,
-                    denoise=req.denoise, steps=req.steps, cfg=req.cfg,
-                    sampler=req.sampler, scheduler=req.scheduler,
-                    tile_width=req.tile_width or req.tile_size, tile_height=req.tile_height or req.tile_size,
-                    tile_padding=req.tile_padding, mask_blur=req.mask_blur,
-                    seam_mode=req.seam_mode, tile_mode=req.tile_mode, tiled_decode=req.tiled_decode,
-                )
-            )
-    elif req.method == "realesrgan":
-        result = await loop.run_in_executor(
-            None, lambda: upscale_realesrgan(img, MODELS_DIR, req.scale)
-        )
-    else:
+async def upscale(req: UpscaleRequest, request: Request, response: Response):
+    if req.method not in {
+        "realesrgan",
+        "tiled_vae",
+        "model_refine",
+        "ultimate",
+        "refine_2pass",
+        "wan_vae_2x",
+        "seedvr2",
+    }:
         raise HTTPException(400, f"Unknown upscale method: {req.method}")
-
-    metadata = {
-        "schema_version": 1,
-        "app": "Krea 2 Studio",
-        "operation": "upscale",
-        "prompt": req.prompt,
-        "method": req.method,
-        "scale": req.scale,
-        "upscale_by": req.upscale_by,
-        "denoise": req.denoise,
-        "tile_size": req.tile_size,
-        "tile_width": req.tile_width,
-        "tile_height": req.tile_height,
-        "tile_padding": req.tile_padding,
-        "mask_blur": req.mask_blur,
-        "seam_mode": req.seam_mode,
-        "tile_mode": req.tile_mode,
-        "sampler": req.sampler,
-        "scheduler": req.scheduler,
-        "steps": req.steps,
-        "cfg": req.cfg,
-        "tiled_decode": req.tiled_decode,
-        "seam_fix": req.seam_fix,
-        "source_gallery_id": req.gallery_id,
-        "width": result.width,
-        "height": result.height,
-    }
-    await _enforce_child_images([result], request, action="block_upscale_output", prompt=req.prompt or "")
-    encoded, _ = encode_images([result], OUTPUTS_DIR, save_outputs=False, metadata=[metadata])
-    return {"image_b64": encoded[0], "metadata": metadata}
+    await _enforce_child_text(req.prompt or "", request, action="block_upscale_prompt")
+    _username, role, _is_admin = _request_user_role(request)
+    source = None
+    if role == "child":
+        source = await _decode_upscale_image(req.image_b64)
+        await _enforce_child_images(
+            [source],
+            request,
+            action="block_upscale_input",
+            prompt=req.prompt or "",
+        )
+    response.status_code = 202
+    return await _enqueue_helper_task(
+        request,
+        task_kind=UPSCALE,
+        summary=f"Upscale · {req.method}",
+        payload={"req": req},
+    )
 
 
 @app.post("/api/automask")
@@ -2089,56 +3681,141 @@ async def preprocessor_preview(req: PreprocessorPreviewRequest):
     }
 
 
-@app.post("/api/describe-image", response_model=DescribeImageResponse)
+@app.post("/api/describe-image", status_code=202)
 async def describe_image(req: DescribeImageRequest, request: Request):
+    await _enforce_child_text(
+        req.guidance, request, action="block_describe_guidance"
+    )
     await _enforce_child_images(_job_images_from_b64([req.image_b64]), request, action="block_describe_input")
-    loop = asyncio.get_event_loop()
-    try:
-        if settings.prompt_expander_backend == "openrouter":
-            result = await loop.run_in_executor(
-                None,
-                lambda: describe_image_openrouter(req.image_b64, _secret_value("OPENROUTER_API_KEY", "openrouter_api_key"), req.mode, req.guidance),
-            )
-        else:
-            result = await _run_helper_with_optional_krea_preempt("local", lambda: describe_image_local(req.image_b64, req.mode, req.guidance))
-    except Exception as exc:
-        if settings.prompt_expander_backend == "openrouter":
-            detail = openrouter_error_hint(exc)
-        else:
-            logger.exception("Local image description failed")
-            detail = "Local image description failed. Use System > Krea Moodboard Conditioning / Local AI Assets to repair local models."
-        raise HTTPException(502, detail)
-    await _enforce_child_text(str(result.get("description") or ""), request, action="block_describe_output")
-    return DescribeImageResponse(**result)
+    backend = (
+        "openrouter"
+        if settings.prompt_expander_backend == "openrouter"
+        else "local"
+    )
+    return await _enqueue_helper_task(
+        request,
+        task_kind=IMAGE_DESCRIBE,
+        summary=f"Describe image · {req.mode}",
+        payload={
+            "image_b64": req.image_b64,
+            "mode": req.mode,
+            "guidance": req.guidance,
+            "backend": backend,
+        },
+    )
 
 
-@app.post("/api/depth-preview")
-async def depth_preview(req: DepthPreviewRequest):
-    """Return the depth map the ControlNet would follow, so users can verify it
-    before a full render. Waits on the GPU lease behind any active generation."""
+@app.post("/api/depth-preview", status_code=202)
+async def depth_preview(req: DepthPreviewRequest, request: Request):
+    """Queue the exact depth map that ControlNet would follow."""
+    await _enforce_child_images(
+        _job_images_from_b64([req.image_b64]),
+        request,
+        action="block_depth_input",
+    )
     if not use_comfy_backend():
         raise HTTPException(400, "Depth preview requires the ComfyUI backend.")
     if not comfy_available():
         raise HTTPException(503, "ComfyUI is not available.")
-    loop = asyncio.get_event_loop()
-    from comfy_workflows import comfy_depth_preview
-    try:
-        async with GPU_LEASE:
-            img = await loop.run_in_executor(
-                None,
-                lambda: comfy_depth_preview(req.image_b64, estimator=req.estimator, resolution=req.resolution, invert=req.invert),
-            )
-    except Exception:
-        logger.exception("Depth preview failed")
-        raise HTTPException(502, "Depth preview failed. Check that the depth estimator model is installed.")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return {"image_b64": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}
+    return await _enqueue_helper_task(
+        request,
+        task_kind=DEPTH_PREVIEW,
+        summary=f"Depth preview · {req.estimator}",
+        payload={
+            "image_b64": req.image_b64,
+            "estimator": req.estimator,
+            "resolution": req.resolution,
+            "invert": req.invert,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # System
 # ---------------------------------------------------------------------------
+
+def _warmup_diagnostics() -> dict:
+    enabled = bool(getattr(settings, "krea_comfy_warmup", False))
+    job = _jobs.get(_model_warmup_job_id or "") or {}
+    queue_state: dict = {}
+    if generation_queue is not None and _model_warmup_job_id:
+        try:
+            direct = generation_queue.status(_model_warmup_job_id)
+            statuses = generation_queue.all_statuses()
+            queue_state = dict(
+                statuses.get(_model_warmup_job_id)
+                or direct
+                or {}
+            )
+        except Exception:
+            logger.debug("Could not read authoritative warmup queue state", exc_info=True)
+    queue_status = str(queue_state.get("status") or "")
+    job_status = str(job.get("status") or "")
+    terminal = {"done", "error", "cancelled"}
+    if queue_status in terminal:
+        raw_state = queue_status
+        timing_source = queue_state
+    elif job_status in terminal | {"finalizing", "cancellation_requested"}:
+        raw_state = job_status
+        timing_source = job
+    elif queue_status:
+        raw_state = queue_status
+        timing_source = queue_state
+    else:
+        raw_state = str(
+            job_status or _last_warm_state.get("status") or "queued"
+        )
+        timing_source = job
+    if not enabled:
+        state = "disabled"
+    else:
+        state = {
+            "warm": "done",
+            "never": "queued",
+        }.get(raw_state, raw_state)
+        if state not in {
+            "queued",
+            "running",
+            "finalizing",
+            "cancellation_requested",
+            "done",
+            "error",
+            "cancelled",
+        }:
+            state = "queued"
+
+    raw_signature = (
+        _last_warm_state.get("signature")
+        or _last_model_signature
+        or {}
+    )
+    signature = {}
+    for key in ("unet", "clip", "vae", "quantization"):
+        value = raw_signature.get(key)
+        if value is None:
+            continue
+        text = str(value)
+        signature[key] = (
+            text.replace("\\", "/").rsplit("/", 1)[-1]
+            if key in {"unet", "clip", "vae"}
+            else text[:40]
+        )
+    has_error = bool(job.get("error") or _last_warm_state.get("error"))
+    if state == "done" and has_error:
+        state = "error"
+        timing_source = job
+    return {
+        "enabled": enabled,
+        "state": state,
+        "signature": signature or None,
+        "queued_at": timing_source.get("queued_at", job.get("queued_at")),
+        "started_at": timing_source.get("started_at", job.get("started_at")),
+        "finished_at": timing_source.get("finished_at", job.get("finished_at")),
+        "last_error": (
+            "Warmup failed; see server logs." if has_error else None
+        ),
+    }
+
 
 @app.get("/api/system")
 async def system_info():
@@ -2164,6 +3841,7 @@ async def system_info():
         "memory": pipeline.memory_status(),
         "backend": "comfyui" if comfy_on else "native",
         "comfy_available": comfy_up,
+        "warmup": _warmup_diagnostics(),
     }
     report["support_models"] = support_model_status()
     return report
@@ -2403,6 +4081,10 @@ async def get_settings():
         "prompt_expander_backend": env.get("PROMPT_EXPANDER_BACKEND", settings.prompt_expander_backend),
         "local_llm_backend": env.get("LOCAL_LLM_BACKEND", settings.local_llm_backend),
         "comfy_qwen_model": env.get("COMFY_QWEN_MODEL", settings.comfy_qwen_model),
+        "comfy_qwen_quant": env.get("COMFY_QWEN_QUANT", settings.comfy_qwen_quant),
+        "krea_comfy_warmup": env.get(
+            "KREA_COMFY_WARMUP", str(settings.krea_comfy_warmup)
+        ).lower() in {"1", "true", "yes", "on"},
         "local_qwen_model_id": env.get("LOCAL_QWEN_MODEL_ID", settings.local_qwen_model_id),
         "local_qwen_device": env.get("LOCAL_QWEN_DEVICE", settings.local_qwen_device),
         "gguf_helper_base_url": env.get("GGUF_HELPER_BASE_URL", settings.gguf_helper_base_url),
@@ -2461,6 +4143,14 @@ async def update_settings(req: SettingsUpdate):
     if req.comfy_qwen_model is not None:
         env["COMFY_QWEN_MODEL"] = req.comfy_qwen_model
         settings.comfy_qwen_model = req.comfy_qwen_model
+    if req.comfy_qwen_quant is not None:
+        env["COMFY_QWEN_QUANT"] = req.comfy_qwen_quant
+        settings.comfy_qwen_quant = req.comfy_qwen_quant
+    if req.krea_comfy_warmup is not None:
+        env["KREA_COMFY_WARMUP"] = (
+            "true" if req.krea_comfy_warmup else "false"
+        )
+        settings.krea_comfy_warmup = req.krea_comfy_warmup
     if req.local_qwen_model_id is not None:
         env["LOCAL_QWEN_MODEL_ID"] = req.local_qwen_model_id
         settings.local_qwen_model_id = req.local_qwen_model_id
@@ -2531,125 +4221,20 @@ async def update_settings(req: SettingsUpdate):
 # Prompt expander
 # ---------------------------------------------------------------------------
 
-def _local_helper_uses_cuda(backend: str) -> bool:
-    """True when a local-Qwen helper (prompt expand / describe image) will run on
-    the GPU — i.e. the transformers backend on a CUDA device (not the gguf server,
-    not CPU). Such a helper must never share the GPU with an active generation."""
-    return (
-        backend == "local"
-        and settings.local_llm_backend != "gguf_server"
-        and str(getattr(settings, "local_qwen_device", "auto") or "auto").lower() != "cpu"
-    )
 
-
-def _local_qwen_helper_needs_krea_preempt(backend: str) -> bool:
-    # Native mode only: an in-process Krea pipeline is resident and must be
-    # unloaded before the helper borrows CUDA.
-    return _local_helper_uses_cuda(backend) and pipeline.is_loaded()
-
-
-async def _run_helper_with_optional_krea_preempt(backend: str, fn):
-    """Run local Qwen helpers without stacking them beside GPU generation.
-
-    Two independent contention sources: (1) an in-process native Krea pipeline
-    (which we unload/reload), and (2) a ComfyUI generation running in the queue.
-    A CUDA helper must not share the GPU with an active/pending generation in
-    EITHER mode, or both stall as the driver spills to shared RAM (the ~67s/it
-    slowdown + websocket keepalive failure seen when the encoder loads mid-sample)."""
-    loop = asyncio.get_event_loop()
-    reload_state = None
-    uses_gpu = _local_helper_uses_cuda(backend)
-    if uses_gpu:
-        # Fast feedback: don't make the user's helper click silently wait
-        # behind a long generation queue.
-        if generation_queue is not None and generation_queue.has_active_or_pending():
-            raise HTTPException(409, "The image helper must wait for the running/queued generation to finish before it can use the GPU.")
-    if _local_qwen_helper_needs_krea_preempt(backend):
-        if getattr(pipeline, "_loading", False):
-            raise HTTPException(409, "Magic Wand must wait for the model load to finish before it can borrow the GPU.")
-        reload_state = {
-            "checkpoint": getattr(pipeline, "_loaded_checkpoint", "") or "",
-            "quantization": getattr(pipeline, "_loaded_quant", "") or settings.krea2_auto_quant,
-            "blocks_to_swap": int(getattr(settings, "krea2_blocks_to_swap", 0) or 0),
-        }
-        logger.info("Temporarily unloading Krea model so local Qwen helper can use CUDA safely.")
-        await loop.run_in_executor(None, pipeline.unload)
-        clear_cuda_cache()
-    try:
-        if uses_gpu:
-            # Hold the GPU lease during the helper run: a generation enqueued a
-            # moment later must wait for the helper (and its free_comfy_vram)
-            # to finish instead of colliding with it. Also serializes wand
-            # requests from multiple users on the Comfy QwenVL path.
-            async with GPU_LEASE:
-                if generation_queue is not None and generation_queue.has_active_or_pending():
-                    raise HTTPException(409, "A generation started while the helper was waiting for the GPU. Try again when the queue is idle.")
-                return await loop.run_in_executor(None, fn)
-        return await loop.run_in_executor(None, fn)
-    finally:
-        if reload_state and reload_state["checkpoint"] and Path(reload_state["checkpoint"]).exists():
-            try:
-                logger.info("Reloading Krea model after local Qwen helper.")
-                await loop.run_in_executor(
-                    None,
-                    lambda: pipeline.load(
-                        reload_state["checkpoint"],
-                        reload_state["quantization"],
-                        blocks_to_swap=reload_state["blocks_to_swap"],
-                        fp8_fast_matmul=bool(getattr(settings, "krea2_fp8_fast_matmul", False)),
-                        torch_compile=bool(getattr(settings, "krea2_torch_compile", False)),
-                    ),
-                )
-            except Exception:
-                logger.exception("Could not reload Krea model after local Qwen helper")
-
-
-@app.post("/api/expand-prompt", response_model=ExpandPromptResponse)
+@app.post("/api/expand-prompt", status_code=202)
 async def expand_prompt_endpoint(req: ExpandPromptRequest, request: Request):
+    await _enforce_child_text(req.prompt, request, action="block_expand_input")
     backend = req.backend or ("gguf-server" if settings.local_llm_backend == "gguf_server" and settings.prompt_expander_backend == "local" else settings.prompt_expander_backend)
-    result = await _run_helper_with_optional_krea_preempt(
-        backend,
-        lambda: expand_prompt_result(
-            req.prompt,
-            backend=backend,
-            openrouter_api_key=_secret_value("OPENROUTER_API_KEY", "openrouter_api_key"),
-            openrouter_model=settings.openrouter_model,
-            openrouter_free_only=settings.openrouter_free_only,
-            ideogram_api_key=_secret_value("IDEOGRAM_API_KEY", "ideogram_api_key"),
-            gguf_helper_base_url=settings.gguf_helper_base_url,
-            gguf_helper_model=settings.gguf_helper_model,
-            gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
-        ),
-    )
-    suggestions: list[dict] = []
-    if req.suggest_moodboards and req.prompt.strip():
-        try:
-            from moodboards_catalog import list_moodboards
-            found = await list_moodboards(req.prompt, page_size=48)
-            pool = list(found.get("items", []) or [])
-            locked = pool[:4]
-            rotating = pool[4:48]
-            random.shuffle(rotating)
-            for item in (locked + rotating)[:12]:
-                guidance = item.get("qwen_guidance") or {}
-                reason = str(guidance.get("prompt_guidance") or item.get("taste_profile") or "")
-                suggestions.append({
-                    "id": int(item["id"]),
-                    "uuid": str(item.get("uuid") or ""),
-                    "title": str(item.get("title") or f"Moodboard #{item['id']}"),
-                    "reason": reason[:180],
-                    "preview_image_urls": list(item.get("preview_image_urls") or [])[:4],
-                })
-        except Exception:
-            logger.debug("Moodboard suggestions failed during prompt expansion", exc_info=True)
-    await _enforce_child_text(result.expanded or "", request, action="block_expand_output")
-    return ExpandPromptResponse(
-        expanded=result.expanded,
-        changed=result.changed,
-        error=result.error,
-        backend=result.backend,
-        suggested_moodboards=suggestions,
-        sign_copy_pass=getattr(result, "sign_copy_pass", None),
+    return await _enqueue_helper_task(
+        request,
+        task_kind=PROMPT_EXPAND,
+        summary=f"Magic Wand · {req.prompt.strip()[:80]}",
+        payload={
+            "prompt": req.prompt,
+            "backend": backend,
+            "suggest_moodboards": req.suggest_moodboards,
+        },
     )
 
 
@@ -2888,23 +4473,20 @@ async def prompting_guide_endpoint():
     return prompting_guide_payload()
 
 
-@app.post("/api/plan-prompt", response_model=PlanPromptResponse)
+@app.post("/api/plan-prompt", status_code=202)
 async def plan_prompt_endpoint(req: PlanPromptRequest, request: Request):
+    await _enforce_child_text(req.prompt, request, action="block_plan_input")
     helper_backend = "gguf-server" if settings.local_llm_backend == "gguf_server" else "local"
-    result = await _run_helper_with_optional_krea_preempt(
-        helper_backend,
-        lambda: plan_prompt(
-            req.prompt,
-            enabled=True,
-            max_tokens=req.max_tokens,
-            backend=helper_backend,
-            gguf_helper_base_url=settings.gguf_helper_base_url,
-            gguf_helper_model=settings.gguf_helper_model,
-            gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
-        ),
+    return await _enqueue_helper_task(
+        request,
+        task_kind=PROMPT_PLAN,
+        summary=f"Prompt planner · {req.prompt.strip()[:80]}",
+        payload={
+            "prompt": req.prompt,
+            "max_tokens": req.max_tokens,
+            "backend": helper_backend,
+        },
     )
-    await _enforce_child_text(result.planned_prompt or "", request, action="block_plan_output")
-    return PlanPromptResponse(**result.model_dump())
 
 
 @app.get("/api/prompt-recipes", response_model=PromptRecipeListResponse)

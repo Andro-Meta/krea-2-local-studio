@@ -93,21 +93,30 @@ def tailscale_status() -> dict:
             "message": "Tailscale is not installed.",
         }
     res = _run_tailscale(["status", "--json"], timeout=10)
-    connected = res.returncode == 0
+    connected = False
+    backend_state = ""
     message = (res.stderr or "").strip()
-    if connected:
+    if res.returncode == 0:
         try:
             data = json.loads(res.stdout or "{}")
             self_node = data.get("Self") or {}
-            host = self_node.get("DNSName") or self_node.get("HostName") or "this device"
-            message = f"Tailscale connected: {str(host).rstrip('.')}"
+            backend_state = str(data.get("BackendState") or "")
+            host = str(self_node.get("DNSName") or self_node.get("HostName") or "").rstrip(".")
+            addresses = self_node.get("TailscaleIPs") or []
+            connected = bool(backend_state == "Running" and host and addresses)
+            message = (
+                f"Tailscale connected: {host}"
+                if connected
+                else f"Tailscale is not connected (state={backend_state or 'unknown'})."
+            )
         except Exception:
-            message = "Tailscale connected."
+            message = "Tailscale status could not be parsed."
     elif not message:
         message = "Tailscale is installed but not connected. Run tailscale up."
     return {
         "installed": True,
         "connected": connected,
+        "backend_state": backend_state,
         "tailscale_path": ts,
         "download_url": TAILSCALE_DOWNLOAD_URL,
         "message": message,

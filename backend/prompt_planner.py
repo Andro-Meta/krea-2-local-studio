@@ -4,6 +4,8 @@ import json
 import re
 from dataclasses import dataclass, asdict
 from typing import Any
+from comfy_client import PromptIdCb
+from gpu_recovery import is_cuda_oom
 
 PLANNER_SYSTEM_PROMPT = (
     "You are a Krea 2 prompt planner. Convert the user's rough text-to-image prompt "
@@ -95,7 +97,12 @@ def plan_prompt_heuristic(prompt: str, *, max_tokens: int = 700) -> PromptPlanRe
     )
 
 
-def plan_prompt_comfy(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult:
+def plan_prompt_comfy(
+    prompt: str,
+    *,
+    max_tokens: int = 700,
+    prompt_id_cb: PromptIdCb = None,
+) -> PromptPlanResult:
     """Plan via ComfyUI QwenVL (same engine as Magic Wand/describe).
 
     Keeps the helper LLM inside ComfyUI's VRAM management instead of loading a
@@ -110,6 +117,8 @@ def plan_prompt_comfy(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult
             PLANNER_SYSTEM_PROMPT,
             max_tokens=max(128, min(int(max_tokens), 1600)),
             temperature=0.1,
+            keep_model_loaded=False,
+            prompt_id_cb=prompt_id_cb,
         )
         parsed = parse_planner_response(text)
         planned = parsed.get("planned_prompt") or prompt
@@ -127,8 +136,12 @@ def plan_prompt_comfy(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult
             backend="comfy",
             changed=planned.strip() != prompt.strip(),
         )
-    except Exception:
-        return plan_prompt_local(prompt, max_tokens=max_tokens)
+    except Exception as exc:
+        if is_cuda_oom(exc):
+            raise
+        fallback = plan_prompt_heuristic(prompt, max_tokens=max_tokens)
+        fallback.error = f"Comfy QwenVL prompt planner failed; used heuristic fallback. Details: {exc}"
+        return fallback
 
 
 def plan_prompt_local(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult:
@@ -174,6 +187,8 @@ def plan_prompt_local(prompt: str, *, max_tokens: int = 700) -> PromptPlanResult
             changed=planned.strip() != prompt.strip(),
         )
     except Exception as exc:
+        if is_cuda_oom(exc):
+            raise
         fallback = plan_prompt_heuristic(prompt, max_tokens=max_tokens)
         fallback.error = f"Local Qwen prompt planner failed; used heuristic fallback. Details: {exc}"
         return fallback
@@ -236,6 +251,7 @@ def plan_prompt(
     gguf_helper_base_url: str = "http://127.0.0.1:1234/v1",
     gguf_helper_model: str = "BennyDaBall/Krea-2-Engineer-V1-GGUF:Q4_K_M",
     gguf_helper_timeout_sec: int = 120,
+    prompt_id_cb: PromptIdCb = None,
 ) -> PromptPlanResult:
     if not enabled:
         return PromptPlanResult(original_prompt=prompt, planned_prompt=prompt, changed=False, backend="off")
@@ -257,4 +273,6 @@ def plan_prompt(
         llm_backend = "comfy"
     if llm_backend == "transformers":
         return plan_prompt_local(prompt, max_tokens=max_tokens)
-    return plan_prompt_comfy(prompt, max_tokens=max_tokens)
+    return plan_prompt_comfy(
+        prompt, max_tokens=max_tokens, prompt_id_cb=prompt_id_cb
+    )

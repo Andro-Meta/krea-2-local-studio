@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { EngineCatalog, LoraInfo, MoodboardSuggestion, SystemReport } from './api'
+import type { EngineCatalog, GpuTaskAdmission, GpuTaskResponse, LoraInfo, MoodboardSuggestion, SystemReport } from './api'
 
 export interface ActiveLora {
   name: string
@@ -347,6 +347,8 @@ interface AppState {
   resultsMetadata: Array<Record<string, any>>
   lastSeed: number | null
   generationError: string | null
+  activeTask: GpuTaskResponse | null
+  admission: GpuTaskAdmission | null
   promptBusy: boolean
   setGenerating: (v: boolean) => void
   setPromptBusy: (v: boolean) => void
@@ -355,6 +357,8 @@ interface AppState {
   setQueue: (position: number | null, length: number | null) => void
   setResults: (imgs: string[], seed?: number, metadata?: Array<Record<string, any>>) => void
   setError: (e: string | null) => void
+  setActiveTask: (task: GpuTaskResponse | null) => void
+  setAdmission: (admission: GpuTaskAdmission) => void
 
   systemReport: SystemReport | null
   setSystemReport: (r: SystemReport) => void
@@ -400,6 +404,8 @@ export const useStore = create<AppState>((set, get) => ({
   resultsMetadata: [],
   lastSeed: null,
   generationError: null,
+  activeTask: null,
+  admission: null,
   promptBusy: false,
   setGenerating: (v) => set({ generating: v }),
   setPromptBusy: (v) => set({ promptBusy: v }),
@@ -408,6 +414,8 @@ export const useStore = create<AppState>((set, get) => ({
   setQueue: (position, length) => set({ queuePosition: position, queueLength: length }),
   setResults: (imgs, seed, metadata) => set({ results: imgs, lastSeed: seed ?? null, resultsMetadata: metadata ?? [] }),
   setError: (e) => set({ generationError: e }),
+  setActiveTask: (task) => set({ activeTask: task }),
+  setAdmission: (admission) => set({ admission }),
 
   systemReport: null,
   setSystemReport: (r) => set({ systemReport: r }),

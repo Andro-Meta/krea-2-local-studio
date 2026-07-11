@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from PIL import Image
+from gpu_recovery import is_cuda_oom
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class MoodboardSource:
 
 
 QwenGenerator = Callable[[str, list[str]], str]
+CancellationProbe = Callable[[], bool]
 SUBJECT_LOCK_TERMS = (
     "crowd", "crowds", "people", "person", "persons", "human", "humans",
     "figure", "figures", "man", "woman", "men", "women", "child", "children",
@@ -431,13 +433,26 @@ def _local_qwen_generate(prompt: str, image_b64s: list[str]) -> str:
         unload_local_qwen_after_use()
 
 
-def _comfy_qwen_generate(prompt: str, image_b64s: list[str]) -> str:
+def _comfy_qwen_generate(
+    prompt: str,
+    image_b64s: list[str],
+    *,
+    prompt_id_cb: Callable[[str], None] | None = None,
+) -> str:
     from comfy_qwen_vl import enrich_images_comfy
 
-    return enrich_images_comfy(image_b64s or [], prompt)
+    return enrich_images_comfy(
+        image_b64s or [], prompt, prompt_id_cb=prompt_id_cb
+    )
 
 
-def _qwen_generate(prompt: str, image_b64s: list[str]) -> str:
+def _qwen_generate(
+    prompt: str,
+    image_b64s: list[str],
+    *,
+    prompt_id_cb: Callable[[str], None] | None = None,
+    cancel_probe: CancellationProbe | None = None,
+) -> str:
     """Comfy QwenVL by default; Transformers fallback when Comfy is unavailable."""
     from settings import settings
 
@@ -445,8 +460,16 @@ def _qwen_generate(prompt: str, image_b64s: list[str]) -> str:
     if backend == "transformers":
         return _local_qwen_generate(prompt, image_b64s)
     try:
-        return _comfy_qwen_generate(prompt, image_b64s)
+        return _comfy_qwen_generate(
+            prompt, image_b64s, prompt_id_cb=prompt_id_cb
+        )
     except Exception as exc:
+        message = str(exc).lower()
+        if is_cuda_oom(exc) or (cancel_probe and cancel_probe()) or any(
+            marker in message
+            for marker in ("interrupt", "cancelled", "canceled")
+        ):
+            raise
         logger.warning("Comfy QwenVL moodboard enrich failed; falling back to Transformers: %s", exc)
         return _local_qwen_generate(prompt, image_b64s)
 
@@ -456,10 +479,19 @@ def generate_moodboard_guidance(
     *,
     mode: GuidanceMode,
     generator: QwenGenerator | None = None,
+    prompt_id_cb: Callable[[str], None] | None = None,
+    cancel_probe: CancellationProbe | None = None,
 ) -> dict:
     if mode not in {"official", "custom", "mashup"}:
         raise ValueError("Unknown moodboard guidance mode.")
-    generate = generator or _qwen_generate
+    generate = generator or (
+        lambda prompt, images: _qwen_generate(
+            prompt,
+            images,
+            prompt_id_cb=prompt_id_cb,
+            cancel_probe=cancel_probe,
+        )
+    )
     allow_metadata = mode in {"custom", "mashup"}
     images: list[str] = []
     for source in sources:

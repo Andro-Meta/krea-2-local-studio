@@ -16,6 +16,8 @@ $root = Split-Path -Parent $PSScriptRoot
 $comfyDir = Join-Path $root "ComfyUI"
 $venvDir = Join-Path $comfyDir "venv"
 $venvPy = Join-Path $venvDir "Scripts\python.exe"
+. (Join-Path $PSScriptRoot "mrflow_layout.ps1")
+. (Join-Path $PSScriptRoot "comfy_process_validation.ps1")
 
 function Stop-Install($msg) { Write-Host "  ERROR: $msg"; exit 1 }
 
@@ -145,22 +147,20 @@ foreach ($repo in $nodes) {
 }
 
 # -- 5a2. Rebels Mr. Flow (staged-sampling fast upscale) ----------------------
-# The node package lives in an inner "ComfyUI-Rebels-MrFlow" subfolder; ComfyUI
-# only loads custom_nodes/*/__init__.py one level deep, so relocate it up.
+# The node package lives in an inner folder. Copy it to the importable location,
+# preserve workflows, then archive the complete source clone outside custom_nodes.
 $mrflowPkg = Join-Path $customNodes "ComfyUI-Rebels-MrFlow"
-if (-not (Test-Path (Join-Path $mrflowPkg "__init__.py"))) {
-    $mrflowClone = Join-Path $customNodes "Rebels_MrFlow"
-    if (-not (Test-Path $mrflowClone)) {
-        Write-Host "  cloning custom node Rebels_MrFlow..."
-        & git clone --depth 1 "https://github.com/RealRebelAI/Rebels_MrFlow.git" "$mrflowClone"
-    }
-    $inner = Join-Path $mrflowClone "ComfyUI-Rebels-MrFlow"
-    if (Test-Path (Join-Path $inner "__init__.py")) {
-        if (Test-Path $mrflowPkg) { Remove-Item -Recurse -Force $mrflowPkg }
-        Move-Item $inner $mrflowPkg
-        Write-Host "    Mr. Flow node package installed."
-    } else {
-        Write-Host "    WARNING: Rebels_MrFlow layout unexpected (skipping)."
+$mrflowClone = Join-Path $customNodes "Rebels_MrFlow"
+if (-not (Test-Path (Join-Path $mrflowPkg "__init__.py")) -and -not (Test-Path $mrflowClone)) {
+    Write-Host "  cloning custom node Rebels_MrFlow..."
+    & git clone --depth 1 "https://github.com/RealRebelAI/Rebels_MrFlow.git" "$mrflowClone"
+}
+if (Test-Path $mrflowClone) {
+    try {
+        $archive = Finalize-MrFlowLayout -ComfyDir $comfyDir -CustomNodes $customNodes
+        Write-Host "    Mr. Flow package installed; source archived at $archive."
+    } catch {
+        Stop-Install "Mr. Flow layout was not finalized: $($_.Exception.Message)"
     }
 }
 
@@ -360,6 +360,10 @@ if /I not "%KREA_COMFY_SAGE%"=="0" (
 pause
 "@
 Set-Content -Path (Join-Path $comfyDir "run_comfyui.bat") -Value $launcher -Encoding ASCII
+
+if (-not (Test-ComfyCancelRouteSource -ComfyDir $comfyDir)) {
+    Stop-Install "Atomic cancel route is missing; installed ComfyUI is too old or mismatched. Update/reinstall ComfyUI."
+}
 
 Write-Host "  ComfyUI provisioning complete."
 exit 0

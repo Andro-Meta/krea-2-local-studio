@@ -19,6 +19,7 @@ interface Props {
   label?: string
   size?: 'small' | 'medium'
   compact?: boolean
+  disabled?: boolean
   // When true, shows an optional guidance field: what to focus on or change.
   // Left blank, the model writes the full prompt from the image (as before).
   withGuidance?: boolean
@@ -31,6 +32,7 @@ export default function CreatePromptFromImage({
   label = 'Create prompt from image',
   size = 'small',
   compact = false,
+  disabled = false,
   withGuidance = false,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -73,7 +75,7 @@ export default function CreatePromptFromImage({
           variant="outlined"
           startIcon={loading ? <CircularProgress size={14} /> : <AutoAwesomeIcon fontSize="small" />}
           onClick={() => inputRef.current?.click()}
-          disabled={loading}
+          disabled={loading || disabled}
         >
           {compact ? 'Image prompt' : label}
         </Button>
@@ -84,7 +86,7 @@ export default function CreatePromptFromImage({
   if (!withGuidance) {
     return (
       <>
-        <input ref={inputRef} type="file" accept="image/*" hidden onChange={handleFile} />
+        <input ref={inputRef} type="file" accept="image/*" hidden disabled={disabled} onChange={handleFile} />
         {button}
       </>
     )
@@ -92,7 +94,7 @@ export default function CreatePromptFromImage({
 
   return (
     <>
-      <input ref={inputRef} type="file" accept="image/*" hidden onChange={handleFile} />
+      <input ref={inputRef} type="file" accept="image/*" hidden disabled={disabled} onChange={handleFile} />
       <Stack spacing={1} sx={{ minWidth: { sm: 260 } }}>
         <TextField
           size="small"
@@ -101,7 +103,7 @@ export default function CreatePromptFromImage({
           maxRows={3}
           value={guidance}
           onChange={e => setGuidance(e.target.value)}
-          disabled={loading}
+          disabled={loading || disabled}
           placeholder="Optional: what to focus on or change (leave blank for a full auto prompt)"
         />
         {button}
