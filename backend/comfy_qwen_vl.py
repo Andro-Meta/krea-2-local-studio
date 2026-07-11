@@ -14,9 +14,36 @@ from typing import Any
 import requests
 from PIL import Image
 
-from comfy_client import ComfyClient, ComfyExecutionError, ComfyUnavailable, comfy_available, comfy_base_url, free_comfy_vram, object_info
+from comfy_client import (
+    ComfyClient,
+    ComfyExecutionError,
+    ComfyUnavailable,
+    cancel_prompt,
+    comfy_available,
+    comfy_base_url,
+    free_comfy_vram,
+    object_info,
+)
 
 logger = logging.getLogger("krea2.comfy_qwen")
+
+# main.py installs a probe that reports whether a generation is running (or the
+# GPU lease is held). When busy we must NOT free Comfy's VRAM: doing so would
+# unload the diffusion model out from under the in-flight job. The helper graph
+# just queues behind it in ComfyUI's own serial queue instead.
+_GENERATION_BUSY_PROBE: Any = None
+
+
+def set_generation_busy_probe(probe) -> None:
+    global _GENERATION_BUSY_PROBE
+    _GENERATION_BUSY_PROBE = probe
+
+
+def _generation_busy() -> bool:
+    try:
+        return bool(_GENERATION_BUSY_PROBE and _GENERATION_BUSY_PROBE())
+    except Exception:
+        return False
 
 QWEN_VL_NODE = "AILab_QwenVL_Advanced"
 QWEN_ENHANCER_NODE = "AILab_QwenVL_PromptEnhancer"
@@ -147,8 +174,10 @@ def _run_graph_for_text(
 ) -> str:
     if not comfy_available():
         raise ComfyUnavailable(f"ComfyUI is not responding at {comfy_base_url()}.")
-    # Unload DiT/VAE so Qwen-VL can claim VRAM (skip when chaining Stage 2 after Comfy Stage 1).
-    if free_vram:
+    # Unload DiT/VAE so Qwen-VL can claim VRAM (skip when chaining Stage 2 after
+    # Comfy Stage 1, and NEVER while a generation is executing — freeing VRAM
+    # then would yank the diffusion model out from under the in-flight job).
+    if free_vram and not _generation_busy():
         free_comfy_vram(unload_models=True, free_memory=True)
     client = ComfyClient()
     prompt_id = client._post_prompt(graph)
@@ -174,7 +203,9 @@ def _run_graph_for_text(
                     f"ComfyUI QwenVL returned no text (node={text_node_id}). outputs={list((entry.get('outputs') or {}).keys())}"
                 )
         time.sleep(0.5)
-    client.interrupt()
+    # Cancel only OUR prompt: a global interrupt here could kill an unrelated
+    # generation that happens to be executing.
+    cancel_prompt(prompt_id, base_url=client.base)
     raise ComfyExecutionError("ComfyUI QwenVL timed out.")
 
 

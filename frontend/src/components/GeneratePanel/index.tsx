@@ -37,7 +37,9 @@ export default function GeneratePanel() {
   const reconnectRef = useRef<number | null>(null)
   const heartbeatRef = useRef<number | null>(null)
   const [modelLoading, setModelLoading] = useState(false)
+  const [backendMode, setBackendMode] = useState<'comfyui' | 'native'>('comfyui')
   const [connectionNote, setConnectionNote] = useState('')
+  const [childAccount, setChildAccount] = useState(false)
 
   useEffect(() => () => {
     wsRef.current?.close()
@@ -56,6 +58,7 @@ export default function GeneratePanel() {
       apiFetch.system().then(r => {
         setModelLoaded(r.model_status?.loaded ?? false)
         setModelLoading(r.model_status?.loading ?? false)
+        setBackendMode(r.model_status?.backend ?? 'native')
       }).catch(() => {})
     check()
     const t = setInterval(check, 5000)
@@ -64,6 +67,7 @@ export default function GeneratePanel() {
 
   useEffect(() => {
     apiFetch.engineCatalog().then(setEngineCatalog).catch(() => undefined)
+    apiFetch.authMe().then(s => setChildAccount(s?.role === 'child')).catch(() => undefined)
   }, [setEngineCatalog])
 
   const stopWatchingJob = useCallback(() => {
@@ -161,13 +165,26 @@ export default function GeneratePanel() {
       wsRef.current.onerror = null
       wsRef.current.close()
     }
+    const abandonJob = (message: string) => {
+      localStorage.removeItem(ACTIVE_JOB_KEY)
+      stopWatchingJob()
+      setGenerating(false)
+      setQueue(null, null)
+      setConnectionNote('')
+      setError(message)
+    }
     wsRef.current = connectWS(
       jobId,
       (data: any) => {
         setConnectionNote('')
         applyJobSnapshot(data)
       },
-      () => {
+      (ev?: CloseEvent) => {
+        if (ev?.code === 1008) {
+          // Policy close: not our job or session expired. Retrying is useless.
+          abandonJob('Lost access to this job (session expired or it belongs to another user). Sign in again if needed.')
+          return
+        }
         setConnectionNote('Live connection dropped. Reconnecting and checking the job every few seconds.')
         if (reconnectRef.current) window.clearTimeout(reconnectRef.current)
         reconnectRef.current = window.setTimeout(() => {
@@ -187,11 +204,16 @@ export default function GeneratePanel() {
           setConnectionNote('')
           applyJobSnapshot(data)
         })
-        .catch(() => {
+        .catch((err: any) => {
+          if (err?.response?.status === 404) {
+            // Job evicted server-side (or not ours): a retry loop can never recover.
+            abandonJob('This job is no longer available on the server.')
+            return
+          }
           setConnectionNote('Network is spotty. Krea is still trying to reconnect to this job.')
         })
     }, 2500)
-  }, [applyJobSnapshot])
+  }, [applyJobSnapshot, setError, setGenerating, setQueue, stopWatchingJob])
 
   useEffect(() => {
     const resumeJob = () => {
@@ -210,7 +232,12 @@ export default function GeneratePanel() {
             localStorage.removeItem(ACTIVE_JOB_KEY)
           }
         })
-        .catch(() => {
+        .catch((err: any) => {
+          if (err?.response?.status === 404) {
+            // The stored job id is dead (evicted or foreign) — stop resuming it.
+            localStorage.removeItem(ACTIVE_JOB_KEY)
+            return
+          }
           setConnectionNote('Could not reconnect yet. Krea will retry when the phone is back online.')
         })
     }
@@ -234,7 +261,8 @@ export default function GeneratePanel() {
     setGenerating(true)
     setProgress(0)
     setQueue(null, null)
-    setResults([])
+    // Previous results stay visible while the new job queues/renders; they are
+    // replaced when the first new image arrives.
     try {
       const { job_id, status, queue_position, queue_length } = await apiFetch.generate({
         prompt: params.prompt,
@@ -389,21 +417,41 @@ export default function GeneratePanel() {
           </Alert>
         )}
         {!modelLoaded && !modelLoading && (
-          <Alert
-            severity="warning"
-            icon={<WarningAmberIcon />}
-            action={
-              <Button color="inherit" size="small" onClick={() => setTab(TAB.SYSTEM)}>
-                Load model
-              </Button>
-            }
-          >
-            No model loaded — go to System tab to load a checkpoint before generating.
-          </Alert>
+          backendMode === 'comfyui' ? (
+            <Alert
+              severity="warning"
+              icon={<WarningAmberIcon />}
+              action={
+                <Button color="inherit" size="small" onClick={() => setTab(TAB.SYSTEM)}>
+                  System status
+                </Button>
+              }
+            >
+              The ComfyUI engine isn't reachable — generation is paused. It usually starts with the app;
+              give it a moment or check the System tab. (Models load on demand, nothing to load manually.)
+            </Alert>
+          ) : (
+            <Alert
+              severity="warning"
+              icon={<WarningAmberIcon />}
+              action={
+                <Button color="inherit" size="small" onClick={() => setTab(TAB.SYSTEM)}>
+                  Load model
+                </Button>
+              }
+            >
+              No model loaded — go to System tab to load a checkpoint before generating.
+            </Alert>
+          )
         )}
         {activeEngine && !!activeEngine.unsupported_controls?.length && (
           <Alert severity="warning" sx={{ py: 0.75 }}>
             {`${activeEngine.label}: unsupported Krea-native controls are hidden or ignored: ${activeEngine.unsupported_controls.join(', ')}.`}
+          </Alert>
+        )}
+        {childAccount && (
+          <Alert severity="info" sx={{ py: 0.5 }}>
+            This is a supervised account: prompts and images pass a safety filter, and anything blocked is sent to an admin for review.
           </Alert>
         )}
 

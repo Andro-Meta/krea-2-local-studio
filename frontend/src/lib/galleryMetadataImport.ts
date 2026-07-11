@@ -89,11 +89,14 @@ export function metadataToGenerateParams<TMode extends ImportTargetMode>(
   const restoredQuantization = oneOf(metadata.quantization ?? metadata.model?.quantization ?? metadata.engine?.quantization, ['bf16', 'fp8', 'gguf', 'fp16', 'int8'] as const)
   const rawRestoredEngine = oneOf(metadata.diffusion_engine ?? metadata.engine?.id, ['native_pytorch', 'native_gguf', 'native_int8_convrot', 'gguf_external', 'int8_convrot_external'] as const)
     ?? (restoredQuantization === 'int8' ? 'native_int8_convrot' : undefined)
-  const restoredEngine = rawRestoredEngine === 'gguf_external'
+  const mappedEngine = rawRestoredEngine === 'gguf_external'
     ? 'native_gguf'
     : rawRestoredEngine === 'int8_convrot_external'
       ? 'native_int8_convrot'
       : rawRestoredEngine
+  // Don't force the old default engine from legacy metadata: ComfyUI owns the
+  // pipeline now, so leaving it unset keeps the server's configured engine.
+  const restoredEngine = mappedEngine === 'native_pytorch' ? undefined : mappedEngine
   const patch: Partial<GenerateParams> & { mode: TMode } = {
     mode: targetMode,
     prompt: String(metadata.prompt || ''),

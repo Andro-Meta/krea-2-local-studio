@@ -260,6 +260,18 @@ def _requires_admin(path: str, method: str) -> bool:
         return True
     if path == "/api/moodboards/import":
         return True
+    # Heavy setup/download operations: multi-GB downloads and .env rewrites
+    # must not be triggerable by shared (non-admin) users.
+    if path == "/api/civitai/install":
+        return True
+    if path in {"/api/xperiment/setup", "/api/gguf/setup-low-vram", "/api/int8/setup-native"}:
+        return True
+    if path.startswith("/api/quality-assets/") and method != "GET":
+        return True
+    # Custom moodboards are a shared library with no per-user ownership yet:
+    # deleting them is destructive for everyone, so restrict it to admins.
+    if path.startswith("/api/moodboards/custom/") and method == "DELETE":
+        return True
     return False
 
 
@@ -452,6 +464,23 @@ _jobs: dict[str, dict] = {}
 _JOBS_MAX = 200  # ponytail: simple FIFO cap; raise if clients poll very old jobs
 generation_queue: GenerationQueue | None = None
 
+# Single GPU lease: ComfyUI work that does NOT go through the generation queue
+# (upscale, depth preview, helper LLM graphs, moodboard enrichment) must hold
+# this so it cannot unload models or compete mid-flight with a queued
+# generation. The queued generation handler holds it for each job.
+GPU_LEASE = asyncio.Lock()
+
+
+def _job_owned_by(job: dict, username: str | None, is_admin: bool) -> bool:
+    """True when the requester may see/control this job.
+
+    Local mode (share auth off) has a single implicit owner; admins can manage
+    everything; users match on the username recorded at enqueue time.
+    """
+    if not SHARE_AUTH_ENABLED or is_admin:
+        return True
+    return (job.get("username") or None) == (username or None)
+
 
 def _new_job(username: str | None = None, role: str = "admin") -> str:
     jid = uuid.uuid4().hex
@@ -465,12 +494,20 @@ def _new_job(username: str | None = None, role: str = "admin") -> str:
         "role": role,
         "moderation_event_id": None,
     }
-    # Evict oldest finished jobs to bound memory (dicts keep insertion order).
-    while len(_jobs) > _JOBS_MAX:
-        oldest = next(iter(_jobs))
-        if oldest == jid:
-            break
-        del _jobs[oldest]
+    # Evict oldest FINISHED jobs to bound memory (dicts keep insertion order).
+    # Skip queued/running jobs AND children of unfinished batches: evicting a
+    # done child while its parent batch is still running would break the
+    # parent's progress aggregation.
+    if len(_jobs) > _JOBS_MAX:
+        for old_id, old_job in list(_jobs.items()):
+            if len(_jobs) <= _JOBS_MAX or old_id == jid:
+                break
+            if old_job.get("status") in {"queued", "running"}:
+                continue
+            parent_id = old_job.get("parent_job_id")
+            if parent_id and (_jobs.get(str(parent_id)) or {}).get("status") in {"queued", "running"}:
+                continue
+            del _jobs[old_id]
     return jid
 
 
@@ -589,6 +626,9 @@ def _refresh_parent_batch_job(parent_job_id: str) -> dict | None:
         parent["progress"] = 100
     else:
         parent["status"] = "queued" if any(child and child.get("status") == "queued" for child in children) else "running"
+    if parent["status"] in {"done", "blocked", "error"} and not parent.get("finished_at"):
+        child_finishes = [child.get("finished_at") for child in children if child and child.get("finished_at")]
+        parent["finished_at"] = max(child_finishes) if child_finishes else time.time()
     return parent
 
 
@@ -656,12 +696,16 @@ async def _broadcast_queue_state() -> None:
 
 async def _queued_generation_handler(job_id: str, payload: dict) -> None:
     await _broadcast_queue_state()
-    await _run_generation(
-        job_id,
-        payload["req"],
-        username=payload.get("username"),
-        role=payload.get("role", "user"),
-    )
+    # Hold the GPU lease for the whole job so non-queued ComfyUI work (upscale,
+    # depth preview, helper LLMs, moodboard enrichment) cannot unload models or
+    # inject prompts mid-generation.
+    async with GPU_LEASE:
+        await _run_generation(
+            job_id,
+            payload["req"],
+            username=payload.get("username"),
+            role=payload.get("role", "user"),
+        )
     await _broadcast_queue_state()
 
 
@@ -716,6 +760,16 @@ async def startup():
     if generation_queue is None:
         generation_queue = GenerationQueue(_queued_generation_handler)
         asyncio.create_task(generation_queue.run())
+    # Helper LLM graphs must never free Comfy VRAM while a generation is
+    # executing (or any leased GPU work is in flight).
+    try:
+        import comfy_qwen_vl
+        comfy_qwen_vl.set_generation_busy_probe(
+            lambda: GPU_LEASE.locked()
+            or (generation_queue is not None and generation_queue.active_job_id is not None)
+        )
+    except Exception:
+        logger.debug("Could not install Comfy helper busy probe", exc_info=True)
     logger.info(
         "Krea 2 Studio ready (port=%s, public_base_path=%s)",
         os.environ.get("KREA_SERVER_PORT", "8200"),
@@ -725,6 +779,7 @@ async def startup():
         asyncio.create_task(_sync_krea_moodboards())
     asyncio.create_task(_moodboard_sync_loop())
     asyncio.create_task(_moodboard_enrich_loop())
+    asyncio.create_task(_funnel_health_loop())
     # Auto-load model if configured. Skipped when the ComfyUI backend is active:
     # ComfyUI owns the diffusion weights, so loading them in-process too would
     # double VRAM use and starve ComfyUI.
@@ -784,6 +839,39 @@ def _generation_busy() -> bool:
     return bool(getattr(pipeline, "_loading", False))
 
 
+async def _funnel_health_loop() -> None:
+    """Keep the public Tailscale Funnel healthy without anyone watching.
+
+    Phones drop off for hours; when they come back, a stale Funnel ingress
+    session (the recurring Windows failure) would greet them with TLS errors
+    until someone clicked Repair. This probes the public URL every 5 minutes
+    and runs the full self-heal (rebind + tailscale down/up cycle) whenever
+    the funnel claims to be up but the public URL doesn't answer."""
+    if not SHARE_AUTH_ENABLED:
+        return
+    from sharing_service import funnel_status, public_funnel_probe_with_retries, repair_funnel
+
+    await asyncio.sleep(300)  # share_startup owns the initial bring-up
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            funnel = await loop.run_in_executor(None, funnel_status)
+            if funnel.get("running") and funnel.get("url"):
+                # Two probes 10s apart so a transient blip doesn't trigger a
+                # tailscale down/up cycle (which would drop live connections).
+                probe = await loop.run_in_executor(
+                    None,
+                    lambda: public_funnel_probe_with_retries(funnel.get("url", ""), attempts=2, delay_seconds=10.0),
+                )
+                if not probe.get("ok"):
+                    logger.warning("Public Funnel unhealthy (%s); running self-heal.", probe.get("message"))
+                    result = await loop.run_in_executor(None, repair_funnel)
+                    logger.info("Funnel self-heal: ok=%s — %s", result.get("ok"), result.get("message"))
+        except Exception:
+            logger.exception("Funnel health check failed")
+        await asyncio.sleep(300)
+
+
 async def _moodboard_enrich_loop() -> None:
     """Precompute Qwen guidance for moodboards missing it, in small idle batches.
 
@@ -793,8 +881,21 @@ async def _moodboard_enrich_loop() -> None:
     while True:
         try:
             if getattr(settings, "krea2_moodboard_auto_enrich", True) and not _generation_busy():
-                result = await generate_missing_moodboard_qwen_guidance(limit=4)
-                if int(result.get("processed", 0)) == 0:
+                # One board per lease hold: a 4-board batch would block upscales,
+                # wand calls, and queued generations for the whole batch.
+                processed_total = 0
+                for _ in range(4):
+                    if _generation_busy():
+                        break
+                    async with GPU_LEASE:
+                        if _generation_busy():  # re-check after any lease wait
+                            break
+                        result = await generate_missing_moodboard_qwen_guidance(limit=1)
+                    processed_total += int(result.get("processed", 0))
+                    if int(result.get("processed", 0)) == 0:
+                        break
+                    await asyncio.sleep(1)  # give waiting GPU work a chance to grab the lease
+                if processed_total == 0:
                     await asyncio.sleep(60 * 60)  # nothing left; idle check hourly
                     continue
         except Exception:
@@ -812,9 +913,14 @@ async def generate(req: GenerationRequest, request: Request):
         fields = getattr(req, "model_fields_set", getattr(req, "__fields_set__", set()))
         if "diffusion_engine" not in fields:
             req.diffusion_engine = settings.diffusion_engine
+    # Inline planner/expander: run in an executor so a slow helper LLM can't
+    # freeze the event loop. GPU safety comes from the busy-probe inside
+    # comfy_qwen_vl (no VRAM free while a generation runs; the helper graph
+    # queues behind it in ComfyUI's serial queue).
+    _helper_loop = asyncio.get_event_loop()
     if req.use_prompt_planner:
         helper_backend = "gguf-server" if settings.local_llm_backend == "gguf_server" else "local"
-        plan = plan_prompt(
+        plan = await _helper_loop.run_in_executor(None, lambda: plan_prompt(
             req.prompt,
             enabled=True,
             max_tokens=int(getattr(req, "prompt_planner_max_tokens", 700)),
@@ -822,7 +928,7 @@ async def generate(req: GenerationRequest, request: Request):
             gguf_helper_base_url=settings.gguf_helper_base_url,
             gguf_helper_model=settings.gguf_helper_model,
             gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
-        )
+        ))
         req.prompt_planner_output = plan.model_dump()
         if not req.prompt_planner_lock_original and plan.planned_prompt:
             req.prompt = plan.planned_prompt
@@ -836,7 +942,7 @@ async def generate(req: GenerationRequest, request: Request):
             if settings.local_llm_backend == "gguf_server" and settings.prompt_expander_backend == "local"
             else settings.prompt_expander_backend
         )
-        result = expand_prompt_result(
+        result = await _helper_loop.run_in_executor(None, lambda: expand_prompt_result(
             req.prompt,
             backend=helper_backend,
             openrouter_api_key=_secret_value("OPENROUTER_API_KEY", "openrouter_api_key"),
@@ -846,7 +952,7 @@ async def generate(req: GenerationRequest, request: Request):
             gguf_helper_base_url=settings.gguf_helper_base_url,
             gguf_helper_model=settings.gguf_helper_model,
             gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
-        )
+        ))
         if result.error:
             raise HTTPException(502, result.error)
         req.prompt = result.expanded
@@ -925,6 +1031,39 @@ async def generate(req: GenerationRequest, request: Request):
     }
 
 
+async def _enforce_child_text(text: str, request: Request, *, action: str) -> None:
+    """Block helper-LLM text (expanded/planned/described prompts) for child
+    accounts when it trips the safety filter. No-op for admin/user roles."""
+    username, role, _ = _request_user_role(request)
+    if role != "child" or not (text or "").strip():
+        return
+    decision = moderate_prompt(text, "", role=role)
+    if decision.allowed:
+        return
+    await save_moderation_event(
+        username=username or "local", role=role, event_type=decision.event_type,
+        action=action, prompt=text, negative_prompt="", mode="helper",
+        scores=decision.scores, reason=decision.reason, job_id=None,
+    )
+    raise HTTPException(403, "This text was blocked by the child safety filter and sent to an admin for review.")
+
+
+async def _enforce_child_images(images: list[Image.Image], request: Request, *, action: str, prompt: str = "") -> None:
+    """Block image payloads for child accounts (upscale output, describe input)."""
+    username, role, _ = _request_user_role(request)
+    if role != "child" or not images:
+        return
+    decision = moderate_images(images, role=role)
+    if decision.allowed:
+        return
+    await save_moderation_event(
+        username=username or "local", role=role, event_type=decision.event_type,
+        action=action, prompt=prompt, negative_prompt="", mode="helper",
+        scores=decision.scores, reason=decision.reason, job_id=None,
+    )
+    raise HTTPException(403, "This image was blocked by the child safety filter and sent to an admin for review.")
+
+
 def _job_images_from_b64(results: list[str]) -> list[Image.Image]:
     images: list[Image.Image] = []
     for value in results:
@@ -994,8 +1133,12 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
             stage="generation_start",
             extra={"username": username, "role": role},
         )
-        prep = prepare_for_generation(pipeline, clear_conditioning_cache=False)
-        logger.info("Pre-generation memory cleanup: %s", prep)
+        # Native-era memory prep (unload in-process helpers, CUDA cache). In
+        # Comfy mode nothing heavy lives in this process, and the sweep could
+        # race a helper that holds no lease — skip it.
+        if not use_comfy_backend():
+            prep = prepare_for_generation(pipeline, clear_conditioning_cache=False)
+            logger.info("Pre-generation memory cleanup: %s", prep)
         if getattr(req, "diffusion_engine", "native_pytorch") == "gguf_external":
             req.diffusion_engine = "native_gguf"
             req.quantization = "gguf"
@@ -1124,13 +1267,19 @@ async def _run_generation(job_id: str, req: GenerationRequest, *, username: str 
                 await ws_manager.broadcast(str(parent_job_id), {"type": "batch", **parent})
     finally:
         if job.get("status") in {"done", "blocked", "error", "cancelled"}:
+            if not job.get("finished_at"):
+                job["finished_at"] = time.time()
             clear_generation_breadcrumb(LOGS_DIR, job_id=job_id)
 
 
 @app.get("/api/generate/{job_id}")
-async def job_status(job_id: str):
+async def job_status(job_id: str, request: Request):
     job = _jobs.get(job_id)
     if job is None:
+        raise HTTPException(404, "Job not found")
+    username, _role, is_admin = _request_user_role(request)
+    if not _job_owned_by(job, username, is_admin):
+        # 404 (not 403) so foreign job ids are indistinguishable from unknown ones.
         raise HTTPException(404, "Job not found")
     if job.get("child_job_ids"):
         _refresh_parent_batch_job(job_id)
@@ -1138,10 +1287,13 @@ async def job_status(job_id: str):
 
 
 @app.get("/api/jobs")
-async def list_jobs(limit: int = 24):
+async def list_jobs(request: Request, limit: int = 24):
     """Recent generation jobs for the queue panel (newest first). Batch children
-    are folded into their parent. Thumbnails are small JPEGs cached per job."""
+    are folded into their parent. The requester sees full detail for their own
+    jobs; other users' entries are anonymized to status + queue position only
+    (no usernames, prompts, settings, thumbnails, or usable job ids)."""
     _sync_queue_state_to_jobs()
+    username, _role, is_admin = _request_user_role(request)
     out: list[dict] = []
     for jid, job in reversed(list(_jobs.items())):
         if job.get("parent_job_id"):
@@ -1149,12 +1301,36 @@ async def list_jobs(limit: int = 24):
         if job.get("child_job_ids"):
             _refresh_parent_batch_job(jid)
         status = job.get("status")
+        mine = _job_owned_by(job, username, is_admin)
+        if not mine:
+            # Foreign finished jobs are irrelevant to this user's queue view.
+            if status not in {"queued", "running"}:
+                continue
+            out.append({
+                "job_id": f"anon-{jid[:8]}",  # stable list key, not a usable id
+                "mine": False,
+                "status": status,
+                "progress": int(job.get("progress", 0) or 0),
+                "queue_position": job.get("queue_position"),
+                "queue_length": job.get("queue_length"),
+                "seed": None,
+                "error": None,
+                "summary": "Another user's generation",
+                "thumb": "",
+                "is_batch": False,
+                "batch_count": None,
+                "num_images": 0,
+            })
+            if len(out) >= max(1, min(int(limit or 24), 100)):
+                break
+            continue
         thumb = job.get("thumb")
         if thumb is None and status == "done" and job.get("images"):
             thumb = _job_thumb(job["images"][0])
             job["thumb"] = thumb  # cache (even "" so we don't retry)
         out.append({
             "job_id": jid,
+            "mine": True,
             "status": status,
             "progress": int(job.get("progress", 0) or 0),
             "queue_position": job.get("queue_position"),
@@ -1166,6 +1342,9 @@ async def list_jobs(limit: int = 24):
             "is_batch": bool(job.get("child_job_ids")),
             "batch_count": (job.get("batch") or {}).get("count"),
             "num_images": len(job.get("images") or []),
+            "queued_at": job.get("queued_at"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
         })
         if len(out) >= max(1, min(int(limit or 24), 100)):
             break
@@ -1173,12 +1352,15 @@ async def list_jobs(limit: int = 24):
 
 
 @app.post("/api/generate/{job_id}/cancel")
-async def cancel_generation_job(job_id: str):
+async def cancel_generation_job(job_id: str, request: Request):
     """Cancel a generation. Dequeues any not-yet-started (batch) children and, if
     one of the targets is the job currently running on the GPU, interrupts ComfyUI
     so the in-flight prompt stops instead of running to completion."""
     job = _jobs.get(job_id)
     if job is None:
+        raise HTTPException(404, "Job not found")
+    username, _role, is_admin = _request_user_role(request)
+    if not _job_owned_by(job, username, is_admin):
         raise HTTPException(404, "Job not found")
     targets = list(job.get("child_job_ids") or []) or [job_id]
     cancelled = 0
@@ -1196,6 +1378,7 @@ async def cancel_generation_job(job_id: str):
         if child:
             child["status"] = "cancelled"
             child["queue_position"] = None
+            child.setdefault("finished_at", time.time())
             await ws_manager.broadcast(tid, {"type": "cancelled"})
 
     if interrupt_running:
@@ -1211,6 +1394,7 @@ async def cancel_generation_job(job_id: str):
     elif cancelled:
         job["status"] = "cancelled"
         job["queue_position"] = None
+        job.setdefault("finished_at", time.time())
     _sync_queue_state_to_jobs()
     return {"ok": cancelled > 0, "job_id": job_id, "status": job.get("status"), "cancelled": cancelled}
 
@@ -1218,11 +1402,23 @@ async def cancel_generation_job(job_id: str):
 @app.websocket("/ws/{job_id}")
 async def ws_endpoint(ws: WebSocket, job_id: str):
     _strip_public_base_path(ws.scope)
-    if SHARE_AUTH_ENABLED and not _auth_username_from_cookie(ws.cookies.get(SHARE_COOKIE)):
-        await ws.close(code=1008)
-        return
-    await ws_manager.connect(job_id, ws)
+    ws_user: str | None = None
+    if SHARE_AUTH_ENABLED:
+        ws_user = _auth_username_from_cookie(ws.cookies.get(SHARE_COOKIE))
+        if not ws_user:
+            await ws.close(code=1008)
+            return
     job = _jobs.get(job_id)
+    if SHARE_AUTH_ENABLED:
+        if job is None:
+            # Unknown job: don't let clients park sockets on arbitrary ids.
+            await ws.close(code=1008)
+            return
+        role = get_user_role(SHARE_AUTH_FILE, ws_user) or "user"
+        if not _job_owned_by(job, ws_user, role == "admin"):
+            await ws.close(code=1008)
+            return
+    await ws_manager.connect(job_id, ws)
     if job:
         await ws.send_json({"type": "init", **job})
     try:
@@ -1466,7 +1662,10 @@ async def favorite_moodboard(moodboard_id: int, req: FavoriteRequest, request: R
 @app.post("/api/moodboards/{moodboard_id}/qwen-guidance", response_model=MoodboardItem)
 async def qwen_guidance_moodboard(moodboard_id: int):
     try:
-        return await generate_and_store_moodboard_qwen_guidance(moodboard_id)
+        # Qwen guidance runs a Comfy QwenVL graph (and frees Comfy VRAM first),
+        # so it must hold the GPU lease like every other non-queued GPU task.
+        async with GPU_LEASE:
+            return await generate_and_store_moodboard_qwen_guidance(moodboard_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
@@ -1477,7 +1676,8 @@ async def qwen_guidance_moodboard(moodboard_id: int):
 @app.post("/api/moodboards/qwen-guidance-missing")
 async def qwen_guidance_missing(req: MoodboardGuidanceMissingRequest):
     try:
-        return await generate_missing_moodboard_qwen_guidance(limit=req.limit)
+        async with GPU_LEASE:
+            return await generate_missing_moodboard_qwen_guidance(limit=req.limit)
     except Exception as exc:
         logger.exception("Qwen moodboard guidance batch failed")
         raise HTTPException(502, f"Qwen moodboard guidance batch failed: {exc}") from exc
@@ -1486,7 +1686,8 @@ async def qwen_guidance_missing(req: MoodboardGuidanceMissingRequest):
 @app.post("/api/moodboards/mashup", response_model=MoodboardItem)
 async def mashup_moodboard(req: MoodboardMashupRequest):
     try:
-        return await create_mashup_moodboard(moodboard_ids=req.moodboard_ids, weights=req.weights)
+        async with GPU_LEASE:
+            return await create_mashup_moodboard(moodboard_ids=req.moodboard_ids, weights=req.weights)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -1497,12 +1698,14 @@ async def mashup_moodboard(req: MoodboardMashupRequest):
 @app.post("/api/moodboards/custom", response_model=MoodboardItem)
 async def create_custom_moodboard_endpoint(req: CustomMoodboardRequest):
     try:
-        return await create_custom_moodboard(
-            title=req.title,
-            taste_profile=req.taste_profile,
-            keywords=req.keywords,
-            image_b64s=req.image_b64s,
-        )
+        # May auto-author metadata with the Comfy QwenVL helper.
+        async with GPU_LEASE:
+            return await create_custom_moodboard(
+                title=req.title,
+                taste_profile=req.taste_profile,
+                keywords=req.keywords,
+                image_b64s=req.image_b64s,
+            )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
@@ -1755,11 +1958,13 @@ async def import_lora_url(req: LoraImportRequest):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/upscale")
-async def upscale(req: UpscaleRequest):
+async def upscale(req: UpscaleRequest, request: Request):
     from upscaler import b64_to_pil, upscale_realesrgan
     from output_saver import encode_images
 
     img = b64_to_pil(req.image_b64)
+    await _enforce_child_text(req.prompt or "", request, action="block_upscale_prompt")
+    await _enforce_child_images([img], request, action="block_upscale_input", prompt=req.prompt or "")
     loop = asyncio.get_event_loop()
 
     # Model/VAE-dependent methods run as ComfyUI graphs. realesrgan also runs
@@ -1777,16 +1982,19 @@ async def upscale(req: UpscaleRequest):
         from comfy_workflows import comfy_upscale
         method = "esrgan" if req.method == "realesrgan" else req.method
         upscale_by = float(req.scale) if req.method == "realesrgan" else req.upscale_by
-        result = await loop.run_in_executor(
-            None, lambda: comfy_upscale(
-                method, req.image_b64, prompt=req.prompt, upscale_by=upscale_by,
-                denoise=req.denoise, steps=req.steps, cfg=req.cfg,
-                sampler=req.sampler, scheduler=req.scheduler,
-                tile_width=req.tile_width or req.tile_size, tile_height=req.tile_height or req.tile_size,
-                tile_padding=req.tile_padding, mask_blur=req.mask_blur,
-                seam_mode=req.seam_mode, tile_mode=req.tile_mode, tiled_decode=req.tiled_decode,
+        # Wait for the GPU lease so an upscale never runs (or frees VRAM) while
+        # a queued generation is mid-flight on ComfyUI.
+        async with GPU_LEASE:
+            result = await loop.run_in_executor(
+                None, lambda: comfy_upscale(
+                    method, req.image_b64, prompt=req.prompt, upscale_by=upscale_by,
+                    denoise=req.denoise, steps=req.steps, cfg=req.cfg,
+                    sampler=req.sampler, scheduler=req.scheduler,
+                    tile_width=req.tile_width or req.tile_size, tile_height=req.tile_height or req.tile_size,
+                    tile_padding=req.tile_padding, mask_blur=req.mask_blur,
+                    seam_mode=req.seam_mode, tile_mode=req.tile_mode, tiled_decode=req.tiled_decode,
+                )
             )
-        )
     elif req.method == "realesrgan":
         result = await loop.run_in_executor(
             None, lambda: upscale_realesrgan(img, MODELS_DIR, req.scale)
@@ -1820,6 +2028,7 @@ async def upscale(req: UpscaleRequest):
         "width": result.width,
         "height": result.height,
     }
+    await _enforce_child_images([result], request, action="block_upscale_output", prompt=req.prompt or "")
     encoded, _ = encode_images([result], OUTPUTS_DIR, save_outputs=False, metadata=[metadata])
     return {"image_b64": encoded[0], "metadata": metadata}
 
@@ -1881,7 +2090,8 @@ async def preprocessor_preview(req: PreprocessorPreviewRequest):
 
 
 @app.post("/api/describe-image", response_model=DescribeImageResponse)
-async def describe_image(req: DescribeImageRequest):
+async def describe_image(req: DescribeImageRequest, request: Request):
+    await _enforce_child_images(_job_images_from_b64([req.image_b64]), request, action="block_describe_input")
     loop = asyncio.get_event_loop()
     try:
         if settings.prompt_expander_backend == "openrouter":
@@ -1898,13 +2108,14 @@ async def describe_image(req: DescribeImageRequest):
             logger.exception("Local image description failed")
             detail = "Local image description failed. Use System > Krea Moodboard Conditioning / Local AI Assets to repair local models."
         raise HTTPException(502, detail)
+    await _enforce_child_text(str(result.get("description") or ""), request, action="block_describe_output")
     return DescribeImageResponse(**result)
 
 
 @app.post("/api/depth-preview")
 async def depth_preview(req: DepthPreviewRequest):
     """Return the depth map the ControlNet would follow, so users can verify it
-    before a full render. ComfyUI serializes this behind any active generation."""
+    before a full render. Waits on the GPU lease behind any active generation."""
     if not use_comfy_backend():
         raise HTTPException(400, "Depth preview requires the ComfyUI backend.")
     if not comfy_available():
@@ -1912,10 +2123,11 @@ async def depth_preview(req: DepthPreviewRequest):
     loop = asyncio.get_event_loop()
     from comfy_workflows import comfy_depth_preview
     try:
-        img = await loop.run_in_executor(
-            None,
-            lambda: comfy_depth_preview(req.image_b64, estimator=req.estimator, resolution=req.resolution, invert=req.invert),
-        )
+        async with GPU_LEASE:
+            img = await loop.run_in_executor(
+                None,
+                lambda: comfy_depth_preview(req.image_b64, estimator=req.estimator, resolution=req.resolution, invert=req.invert),
+            )
     except Exception:
         logger.exception("Depth preview failed")
         raise HTTPException(502, "Depth preview failed. Check that the depth estimator model is installed.")
@@ -2346,9 +2558,10 @@ async def _run_helper_with_optional_krea_preempt(backend: str, fn):
     slowdown + websocket keepalive failure seen when the encoder loads mid-sample)."""
     loop = asyncio.get_event_loop()
     reload_state = None
-    if _local_helper_uses_cuda(backend):
-        # Applies in both ComfyUI and native modes — this is the guard that was
-        # previously skipped in ComfyUI mode (pipeline never loaded there).
+    uses_gpu = _local_helper_uses_cuda(backend)
+    if uses_gpu:
+        # Fast feedback: don't make the user's helper click silently wait
+        # behind a long generation queue.
         if generation_queue is not None and generation_queue.has_active_or_pending():
             raise HTTPException(409, "The image helper must wait for the running/queued generation to finish before it can use the GPU.")
     if _local_qwen_helper_needs_krea_preempt(backend):
@@ -2363,6 +2576,15 @@ async def _run_helper_with_optional_krea_preempt(backend: str, fn):
         await loop.run_in_executor(None, pipeline.unload)
         clear_cuda_cache()
     try:
+        if uses_gpu:
+            # Hold the GPU lease during the helper run: a generation enqueued a
+            # moment later must wait for the helper (and its free_comfy_vram)
+            # to finish instead of colliding with it. Also serializes wand
+            # requests from multiple users on the Comfy QwenVL path.
+            async with GPU_LEASE:
+                if generation_queue is not None and generation_queue.has_active_or_pending():
+                    raise HTTPException(409, "A generation started while the helper was waiting for the GPU. Try again when the queue is idle.")
+                return await loop.run_in_executor(None, fn)
         return await loop.run_in_executor(None, fn)
     finally:
         if reload_state and reload_state["checkpoint"] and Path(reload_state["checkpoint"]).exists():
@@ -2383,7 +2605,7 @@ async def _run_helper_with_optional_krea_preempt(backend: str, fn):
 
 
 @app.post("/api/expand-prompt", response_model=ExpandPromptResponse)
-async def expand_prompt_endpoint(req: ExpandPromptRequest):
+async def expand_prompt_endpoint(req: ExpandPromptRequest, request: Request):
     backend = req.backend or ("gguf-server" if settings.local_llm_backend == "gguf_server" and settings.prompt_expander_backend == "local" else settings.prompt_expander_backend)
     result = await _run_helper_with_optional_krea_preempt(
         backend,
@@ -2420,6 +2642,7 @@ async def expand_prompt_endpoint(req: ExpandPromptRequest):
                 })
         except Exception:
             logger.debug("Moodboard suggestions failed during prompt expansion", exc_info=True)
+    await _enforce_child_text(result.expanded or "", request, action="block_expand_output")
     return ExpandPromptResponse(
         expanded=result.expanded,
         changed=result.changed,
@@ -2447,13 +2670,22 @@ async def sampler_catalog_endpoint(profile: str = "krea_turbo"):
         except Exception:
             logger.exception("comfy sampler catalog failed")
     # Soft fallback when Comfy is down: a minimal static list (no native krea2 import).
+    # Shape must match comfy_catalog: the UI expects scheduler OBJECTS, not strings.
     return {
         "profile": profile,
         "samplers": [
-            {"id": "euler", "label": "euler", "supported_schedulers": ["simple", "normal", "beta", "sgm_uniform"], "recommended_steps": 8},
-            {"id": "euler_ancestral", "label": "euler_ancestral", "supported_schedulers": ["simple", "normal", "beta"], "recommended_steps": 8},
+            {"id": "euler", "label": "euler", "scheduler": "simple", "default_steps": 8, "default_cfg": 0.0,
+             "supported_schedulers": ["simple", "normal", "beta", "sgm_uniform"], "recommended_steps": 8,
+             "disabled": False, "note": ""},
+            {"id": "euler_ancestral", "label": "euler_ancestral", "scheduler": "simple", "default_steps": 8, "default_cfg": 0.0,
+             "supported_schedulers": ["simple", "normal", "beta"], "recommended_steps": 8,
+             "disabled": False, "note": ""},
         ],
-        "schedulers": ["simple", "normal", "beta", "sgm_uniform"],
+        "schedulers": [
+            {"id": s, "label": s, "recommended": s == "simple", "note": ""}
+            for s in ("simple", "normal", "beta", "sgm_uniform")
+        ],
+        "recommended_combos": [],
         "note": "ComfyUI offline — showing a minimal fallback catalog.",
     }
 
@@ -2514,7 +2746,7 @@ async def int8_status_endpoint():
         "ok": True,
         "backend": "comfyui",
         "loader": "OTUNetLoaderW8A8",
-        "diffusion_engine": "comfyui_int8",
+        "diffusion_engine": "native_int8_convrot",
         "note": "Native Studio INT8 is deprecated. Turbo INT8 ConvRot checkpoints load in ComfyUI via OTUNetLoaderW8A8.",
         "assets": {
             "turbo": _asset("krea2_turbo_int8_convrot", settings.krea2_turbo_int8_path),
@@ -2561,7 +2793,9 @@ async def int8_setup_native_endpoint():
     return {
         "ok": True,
         "assets": results,
-        "diffusion_engine": "comfyui_int8",
+        # Must stay a member of the shared engine union: the UI writes this
+        # straight into its settings draft.
+        "diffusion_engine": "native_int8_convrot",
         "turbo_path": str(turbo),
         "quantization": "int8",
         "sampler": {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15},
@@ -2655,7 +2889,7 @@ async def prompting_guide_endpoint():
 
 
 @app.post("/api/plan-prompt", response_model=PlanPromptResponse)
-async def plan_prompt_endpoint(req: PlanPromptRequest):
+async def plan_prompt_endpoint(req: PlanPromptRequest, request: Request):
     helper_backend = "gguf-server" if settings.local_llm_backend == "gguf_server" else "local"
     result = await _run_helper_with_optional_krea_preempt(
         helper_backend,
@@ -2669,22 +2903,30 @@ async def plan_prompt_endpoint(req: PlanPromptRequest):
             gguf_helper_timeout_sec=settings.gguf_helper_timeout_sec,
         ),
     )
+    await _enforce_child_text(result.planned_prompt or "", request, action="block_plan_output")
     return PlanPromptResponse(**result.model_dump())
 
 
 @app.get("/api/prompt-recipes", response_model=PromptRecipeListResponse)
-async def prompt_recipes_list_endpoint():
-    return PromptRecipeListResponse(items=[PromptRecipe(**item) for item in list_recipes()])
+async def prompt_recipes_list_endpoint(request: Request):
+    username, _role, _is_admin = _request_user_role(request)
+    return PromptRecipeListResponse(items=[
+        PromptRecipe(**{k: v for k, v in item.items() if k != "owner"})
+        for item in list_recipes(username=username)
+    ])
 
 
 @app.post("/api/prompt-recipes", response_model=PromptRecipe)
-async def prompt_recipes_save_endpoint(req: PromptRecipe):
-    return PromptRecipe(**save_recipe(req.model_dump()))
+async def prompt_recipes_save_endpoint(req: PromptRecipe, request: Request):
+    username, _role, _is_admin = _request_user_role(request)
+    saved = save_recipe(req.model_dump(), username=username)
+    return PromptRecipe(**{k: v for k, v in saved.items() if k != "owner"})
 
 
 @app.delete("/api/prompt-recipes/{recipe_id}")
-async def prompt_recipes_delete_endpoint(recipe_id: str):
-    return {"ok": delete_recipe(recipe_id)}
+async def prompt_recipes_delete_endpoint(recipe_id: str, request: Request):
+    username, _role, is_admin = _request_user_role(request)
+    return {"ok": delete_recipe(recipe_id, username=username, is_admin=is_admin)}
 
 
 # ---------------------------------------------------------------------------

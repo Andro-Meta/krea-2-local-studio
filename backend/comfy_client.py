@@ -110,6 +110,30 @@ def interrupt_comfy(timeout: float = 10.0) -> bool:
         return False
 
 
+def cancel_prompt(prompt_id: str, base_url: str | None = None, timeout: float = 10.0) -> bool:
+    """Cancel ONE specific prompt without touching others.
+
+    If it is still pending in ComfyUI's internal queue, delete it there; only
+    fall back to the global /interrupt when it is the prompt currently
+    executing. This keeps a timed-out helper graph (wand/planner) from
+    interrupting another user's in-flight generation.
+    """
+    base = (base_url or comfy_base_url()).rstrip("/")
+    try:
+        q = requests.get(f"{base}/queue", timeout=timeout).json()
+        pending_ids = {item[1] for item in q.get("queue_pending", []) or [] if len(item) > 1}
+        running_ids = {item[1] for item in q.get("queue_running", []) or [] if len(item) > 1}
+        if prompt_id in pending_ids:
+            requests.post(f"{base}/queue", json={"delete": [prompt_id]}, timeout=timeout)
+            return True
+        if prompt_id in running_ids:
+            r = requests.post(f"{base}/interrupt", timeout=timeout)
+            return r.status_code == 200
+    except Exception:
+        logger.debug("cancel_prompt(%s) failed", prompt_id, exc_info=True)
+    return False
+
+
 def object_info(class_type: str | None = None, timeout: float = 30.0) -> dict:
     """Return ComfyUI node signatures (all nodes, or a single class)."""
     url = f"{comfy_base_url()}/object_info"
@@ -193,7 +217,7 @@ class ComfyClient:
             deadline = time.time() + timeout
             while True:
                 if time.time() > deadline:
-                    self.interrupt()
+                    cancel_prompt(prompt_id, base_url=self.base)
                     raise ComfyExecutionError("ComfyUI generation timed out.")
                 out = ws.recv()
                 if isinstance(out, (bytes, bytearray)):
@@ -250,7 +274,7 @@ class ComfyClient:
                     raise ComfyExecutionError(f"ComfyUI execution error: {json.dumps(status)[:4000]}")
                 return self._collect_from_history(prompt_id)
             time.sleep(1.0)
-        self.interrupt()
+        cancel_prompt(prompt_id, base_url=self.base)
         raise ComfyExecutionError("ComfyUI generation timed out (polling).")
 
     def _collect_from_history(self, prompt_id: str) -> list[bytes]:

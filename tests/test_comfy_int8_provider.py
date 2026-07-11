@@ -55,7 +55,9 @@ class NativeInt8ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["diffusion_engine"], "comfyui_int8")
+        # Must be a member of the shared engine union — the UI stores this
+        # verbatim in its settings draft (comfyui_int8 was an invalid id).
+        self.assertEqual(data["diffusion_engine"], "native_int8_convrot")
         self.assertEqual(data["quantization"], "int8")
         self.assertEqual(data["sampler"], {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15})
         self.assertTrue(any("deprecated" in w.lower() or "comfyui" in w.lower() for w in data.get("warnings", [])))

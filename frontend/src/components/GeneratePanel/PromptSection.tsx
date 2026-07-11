@@ -20,10 +20,9 @@ function modelFromWandChoice(choice: string, current: string) {
 }
 
 export default function PromptSection() {
-  const { params, setParam, setParams, setLoras, setPromptBusy, moodboardSuggestions, setMoodboardSuggestions } = useStore()
+  const { params, setParam, setParams, setPromptBusy, moodboardSuggestions, setMoodboardSuggestions } = useStore()
   const [expanding, setExpanding] = useState(false)
   const [planning, setPlanning] = useState(false)
-  const [xperimenting, setXperimenting] = useState(false)
   const [plan, setPlan] = useState<PromptPlan | null>(null)
   const [notice, setNotice] = useState<{ message: string; severity: 'success' | 'warning' | 'error' } | null>(null)
   const [preWandPrompt, setPreWandPrompt] = useState('')
@@ -33,6 +32,9 @@ export default function PromptSection() {
   const [wandDevice, setWandDevice] = useState<'auto' | 'cuda' | 'cpu'>('auto')
   const [showWandAdvanced, setShowWandAdvanced] = useState(false)
   const [showPromptTools, setShowPromptTools] = useState(false)
+  // Snapshot of server-side wand settings so we only PUT /api/settings (an
+  // admin-only endpoint) when the user actually changed something here.
+  const [serverWand, setServerWand] = useState<{ model: string; backend: string; llm: string; device: string } | null>(null)
 
   useEffect(() => {
     apiFetch.settings()
@@ -41,6 +43,12 @@ export default function PromptSection() {
         setWandBackend(settings.prompt_expander_backend ?? 'local')
         setLocalLlmBackend(settings.local_llm_backend ?? 'comfy')
         setWandDevice(settings.local_qwen_device ?? 'auto')
+        setServerWand({
+          model: settings.local_qwen_model_id ?? '',
+          backend: settings.prompt_expander_backend ?? 'local',
+          llm: settings.local_llm_backend ?? 'comfy',
+          device: settings.local_qwen_device ?? 'auto',
+        })
       })
       .catch(() => undefined)
   }, [])
@@ -51,13 +59,25 @@ export default function PromptSection() {
     setExpanding(true)
     setPromptBusy(true)
     try {
-      await apiFetch.updateSettings({
-        prompt_expander_backend: wandBackend,
-        local_llm_backend: localLlmBackend,
-        local_qwen_model_id: wandModel,
-        local_qwen_device: wandDevice,
-      })
-      const { expanded, changed, error, backend, suggested_moodboards } = await apiFetch.expandPrompt(params.prompt)
+      const wandChanged = !serverWand
+        || serverWand.model !== wandModel || serverWand.backend !== wandBackend
+        || serverWand.llm !== localLlmBackend || serverWand.device !== wandDevice
+      if (wandChanged) {
+        // Settings PUT is admin-only in share mode. Non-admins still get the
+        // wand: the chosen backend rides along in the expand request instead.
+        try {
+          await apiFetch.updateSettings({
+            prompt_expander_backend: wandBackend,
+            local_llm_backend: localLlmBackend,
+            local_qwen_model_id: wandModel,
+            local_qwen_device: wandDevice,
+          })
+          setServerWand({ model: wandModel, backend: wandBackend, llm: localLlmBackend, device: wandDevice })
+        } catch {
+          setNotice({ severity: 'warning', message: 'Wand settings are admin-only; using the server defaults for this expansion.' })
+        }
+      }
+      const { expanded, changed, error, backend, suggested_moodboards } = await apiFetch.expandPrompt(params.prompt, wandBackend)
       setMoodboardSuggestions(suggested_moodboards ?? [])
       if (changed && expanded) {
         setPreWandPrompt(originalPrompt)
@@ -129,63 +149,8 @@ export default function PromptSection() {
     }
   }
 
-  const handleXperiment = async () => {
-    if (xperimenting) return
-    setXperimenting(true)
-    try {
-      const result = await apiFetch.setupXperiment()
-      setWandModel(result.local_qwen_model_id ?? ABLITERATED_QWEN)
-      apiFetch.loras().then(setLoras).catch(() => undefined)
-      const xperimentLoras = (result.loras?.length ? result.loras : [result.lora]).map(lora => ({
-        name: lora.name,
-        filename: lora.filename,
-        strength: lora.strength,
-        enabled: true,
-        block_filter: lora.block_filter ?? (lora.name === 'Krea2-realism-V1' ? 'late' : 'style_safe'),
-      }))
-      const xperimentLoraNames = new Set(xperimentLoras.map(lora => lora.name))
-      const configuredEngine = result.diffusion_engine ?? params.diffusion_engine
-      const configuredQuantization = result.quantization ?? (configuredEngine === 'native_int8_convrot' ? 'int8' : configuredEngine === 'native_gguf' ? 'gguf' : 'fp8')
-      const keepRaw = params.checkpoint === 'raw' || params.model_profile === 'krea_raw'
-      setParams({
-        diffusion_engine: configuredEngine,
-        model_profile: keepRaw ? 'krea_raw' : 'krea_turbo',
-        checkpoint: keepRaw ? 'raw' : 'turbo',
-        quantization: configuredEngine === 'native_int8_convrot' ? 'int8' : configuredEngine === 'native_gguf' ? 'gguf' : keepRaw ? params.quantization : configuredQuantization,
-        steps: result.sampler.steps,
-        cfg: result.sampler.cfg,
-        mu: keepRaw ? null : 1.15,
-        sampler: result.sampler.sampler as typeof params.sampler,
-        scheduler: result.sampler.scheduler as typeof params.scheduler,
-        res4lyf_sampler: result.res4lyf?.sampler_name ?? '',
-        res4lyf_eta: result.res4lyf?.eta ?? 0.5,
-        res4lyf_bongmath: result.res4lyf?.bongmath ?? false,
-        use_prompt_expander: result.use_prompt_expander ?? false,
-        negative_prompt: '',
-        loras: [
-          ...params.loras.filter(lora => !xperimentLoraNames.has(lora.name)),
-          ...xperimentLoras,
-        ],
-      })
-      const skipped = result.assets.filter(asset => asset.skipped).length
-      const notes = [result.benchmark_note, ...result.warnings].filter(Boolean).join(' ')
-      setNotice({
-        severity: 'success',
-        message: `Xperiment Settings applied. ${skipped}/${result.assets.length} assets were already installed.${notes ? ` Notes: ${notes}` : ''}`,
-      })
-    } catch (err: any) {
-      const status = err?.response?.status
-      const detail = err?.response?.data?.detail
-      setNotice({
-        severity: 'error',
-        message: status === 405
-          ? 'Xperiment setup route is stale. Restart run.bat so the backend and browser bundle both use the latest code.'
-          : detail ?? err.message ?? 'Xperiment setup failed.',
-      })
-    } finally {
-      setXperimenting(false)
-    }
-  }
+  // Xperiment setup lives in QuickPresets (the "Xperiment" chip); the old
+  // duplicate handler here was never wired to any UI and has been removed.
 
   return (
     <Stack spacing={1}>

@@ -50,11 +50,12 @@ export default function UpscalePanel() {
   const [busy, setBusy] = useState<'reading' | 'describing' | null>(null)
   const [msg, setMsg] = useState<{ severity: 'success' | 'info' | 'error'; text: string } | null>(null)
 
-  // Entering the Upscale tab puts Generate into Mr. Flow mode; leaving resets it
-  // so the other Create tabs aren't stuck upscaling.
+  // Entering the Upscale tab puts Generate into Mr. Flow mode; leaving resets
+  // the mode but KEEPS the uploaded source image, so briefly switching tabs
+  // doesn't throw away the user's upload.
   useEffect(() => {
     setParams({ mrflow: true, god_mode: false, mode: 'txt2img' })
-    return () => setParams({ mrflow: false, init_image_b64: '' })
+    return () => setParams({ mrflow: false })
   }, [setParams])
 
   const readFile = (file: File): Promise<string> => new Promise((resolve, reject) => {

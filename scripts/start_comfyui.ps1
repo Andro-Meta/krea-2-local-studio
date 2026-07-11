@@ -1,6 +1,6 @@
 # Starts the ComfyUI image engine (if not already running) and waits until it
 # answers on /system_stats. Called by run.bat so the whole Krea 2 stack comes
-# up with a single command. No-op if KREA_USE_COMFY=0 or ComfyUI isn't present.
+# up with a single command.
 param(
     [int]$Port = 8188,
     [int]$TimeoutSec = 180
@@ -11,6 +11,25 @@ $root = Split-Path -Parent $PSScriptRoot
 $comfyDir = Join-Path $root "ComfyUI"
 $py = Join-Path $comfyDir "venv\Scripts\python.exe"
 $main = Join-Path $comfyDir "main.py"
+
+function Write-ComfyRuntimeStatus {
+    param([int]$FallbackPid = 0)
+    try {
+        $stats = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/system_stats" -TimeoutSec 4
+        $argv = @($stats.system.argv)
+        $mode = if ($argv -contains "--highvram") { "HIGH_VRAM" } `
+            elseif ($argv -contains "--lowvram") { "LOW_VRAM" } `
+            elseif ($argv -contains "--novram") { "NO_VRAM" } `
+            else { "NORMAL_VRAM" }
+        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $runtimePid = if ($listener) { [int]$listener.OwningProcess } else { $FallbackPid }
+        Write-Host "  Effective ComfyUI: $mode | PID $runtimePid"
+        Write-Host "  Set vram state to: $mode"
+    } catch {
+        Write-Host "  Effective ComfyUI mode could not be queried."
+    }
+}
 
 # Load KREA_COMFY_* tuning flags from .env (run.bat does not export them into
 # the environment). Real environment variables keep priority over .env.
@@ -40,13 +59,14 @@ if ($comfyUrl -match '^https?://(?:127\.0\.0\.1|localhost):(\d+)') {
 }
 
 if (-not (Test-Path $main) -or -not (Test-Path $py)) {
-    Write-Host "  ComfyUI not found at $comfyDir - skipping (set KREA_USE_COMFY=0 to use the native engine)."
+    Write-Host "  ComfyUI not found at $comfyDir - generation cannot start."
     exit 0
 }
 
 $listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($listening) {
     Write-Host "  ComfyUI already running on port $Port."
+    Write-ComfyRuntimeStatus
     exit 0
 }
 
@@ -103,15 +123,16 @@ $comfyErr = Join-Path $logDir "comfyui.err.log"
 # Hidden window: ComfyUI's output is already captured to the log files below
 # and mirrored into the main run.bat console by run_with_log --tail, so its
 # own console window adds nothing. Keeps run.bat to a single visible terminal.
-Start-Process -FilePath $py -ArgumentList (@("main.py", "--enable-manager", "--port", "$Port") + $extra) `
+$process = Start-Process -FilePath $py -ArgumentList (@("main.py", "--enable-manager", "--port", "$Port") + $extra) `
     -WorkingDirectory $comfyDir -WindowStyle Hidden `
-    -RedirectStandardOutput $comfyOut -RedirectStandardError $comfyErr | Out-Null
+    -RedirectStandardOutput $comfyOut -RedirectStandardError $comfyErr -PassThru
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 while ((Get-Date) -lt $deadline) {
     try {
         Invoke-WebRequest -Uri "http://127.0.0.1:$Port/system_stats" -UseBasicParsing -TimeoutSec 2 | Out-Null
         Write-Host "  ComfyUI ready."
+        Write-ComfyRuntimeStatus -FallbackPid $process.Id
         exit 0
     } catch {
         Start-Sleep -Seconds 2

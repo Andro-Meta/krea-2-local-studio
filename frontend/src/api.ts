@@ -13,6 +13,25 @@ export function publicUrl(path: string): string {
 
 const api = axios.create({ baseURL: publicBasePath() })
 
+// Session expiry lands as 401 on every call. Instead of each component
+// showing its own cryptic failure, send the user to the login page once.
+// The auth probe itself (/api/auth/me) is exempt: it legitimately returns
+// 401 in logged-out states that don't require a redirect (e.g. local mode
+// probing) and is handled by its callers.
+api.interceptors.response.use(
+  response => response,
+  error => {
+    const status = error?.response?.status
+    const url: string = error?.config?.url ?? ''
+    if (status === 401 && typeof window !== 'undefined'
+        && !url.includes('/api/auth/')
+        && !window.location.pathname.endsWith('/login')) {
+      window.location.href = `${publicBasePath()}/login`
+    }
+    return Promise.reject(error)
+  },
+)
+
 export interface GenerationRequest {
   prompt: string
   negative_prompt?: string
@@ -192,6 +211,9 @@ export interface GenerationJob {
 
 export interface QueueJob {
   job_id: string
+  /** True when the job belongs to the requesting user (or auth is off).
+      Foreign jobs arrive anonymized: position/progress only, no content. */
+  mine: boolean
   status: string
   progress: number
   queue_position?: number | null
@@ -203,6 +225,10 @@ export interface QueueJob {
   is_batch: boolean
   batch_count?: number | null
   num_images: number
+  /** Unix seconds; only present on your own jobs. */
+  queued_at?: number | null
+  started_at?: number | null
+  finished_at?: number | null
 }
 
 export interface BatchPlan {
@@ -403,7 +429,7 @@ export interface SystemReport {
   disk_free_gb?: number
   gpu_processes: string[]
   gpu_process_details?: Array<{ pid: number; name: string; used_memory_gb?: number }>
-  model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null; text_encoder_source?: { kind: string; path: string; runtime?: string; status?: string } | null; memory?: Record<string, any> }
+  model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null; text_encoder_source?: { kind: string; path: string; runtime?: string; status?: string } | null; memory?: Record<string, any>; backend?: 'comfyui' | 'native' }
   attention_acceleration?: { status: string; available: boolean; reason: string; recommendation: string }
   gpu_capabilities?: { name: string; arch: string; compute_capability: string | null; vram_total_gb: number | null; supports_bf16: boolean; supports_fp8_compute: boolean; supports_nvfp4: boolean; fp8_storage_only: boolean; fp8_note: string }
   recommended_runtime?: { quantization: string; blocks_to_swap: number; max_tier: string; notes: string }
@@ -789,13 +815,13 @@ export const apiFetch = {
     api.post<{ ok: boolean; backend: string; expanded: string }>('/api/gguf/helper-test', {}, { timeout: 180000 }).then(r => r.data),
 
   ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; configured: boolean }> }>('/api/gguf/status').then(r => r.data),
-  int8Status: () => api.get<{ ok: boolean; torch: string; cuda?: string | null; torch_int_mm: boolean; comfy_kitchen: boolean; triton: boolean; diffusion_engine: string; assets: Record<string, QualityAsset & { configured_path: string; inspection?: Record<string, any>; inspection_error?: string }> }>('/api/int8/status').then(r => r.data),
+  int8Status: () => api.get<{ ok: boolean; backend: string; loader: string; diffusion_engine: string; note?: string; assets: Record<string, { installed: boolean; path?: string; configured_path?: string }> }>('/api/int8/status').then(r => r.data),
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
   installTritonWindows: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-triton-windows', {}, { timeout: 600000 }).then(r => r.data),
   installSageAttention: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-sageattention', {}, { timeout: 600000 }).then(r => r.data),
 
-  expandPrompt: (prompt: string) =>
-    api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' | 'gguf-server'; suggested_moodboards?: MoodboardSuggestion[] }>('/api/expand-prompt', { prompt, suggest_moodboards: true }).then(r => r.data),
+  expandPrompt: (prompt: string, backend?: string) =>
+    api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' | 'gguf-server'; suggested_moodboards?: MoodboardSuggestion[]; sign_copy_pass?: boolean | null }>('/api/expand-prompt', { prompt, suggest_moodboards: true, ...(backend ? { backend } : {}) }).then(r => r.data),
   planPrompt: (prompt: string, max_tokens = 700) =>
     api.post<PromptPlan>('/api/plan-prompt', { prompt, max_tokens }).then(r => r.data),
   promptingGuide: () =>
@@ -845,14 +871,16 @@ export const apiFetch = {
     ).then(r => r.data),
 }
 
-export function connectWS(jobId: string, onMessage: (data: unknown) => void, onClose?: () => void): WebSocket {
+export function connectWS(jobId: string, onMessage: (data: unknown) => void, onClose?: (ev?: CloseEvent) => void): WebSocket {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const host = window.location.host
   const ws = new WebSocket(`${proto}://${host}${publicBasePath()}/ws/${jobId}`)
   ws.onmessage = e => onMessage(JSON.parse(e.data))
   if (onClose) {
-    ws.onclose = onClose
-    ws.onerror = onClose
+    // Forward the CloseEvent so callers can tell a policy rejection (1008:
+    // not your job / not signed in) from a transient network drop.
+    ws.onclose = ev => onClose(ev)
+    ws.onerror = () => onClose(undefined)
   }
   return ws
 }

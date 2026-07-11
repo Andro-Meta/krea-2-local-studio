@@ -107,6 +107,13 @@ export default function DimensionSection() {
             )
           })}
         </Box>
+        {advice && (
+          <Alert severity={advice.fits ? 'info' : 'warning'} sx={{ py: 0 }}>
+            {advice.fits
+              ? `2K fits in VRAM${advice.free_vram_gb != null ? ` (~${advice.free_vram_gb} GB free)` : ''}.`
+              : `2K may exceed free VRAM${advice.free_vram_gb != null ? ` (~${advice.free_vram_gb} GB free)` : ''} — generation can slow down or fail. 1K + upscale is the safer path.`}
+          </Alert>
+        )}
         <Grid container spacing={1.5}>
           <Grid item xs={6}>
             <TextField

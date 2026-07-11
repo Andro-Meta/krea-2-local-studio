@@ -9,6 +9,10 @@ import {
   CardMedia,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Grid,
   IconButton,
   InputAdornment,
@@ -79,6 +83,12 @@ export default function MoodboardsPanel() {
   const [auth, setAuth] = useState<AuthSession | null>(null)
   const [mashupIds, setMashupIds] = useState<number[]>([])
   const [mashupWeights, setMashupWeights] = useState<Record<number, number>>({})
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [customFiles, setCustomFiles] = useState<File[] | null>(null)
+  const [customTitle, setCustomTitle] = useState('')
+  const [customTaste, setCustomTaste] = useState('')
+  const [customKeywords, setCustomKeywords] = useState('')
   const customFileRef = useRef<HTMLInputElement>(null)
   const { params, setParams, setTab, createMode, setCreateMode, moodboardView, setMoodboardView } = useStore()
   const isAdmin = auth?.role === 'admin'
@@ -146,8 +156,12 @@ export default function MoodboardsPanel() {
   }, [])
 
   const toggleFavorite = async (board: MoodboardItem) => {
-    await apiFetch.setMoodboardFavorite(board.id, !board.favorite)
-    setItems(prev => prev.map(item => item.id === board.id ? { ...item, favorite: !item.favorite } : item))
+    try {
+      await apiFetch.setMoodboardFavorite(board.id, !board.favorite)
+      setItems(prev => prev.map(item => item.id === board.id ? { ...item, favorite: !item.favorite } : item))
+    } catch (e: any) {
+      setMessage({ severity: 'error', text: moodboardErrorMessage(e, 'Could not update favorite') })
+    }
   }
 
   const refreshCatalog = async () => {
@@ -170,10 +184,13 @@ export default function MoodboardsPanel() {
     }
   }
 
-  const importUrls = async () => {
-    const text = window.prompt('Paste one or more Krea moodboard URLs, separated by commas or new lines.')
-    if (!text?.trim()) return
-    const urls = text.split(/[\n,]+/).map(url => url.trim()).filter(Boolean)
+  const importUrls = () => setImportDialogOpen(true)
+
+  const runImportUrls = async () => {
+    const urls = importText.split(/[\n,]+/).map(url => url.trim()).filter(Boolean)
+    if (!urls.length) return
+    setImportDialogOpen(false)
+    setImportText('')
     setBusy('Importing moodboards')
     setMessage(null)
     try {
@@ -206,21 +223,28 @@ export default function MoodboardsPanel() {
     }
   }
 
-  const createCustomMoodboard = async (event: ChangeEvent<HTMLInputElement>) => {
+  const createCustomMoodboard = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []).slice(0, MAX_CUSTOM_MOODBOARD_REFS)
     event.target.value = ''
     if (!files.length) return
-    const title = window.prompt('Name this custom moodboard. Leave blank to let local Qwen name it.', '') ?? ''
-    const tasteProfile = window.prompt('Optional taste profile / style description.', '') ?? ''
-    const keywordsText = window.prompt('Optional keywords, separated by commas.', '') ?? ''
+    setCustomFiles(files)
+    setCustomTitle('')
+    setCustomTaste('')
+    setCustomKeywords('')
+  }
+
+  const runCreateCustomMoodboard = async () => {
+    const files = customFiles ?? []
+    setCustomFiles(null)
+    if (!files.length) return
     setBusy('Saving custom moodboard')
     setMessage(null)
     try {
       const image_b64s = (await Promise.all(files.map(fileToBase64))).filter(Boolean)
       const created = await apiFetch.createCustomMoodboard({
-        title: title.trim(),
-        taste_profile: tasteProfile.trim(),
-        keywords: keywordsText.split(',').map(keyword => keyword.trim()).filter(Boolean),
+        title: customTitle.trim(),
+        taste_profile: customTaste.trim(),
+        keywords: customKeywords.split(',').map(keyword => keyword.trim()).filter(Boolean),
         image_b64s,
       })
       setMoodboardView('custom')
@@ -262,7 +286,6 @@ export default function MoodboardsPanel() {
       const mode = target === 'txt2img' ? 'txt2img' : 'redraw'
       setParams({
         mode,
-        diffusion_engine: 'native_pytorch',
         mood: '',
         selected_moodboard_ids: [board.id],
         moodboard_uuids: board.uuid ? [board.uuid] : [],
@@ -572,6 +595,49 @@ export default function MoodboardsPanel() {
           </Box>
         )}
       </Stack>
+
+      <Dialog open={importDialogOpen} onClose={() => setImportDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Import moodboards by URL</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus fullWidth multiline minRows={3} sx={{ mt: 1 }}
+            label="Krea moodboard URLs"
+            placeholder={'https://www.krea.ai/moodboard/…\nhttps://www.krea.ai/moodboard/…'}
+            helperText="One or more URLs, separated by commas or new lines."
+            value={importText}
+            onChange={e => setImportText(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setImportDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={runImportUrls} disabled={!importText.trim()}>Import</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!customFiles} onClose={() => setCustomFiles(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>New custom moodboard{customFiles ? ` · ${customFiles.length} image${customFiles.length === 1 ? '' : 's'}` : ''}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              autoFocus fullWidth label="Name" value={customTitle}
+              onChange={e => setCustomTitle(e.target.value)}
+              helperText="Leave blank to let the local AI name it from your images."
+            />
+            <TextField
+              fullWidth multiline minRows={2} label="Taste profile / style description (optional)"
+              value={customTaste} onChange={e => setCustomTaste(e.target.value)}
+            />
+            <TextField
+              fullWidth label="Keywords (optional, comma-separated)" value={customKeywords}
+              onChange={e => setCustomKeywords(e.target.value)}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCustomFiles(null)}>Cancel</Button>
+          <Button variant="contained" onClick={runCreateCustomMoodboard}>Save moodboard</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

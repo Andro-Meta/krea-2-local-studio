@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import {
   Accordion, AccordionDetails, AccordionSummary,
-  Alert, Box, Button, Chip, FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, ToggleButton, ToggleButtonGroup, Tooltip, Typography,
+  Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle,
+  FormControlLabel, Grid, MenuItem, Slider, Stack, Switch, TextField, ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined'
@@ -62,6 +63,7 @@ export default function ParameterSection() {
   const isLargeOutput = Math.max(params.width, params.height) >= 2560
   const [catalog, setCatalog] = useState<SamplerCatalog | null>(null)
   const [batchPlan, setBatchPlan] = useState<BatchPlan | null>(null)
+  const [parallelConsentOpen, setParallelConsentOpen] = useState(false)
   useEffect(() => {
     if (isLargeOutput && params.num_images !== 1) setParam('num_images', 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -167,10 +169,18 @@ export default function ParameterSection() {
     setParams({ creativity, ...values })
   }
   const setBatchMode = (batch_mode: typeof params.batch_mode) => {
-    setParams({
-      batch_mode,
-      parallel_batch_confirmed: batch_mode === 'parallel' && Boolean(batchPlan?.allowed),
-    })
+    if (batch_mode === 'parallel' && Boolean(batchPlan?.allowed)) {
+      // Parallel batching trades VRAM headroom for speed — make that an
+      // explicit user decision instead of silently confirming it.
+      setParallelConsentOpen(true)
+      return
+    }
+    setParams({ batch_mode, parallel_batch_confirmed: false })
+  }
+
+  const confirmParallel = () => {
+    setParallelConsentOpen(false)
+    setParams({ batch_mode: 'parallel', parallel_batch_confirmed: true })
   }
 
   return (
@@ -974,6 +984,24 @@ export default function ParameterSection() {
         </Accordion>
         )}
       </Stack>
+
+      <Dialog open={parallelConsentOpen} onClose={() => setParallelConsentOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Enable parallel batch?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+            All {params.num_images} images render in a single pass. That's faster overall but uses much more VRAM —
+            if it doesn't fit, the whole batch can fail instead of one image. Safe queue renders them one at a time
+            and shares the GPU fairly with other users.
+          </Typography>
+          {batchPlan?.warnings?.length ? (
+            <Alert severity="warning" sx={{ mt: 1.5, py: 0 }}>{batchPlan.warnings.join(' ')}</Alert>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setParallelConsentOpen(false)}>Keep safe queue</Button>
+          <Button variant="contained" onClick={confirmParallel}>Use parallel</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

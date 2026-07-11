@@ -82,7 +82,7 @@ start "" /b %KREA_PYTHON% scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
 echo Local sharing server: http://localhost:%KREA_SERVER_PORT%/krea
 echo ComfyUI image engine: http://localhost:8188
 if not exist "logs" mkdir logs
-for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`) do set "KREA_LOG_STAMP=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%%Y%%m%%d-%%H%%M%%S'))"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
@@ -183,7 +183,7 @@ start "" /b %KREA_PYTHON% scripts\share_startup.py --ready-url http://127.0.0.1:
 
 :: -- Start server -------------------------------------------------------------
 if not exist "logs" mkdir logs
-for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`) do set "KREA_LOG_STAMP=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%%Y%%m%%d-%%H%%M%%S'))"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-local-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea local server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
