@@ -167,6 +167,7 @@ class PromptExpanderDeviceTests(unittest.TestCase):
 
     def test_expand_prompt_local_unloads_after_use(self) -> None:
         import prompt_expander
+        from settings import settings
 
         class FakeTokenizer:
             eos_token_id = 1
@@ -190,6 +191,7 @@ class PromptExpanderDeviceTests(unittest.TestCase):
                 return [[1, 2, 3]]
 
         with (
+            patch.object(settings, "local_llm_backend", "transformers"),
             patch.object(prompt_expander, "_load_local_qwen", return_value=(FakeTokenizer(), None, FakeModel())),
             patch.object(prompt_expander, "unload_local_qwen_after_use") as unload,
         ):

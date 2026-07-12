@@ -911,6 +911,7 @@ class AuxiliaryWorkerTests(unittest.IsolatedAsyncioTestCase):
         generated_image = f"data:image/png;base64,{image_b64}"
 
         with (
+            patch.object(main, "GPU_LEASE", asyncio.Lock()),
             patch.object(main, "_jobs", jobs),
             patch.object(main, "generation_queue", queue),
             patch.object(main, "use_comfy_backend", return_value=True),
@@ -918,6 +919,9 @@ class AuxiliaryWorkerTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "write_generation_breadcrumb"),
             patch.object(main, "clear_generation_breadcrumb"),
             patch.object(main, "expand_prompt_result", return_value=expanded),
+            patch.object(
+                main, "_moodboard_suggestions", new=AsyncMock(return_value=[])
+            ),
             patch.object(
                 main,
                 "describe_image_local",
