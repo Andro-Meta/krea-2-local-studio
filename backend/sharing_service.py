@@ -46,6 +46,41 @@ def public_krea_url(url: str) -> str:
     return base + PUBLIC_PATH + "/"
 
 
+def _krea_funnel_url_from_status(output: str) -> str:
+    """Return the public base URL for the Funnel block that owns ``/krea``.
+
+    ``tailscale funnel status`` starts with a summary of every public listener.
+    The first summary URL may belong to an unrelated service on another port,
+    so URL order alone is not a safe way to select Krea's Funnel.
+    """
+    current_url = ""
+    fallback_urls: list[str] = []
+    for raw_line in str(output or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        header = re.match(r"^(https://\S+?)(?:\s+\(Funnel on\))?$", line)
+        if header:
+            current_url = header.group(1).rstrip("/")
+            fallback_urls.append(current_url)
+            if current_url.endswith(PUBLIC_PATH):
+                return public_krea_url(current_url)
+            continue
+        if current_url and re.match(r"^\|--\s+/krea(?:\s|$)", line, flags=re.I):
+            return public_krea_url(current_url)
+
+    # Older Tailscale versions may print only a direct URL. Prefer an explicit
+    # /krea URL, then the default HTTPS listener rather than an unrelated port.
+    matches = [match.rstrip("/") for match in URL_RE.findall(str(output or ""))]
+    for match in matches:
+        if match.endswith(PUBLIC_PATH):
+            return public_krea_url(match)
+    for match in fallback_urls or matches:
+        if not re.search(r"\.ts\.net:\d+$", match):
+            return public_krea_url(match)
+    return ""
+
+
 def _run_tailscale(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
     ts = find_tailscale()
     if not ts:
@@ -131,10 +166,7 @@ def funnel_status() -> dict:
         return {"installed": False, "running": False, "url": "", "message": "Tailscale is not installed."}
     res = _run_tailscale(["funnel", "status"], timeout=15)
     output = (res.stdout + res.stderr).strip()
-    url = ""
-    for match in URL_RE.findall(output):
-        url = public_krea_url(match)
-        break
+    url = _krea_funnel_url_from_status(output)
     return {
         "installed": True,
         "running": bool(url and PUBLIC_PATH in output),
@@ -172,10 +204,11 @@ def start_funnel(port: int | None = None) -> dict:
         output = "\n".join(messages)
     if res.returncode != 0:
         return {"ok": False, "url": "", "message": output or "Tailscale Funnel failed to start."}
-    url = ""
-    for match in URL_RE.findall(output):
-        url = public_krea_url(match)
-        break
+    url = _krea_funnel_url_from_status(output)
+    if not url:
+        for match in URL_RE.findall(output):
+            url = public_krea_url(match)
+            break
     if not url:
         status = funnel_status()
         url = status.get("url", "")
@@ -265,7 +298,7 @@ def repair_funnel(port: int | None = None) -> dict:
     funnel_result = start_funnel(port) if local.get("ok") and tailscale.get("installed") else {"ok": False, "url": "", "message": "Local Krea or Tailscale is not ready."}
     funnel = funnel_status()
     public_probe = public_funnel_probe(funnel.get("url", "")) if funnel.get("running") else {"ok": False, "message": "Funnel is not running."}
-    if funnel.get("running") and not public_probe.get("ok"):
+    if local.get("ok") and funnel.get("running") and not public_probe.get("ok"):
         # Stale ingress session: re-register the node and probe again. Serve
         # path config (including other apps' Funnel entries) is preserved.
         cycle = cycle_tailscale_connection()

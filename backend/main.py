@@ -1437,7 +1437,13 @@ async def _funnel_health_loop() -> None:
     backoff, and an explicit GUI stop disables repair until Start/Repair."""
     if not SHARE_AUTH_ENABLED:
         return
-    from sharing_service import funnel_status, public_funnel_probe_with_retries, repair_funnel, tailscale_status
+    from sharing_service import (
+        funnel_status,
+        local_krea_target_status,
+        public_funnel_probe_with_retries,
+        repair_funnel,
+        tailscale_status,
+    )
 
     await asyncio.sleep(300)  # share_startup owns the initial bring-up
     loop = asyncio.get_event_loop()
@@ -1445,6 +1451,24 @@ async def _funnel_health_loop() -> None:
         try:
             tailscale = await loop.run_in_executor(None, tailscale_status)
             funnel = await loop.run_in_executor(None, funnel_status)
+            local = await loop.run_in_executor(None, local_krea_target_status)
+            if not local.get("ok"):
+                _funnel_health_monitor.observe(True, now=time.monotonic())
+                logger.warning(
+                    "Skipping Funnel ingress repair because local Krea is not reachable: %s.",
+                    local.get("message", "unknown local failure"),
+                )
+                await asyncio.sleep(300)
+                continue
+            probe: dict = {
+                "ok": False,
+                "url": funnel.get("url", ""),
+                "message": (
+                    "Tailscale disconnected."
+                    if not tailscale.get("connected")
+                    else "Krea Funnel route is not configured."
+                ),
+            }
             probe_ok: bool | None = None
             if tailscale.get("connected") and funnel.get("running") and funnel.get("url"):
                 probe = await loop.run_in_executor(
@@ -1454,14 +1478,25 @@ async def _funnel_health_loop() -> None:
                 probe_ok = bool(probe.get("ok"))
             healthy = bool(tailscale.get("connected")) and funnel_interval_healthy(funnel, probe_ok)
             now = time.monotonic()
+            previous_failures = _funnel_health_monitor.state.failed_intervals
             repair_due = _funnel_health_monitor.observe(healthy, now=now)
+            if healthy and previous_failures:
+                logger.info(
+                    "Sharing health recovered: url=%s after %d failed interval(s).",
+                    funnel.get("url", ""),
+                    previous_failures,
+                )
             if _funnel_health_monitor.enabled and not healthy:
                 state = _funnel_health_monitor.state
                 logger.warning(
-                    "Sharing health interval failed (%d/%d); repair_due=%s.",
+                    "Sharing health interval failed (%d/%d); repair_due=%s; "
+                    "backend_state=%s; url=%s; probe=%s.",
                     state.failed_intervals,
                     state.failure_threshold,
                     repair_due,
+                    tailscale.get("backend_state", "unknown"),
+                    probe.get("url") or funnel.get("url", ""),
+                    probe.get("message", "unknown failure"),
                 )
             if repair_due:
                 state = _funnel_health_monitor.state
@@ -1473,7 +1508,11 @@ async def _funnel_health_loop() -> None:
                     delay,
                 )
                 result = await loop.run_in_executor(None, repair_funnel)
-                logger.info("Funnel self-heal completed: ok=%s.", result.get("ok"))
+                logger.info(
+                    "Funnel self-heal completed: ok=%s; message=%s.",
+                    result.get("ok"),
+                    result.get("message", ""),
+                )
         except Exception:
             logger.exception("Funnel health interval failed unexpectedly")
         await asyncio.sleep(300)

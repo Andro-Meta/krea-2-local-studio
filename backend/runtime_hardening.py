@@ -19,7 +19,10 @@ class FunnelHealthState:
             self.repair_count = 0
             self.next_repair_at = 0.0
             return False
-        self.failed_intervals += 1
+        self.failed_intervals = min(
+            self.failure_threshold,
+            self.failed_intervals + 1,
+        )
         return self.repair_due(now=now)
 
     def repair_due(self, *, now: float) -> bool:

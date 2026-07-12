@@ -53,6 +53,18 @@ class FunnelHealthStateTests(unittest.TestCase):
         self.assertFalse(state.repair_due(now=4799))
         self.assertTrue(state.repair_due(now=4800))
 
+    def test_failure_counter_is_capped_while_repair_is_backed_off(self) -> None:
+        from runtime_hardening import FunnelHealthState
+
+        state = FunnelHealthState()
+        state.record_repair(now=0)
+        for now in (1, 2, 3, 4, 5, 6):
+            state.record_probe(False, now=now)
+
+        self.assertEqual(state.failed_intervals, state.failure_threshold)
+        self.assertFalse(state.repair_due(now=299))
+        self.assertTrue(state.repair_due(now=300))
+
     def test_manual_stop_disables_repairs_but_disconnect_repairs_after_three_intervals(self) -> None:
         from runtime_hardening import FunnelHealthMonitor
 

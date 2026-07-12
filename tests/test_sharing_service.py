@@ -14,6 +14,37 @@ import sharing_service  # noqa: E402
 
 
 class SharingServiceTests(unittest.TestCase):
+    def test_funnel_status_selects_the_route_that_owns_krea(self) -> None:
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = """
+# Funnel on:
+#     - https://diffusion.tail.ts.net:10000
+#     - https://diffusion.tail.ts.net
+#     - https://diffusion.tail.ts.net:8443
+
+https://diffusion.tail.ts.net:10000 (Funnel on)
+|-- / proxy http://127.0.0.1:5055
+
+https://diffusion.tail.ts.net (Funnel on)
+|-- /     proxy http://127.0.0.1:8186
+|-- /krea proxy http://127.0.0.1:33904
+
+https://diffusion.tail.ts.net:8443 (Funnel on)
+|-- / proxy http://127.0.0.1:8096
+"""
+
+        with (
+            patch("sharing_service.find_tailscale", return_value="tailscale"),
+            patch("sharing_service._run_tailscale", return_value=Result()),
+        ):
+            status = sharing_service.funnel_status()
+
+        self.assertTrue(status["running"])
+        self.assertEqual(status["url"], "https://diffusion.tail.ts.net/krea/")
+        self.assertNotIn(":10000", status["url"])
+
     def test_tailscale_connected_requires_running_backend_and_identity(self) -> None:
         class Result:
             returncode = 0
@@ -247,6 +278,40 @@ class SharingServiceTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["needs_admin_service_restart"])
         self.assertIn("restart", result["message"].lower())
+
+    def test_repair_does_not_cycle_tailscale_when_local_krea_is_down(self) -> None:
+        with (
+            patch(
+                "sharing_service.local_krea_target_status",
+                return_value={"ok": False, "auth_required": False, "message": "offline"},
+            ),
+            patch(
+                "sharing_service.tailscale_status",
+                return_value={"installed": True, "connected": True},
+            ),
+            patch("sharing_service.tailscale_up", return_value={"ok": True}),
+            patch(
+                "sharing_service.start_funnel",
+                return_value={"ok": False, "url": "", "message": "not started"},
+            ),
+            patch(
+                "sharing_service.funnel_status",
+                return_value={
+                    "installed": True,
+                    "running": True,
+                    "url": "https://diffusion.tail.ts.net/krea/",
+                },
+            ),
+            patch(
+                "sharing_service.public_funnel_probe",
+                return_value={"ok": False, "message": "502"},
+            ),
+            patch("sharing_service.cycle_tailscale_connection") as cycle,
+        ):
+            result = sharing_service.repair_funnel(port=45678)
+
+        self.assertFalse(result["ok"])
+        cycle.assert_not_called()
 
 
 if __name__ == "__main__":

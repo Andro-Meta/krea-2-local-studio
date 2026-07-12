@@ -71,7 +71,9 @@ class ShareServerSmokeTests(unittest.TestCase):
             )
             try:
                 base = f"http://127.0.0.1:{port}"
-                deadline = time.time() + 45
+                # Cold Windows imports and first-time SQLite initialization can
+                # exceed 45 seconds on a busy machine/CI runner.
+                deadline = time.time() + 90
                 while time.time() < deadline:
                     try:
                         urllib.request.urlopen(f"{base}/krea/api/auth/me", timeout=1).close()
