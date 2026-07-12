@@ -31,6 +31,11 @@ else:
 
 from fastapi.testclient import TestClient  # noqa: E402
 from backend import main  # noqa: E402
+from backend.gpu_task_queue import GpuTaskQueue  # noqa: E402
+from backend.gpu_tasks import MOODBOARD_GUIDANCE  # noqa: E402
+from support import mock_atomic_cancel_capability  # noqa: E402
+
+mock_atomic_cancel_capability(main)
 
 if inserted_torch_stub:
     sys.modules.pop("torch", None)
@@ -57,6 +62,7 @@ MOODBOARD_ITEM = {
     "qwen_guidance_at": "",
     "qwen_guidance_version": 0,
 }
+TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 
 
 class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
@@ -133,7 +139,7 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
                 "title": "My Board",
                 "taste_profile": "Neon style.",
                 "keywords": ["neon"],
-                "image_b64s": ["abc123"],
+                "image_b64s": [TINY_PNG_B64],
             })
             deleted = client.delete("/api/moodboards/custom/8")
 
@@ -159,72 +165,54 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
             404,
         )
 
-    async def test_custom_moodboard_auto_authoring_failure_is_clear(self) -> None:
+    async def test_custom_moodboard_auto_authoring_is_queued(self) -> None:
         client = TestClient(main.app)
-
-        async def fake_create(**_: object) -> dict:
-            raise RuntimeError("Local Qwen unavailable")
-
-        with patch.object(main, "create_custom_moodboard", side_effect=fake_create):
+        jobs: dict[str, dict] = {}
+        queue = GpuTaskQueue(lambda _task_id, _payload: None)
+        with (
+            patch.object(main, "_jobs", jobs),
+            patch.object(main, "generation_queue", queue),
+        ):
             created = client.post("/api/moodboards/custom", json={
                 "title": "",
                 "taste_profile": "",
                 "keywords": [],
-                "image_b64s": ["abc123"],
+                "image_b64s": [TINY_PNG_B64],
             })
 
-        self.assertEqual(created.status_code, 502)
-        self.assertIn("Qwen custom moodboard authoring failed", created.json()["detail"])
+        self.assertEqual(created.status_code, 202)
+        self.assertEqual(created.json()["task_kind"], MOODBOARD_GUIDANCE)
+        self.assertEqual(jobs[created.json()["job_id"]]["operation"], "custom")
 
-    async def test_qwen_guidance_routes_generate_single_and_missing(self) -> None:
+    async def test_qwen_guidance_routes_queue_single_and_missing(self) -> None:
         client = TestClient(main.app)
-        guidance = {
-            "prompt_guidance": "Use gritty documentary realism.",
-            "negative_guidance": "Avoid glossy studio light.",
-            "style_axes": ["documentary realism"],
-            "conditioning_notes": ["Use references for texture."],
-            "source_summary": "Qwen guidance.",
-            "guidance_version": 1,
-        }
-
-        async def fake_single(moodboard_id: int, **_: object) -> dict:
-            return {**MOODBOARD_ITEM, "id": moodboard_id, "qwen_guidance": guidance, "qwen_guidance_version": 1}
-
-        async def fake_missing(**_: object) -> dict:
-            return {"processed": 1, "items": [{**MOODBOARD_ITEM, "qwen_guidance": guidance, "qwen_guidance_version": 1}]}
-
+        jobs: dict[str, dict] = {}
+        queue = GpuTaskQueue(lambda _task_id, _payload: None)
         with (
-            patch.object(main, "generate_and_store_moodboard_qwen_guidance", side_effect=fake_single),
-            patch.object(main, "generate_missing_moodboard_qwen_guidance", side_effect=fake_missing),
+            patch.object(main, "_jobs", jobs),
+            patch.object(main, "generation_queue", queue),
         ):
             single = client.post("/api/moodboards/7/qwen-guidance")
             missing = client.post("/api/moodboards/qwen-guidance-missing", json={"limit": 5})
 
-        self.assertEqual(single.status_code, 200)
-        self.assertEqual(single.json()["qwen_guidance"]["prompt_guidance"], "Use gritty documentary realism.")
-        self.assertEqual(missing.status_code, 200)
-        self.assertEqual(missing.json()["processed"], 1)
+        self.assertEqual(single.status_code, 202)
+        self.assertEqual(single.json()["task_kind"], MOODBOARD_GUIDANCE)
+        self.assertEqual(missing.status_code, 202)
+        self.assertEqual(missing.json()["task_kind"], MOODBOARD_GUIDANCE)
 
-    async def test_mashup_route_creates_custom_moodboard(self) -> None:
+    async def test_mashup_route_queues_guidance(self) -> None:
         client = TestClient(main.app)
-        custom_item = {
-            **MOODBOARD_ITEM,
-            "id": 12,
-            "source": "custom",
-            "title": "Gritty Neon Documentary",
-            "qwen_guidance": {"prompt_guidance": "Blend gritty realism with neon."},
-            "qwen_guidance_version": 1,
-        }
-
-        async def fake_mashup(**_: object) -> dict:
-            return custom_item
-
-        with patch.object(main, "create_mashup_moodboard", side_effect=fake_mashup):
+        jobs: dict[str, dict] = {}
+        queue = GpuTaskQueue(lambda _task_id, _payload: None)
+        with (
+            patch.object(main, "_jobs", jobs),
+            patch.object(main, "generation_queue", queue),
+        ):
             created = client.post("/api/moodboards/mashup", json={"moodboard_ids": [7, 8], "weights": [0.7, 0.3]})
 
-        self.assertEqual(created.status_code, 200)
-        self.assertEqual(created.json()["source"], "custom")
-        self.assertEqual(created.json()["title"], "Gritty Neon Documentary")
+        self.assertEqual(created.status_code, 202)
+        self.assertEqual(created.json()["task_kind"], MOODBOARD_GUIDANCE)
+        self.assertEqual(jobs[created.json()["job_id"]]["operation"], "mashup")
 
 
 if __name__ == "__main__":

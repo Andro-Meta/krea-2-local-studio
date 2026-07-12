@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Box, CircularProgress, Fab, Grid, IconButton, Stack, Tab, Tabs, Tooltip, Typography } from '@mui/material'
 import FavoriteIcon from '@mui/icons-material/Favorite'
 import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder'
@@ -37,6 +37,26 @@ export default function GalleryPanel() {
   }, [favoritesOnly])
 
   useEffect(() => { load(1) }, [favoritesOnly])
+
+  // Infinite scroll: fetch the next page when the sentinel under the grid
+  // approaches the viewport (same pattern as the Moodboards tab).
+  const loadMoreRef = useRef<HTMLDivElement | null>(null)
+  const loadNextRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    loadNextRef.current = () => {
+      if (!loading && items.length < total) load(page + 1)
+    }
+  }, [loading, items.length, total, page, load])
+  useEffect(() => {
+    const sentinel = loadMoreRef.current
+    if (!sentinel) return
+    const observer = new IntersectionObserver(
+      entries => { if (entries.some(entry => entry.isIntersecting)) loadNextRef.current() },
+      { rootMargin: '600px' },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     const onUpdated = (event: Event) => {
@@ -111,7 +131,11 @@ export default function GalleryPanel() {
         </Box>
       ) : items.length === 0 ? (
         <Box sx={{ textAlign: 'center', py: 8 }}>
-          <Typography sx={{ color: 'text.secondary' }}>No images yet. Generate something!</Typography>
+          <Typography sx={{ color: 'text.secondary' }}>
+            {favoritesOnly
+              ? 'No favorites yet — tap the heart on any image to keep it here.'
+              : 'No images yet. Generate something!'}
+          </Typography>
         </Box>
       ) : (
         <Grid container spacing={1}>
@@ -172,6 +196,7 @@ export default function GalleryPanel() {
         </Grid>
       )}
 
+      <Box ref={loadMoreRef} sx={{ minHeight: 1 }} />
       {items.length < total && (
         <Box sx={{ textAlign: 'center', mt: 2 }}>
           <Fab variant="extended" size="small" onClick={() => load(page + 1)} disabled={loading}>

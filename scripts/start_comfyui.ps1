@@ -1,6 +1,6 @@
 # Starts the ComfyUI image engine (if not already running) and waits until it
 # answers on /system_stats. Called by run.bat so the whole Krea 2 stack comes
-# up with a single command. No-op if KREA_USE_COMFY=0 or ComfyUI isn't present.
+# up with a single command.
 param(
     [int]$Port = 8188,
     [int]$TimeoutSec = 180
@@ -8,9 +8,57 @@ param(
 
 $ErrorActionPreference = "SilentlyContinue"
 $root = Split-Path -Parent $PSScriptRoot
-$comfyDir = Join-Path $root "ComfyUI"
-$py = Join-Path $comfyDir "venv\Scripts\python.exe"
-$main = Join-Path $comfyDir "main.py"
+$comfyDir = [IO.Path]::GetFullPath((Join-Path $root "ComfyUI"))
+$py = [IO.Path]::GetFullPath((Join-Path $comfyDir "venv\Scripts\python.exe"))
+$main = [IO.Path]::GetFullPath((Join-Path $comfyDir "main.py"))
+. (Join-Path $PSScriptRoot "comfy_process_validation.ps1")
+
+function Get-ComfyHealth {
+    param([string]$BaseUrl = "http://127.0.0.1:$Port")
+    try {
+        $stats = Invoke-RestMethod -Uri "$($BaseUrl.TrimEnd('/'))/system_stats" -TimeoutSec 4
+        $versionText = [string]$stats.system.comfyui_version
+        $parsedVersion = $null
+        if (-not $versionText -or -not [version]::TryParse($versionText, [ref]$parsedVersion)) {
+            return $null
+        }
+        return $stats
+    } catch {
+        return $null
+    }
+}
+
+function Get-OwnedComfyListener {
+    param([int]$ListenerPid, [int]$StartedPid = 0)
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $ListenerPid" -ErrorAction SilentlyContinue
+    $lookup = {
+        param($ProcessId)
+        Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    }
+    $valid = Test-ComfyProcessOwnership -Process $proc -ExpectedPython $py `
+        -ExpectedMain $main -StartedPid $StartedPid -ProcessLookup $lookup
+    return $(if ($valid) { $proc } else { $null })
+}
+
+function Assert-ComfyCancelCapability {
+    param([string]$BaseUrl = "http://127.0.0.1:$Port")
+    if (-not (Test-ComfyCancelCapability -BaseUrl $BaseUrl)) {
+        Write-Host "  ERROR: Atomic job cancellation is unavailable."
+        Write-Host "         The installed ComfyUI is too old or mismatched; update/reinstall ComfyUI and retry."
+        exit 1
+    }
+}
+
+function Write-ComfyRuntimeStatus {
+    param($Stats, [int]$RuntimePid)
+    $argv = @($Stats.system.argv)
+    $mode = if ($argv -contains "--highvram") { "HIGH_VRAM" } `
+        elseif ($argv -contains "--lowvram") { "LOW_VRAM" } `
+        elseif ($argv -contains "--novram") { "NO_VRAM" } `
+        else { "NORMAL_VRAM" }
+    Write-Host "  Effective ComfyUI: $mode | PID $RuntimePid"
+    Write-Host "  Set vram state to: $mode"
+}
 
 # Load KREA_COMFY_* tuning flags from .env (run.bat does not export them into
 # the environment). Real environment variables keep priority over .env.
@@ -33,6 +81,15 @@ if (Test-Path $envFile) {
 $comfyUrl = $env:KREA_COMFY_URL
 if ($comfyUrl -and $comfyUrl -notmatch '^https?://(127\.0\.0\.1|localhost)([:/]|$)') {
     Write-Host "  External ComfyUI engine configured at $comfyUrl - not starting a local one."
+    if (-not (Get-ComfyHealth -BaseUrl $comfyUrl)) {
+        Write-Host "  External ComfyUI is currently unavailable; Krea will retain unavailable-engine behavior."
+        exit 0
+    }
+    if (-not (Test-ComfyCancelCapability -BaseUrl $comfyUrl)) {
+        Write-Host "  ERROR: Atomic job cancellation is unavailable on external ComfyUI."
+        Write-Host "         The configured ComfyUI is too old or mismatched; update/reinstall it and retry."
+        exit 1
+    }
     exit 0
 }
 if ($comfyUrl -match '^https?://(?:127\.0\.0\.1|localhost):(\d+)') {
@@ -40,13 +97,37 @@ if ($comfyUrl -match '^https?://(?:127\.0\.0\.1|localhost):(\d+)') {
 }
 
 if (-not (Test-Path $main) -or -not (Test-Path $py)) {
-    Write-Host "  ComfyUI not found at $comfyDir - skipping (set KREA_USE_COMFY=0 to use the native engine)."
+    Write-Host "  ComfyUI not found at $comfyDir - generation cannot start."
     exit 0
 }
 
-$listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+$listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -First 1
 if ($listening) {
-    Write-Host "  ComfyUI already running on port $Port."
+    $listenerPid = [int]$listening.OwningProcess
+    $stats = Get-ComfyHealth
+    if (-not $stats) {
+        Write-Host "  ERROR: Port $Port is owned by PID $listenerPid, but /system_stats did not return a valid ComfyUI version."
+        Write-Host "         Stop or reconfigure that unrelated process; Krea will not reuse or kill it."
+        exit 1
+    }
+    $confirmedListener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    $confirmedPid = if ($confirmedListener) { [int]$confirmedListener.OwningProcess } else { 0 }
+    if (-not (Test-StableListenerPid -BeforePid $listenerPid -AfterPid $confirmedPid)) {
+        Write-Host "  ERROR: Port $Port listener changed during ComfyUI validation ($listenerPid to $confirmedPid)."
+        Write-Host "         Krea will not reuse or kill the replacement process."
+        exit 1
+    }
+    $owned = Get-OwnedComfyListener -ListenerPid $listenerPid
+    if (-not $owned) {
+        Write-Host "  ERROR: PID $listenerPid responds like ComfyUI but is not this repo's managed ComfyUI process."
+        Write-Host "         Stop it manually or set KREA_COMFY_URL for an external engine. Krea will not kill an unrelated process."
+        exit 1
+    }
+    Write-Host "  Reusing this repo's ComfyUI listener on port $Port."
+    Assert-ComfyCancelCapability
+    Write-ComfyRuntimeStatus -Stats $stats -RuntimePid $listenerPid
     exit 0
 }
 
@@ -103,19 +184,41 @@ $comfyErr = Join-Path $logDir "comfyui.err.log"
 # Hidden window: ComfyUI's output is already captured to the log files below
 # and mirrored into the main run.bat console by run_with_log --tail, so its
 # own console window adds nothing. Keeps run.bat to a single visible terminal.
-Start-Process -FilePath $py -ArgumentList (@("main.py", "--enable-manager", "--port", "$Port") + $extra) `
+$process = Start-Process -FilePath $py -ArgumentList (@("`"$main`"", "--enable-manager", "--port", "$Port") + $extra) `
     -WorkingDirectory $comfyDir -WindowStyle Hidden `
-    -RedirectStandardOutput $comfyOut -RedirectStandardError $comfyErr | Out-Null
+    -RedirectStandardOutput $comfyOut -RedirectStandardError $comfyErr -PassThru
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 while ((Get-Date) -lt $deadline) {
-    try {
-        Invoke-WebRequest -Uri "http://127.0.0.1:$Port/system_stats" -UseBasicParsing -TimeoutSec 2 | Out-Null
+    $readyListener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    $runtimePid = if ($readyListener) { [int]$readyListener.OwningProcess } else { 0 }
+    $stats = if ($runtimePid -gt 0) { Get-ComfyHealth } else { $null }
+    if ($stats) {
+        $confirmedListener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $confirmedPid = if ($confirmedListener) { [int]$confirmedListener.OwningProcess } else { 0 }
+        if (-not (Test-StableListenerPid -BeforePid $runtimePid -AfterPid $confirmedPid)) {
+            Write-Host "  ERROR: Ready listener changed during ComfyUI validation ($runtimePid to $confirmedPid)."
+            Write-Host "         Krea will not kill or reuse the replacement process."
+            exit 1
+        }
+        $owned = if ($runtimePid -gt 0) {
+            Get-OwnedComfyListener -ListenerPid $runtimePid -StartedPid $process.Id
+        } else {
+            $null
+        }
+        if (-not $owned) {
+            Write-Host "  ERROR: Ready listener PID $runtimePid is not the started process or its descendant."
+            Write-Host "         Krea will not kill or reuse an unrelated listener."
+            exit 1
+        }
         Write-Host "  ComfyUI ready."
+        Assert-ComfyCancelCapability
+        Write-ComfyRuntimeStatus -Stats $stats -RuntimePid $runtimePid
         exit 0
-    } catch {
-        Start-Sleep -Seconds 2
     }
+    Start-Sleep -Seconds 2
 }
-Write-Host "  WARNING: ComfyUI did not respond within $TimeoutSec s. It may still be loading; generation will work once it finishes."
-exit 0
+Write-Host "  ERROR: ComfyUI did not return valid /system_stats with a version within $TimeoutSec s."
+exit 1

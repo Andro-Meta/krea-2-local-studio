@@ -15,6 +15,8 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 from PIL import Image
+from comfy_client import PromptIdCb, free_comfy_vram
+from gpu_recovery import is_cuda_oom
 
 logger = logging.getLogger(__name__)
 LOCAL_QWEN_MODEL_ID = "qwen3_vl"
@@ -109,6 +111,17 @@ def _load_local_qwen(model_id: str = ""):
     from settings import settings
 
     device = _resolve_local_qwen_device(torch)
+    if (
+        device == "cuda"
+        and str(getattr(settings, "local_llm_backend", "") or "").lower()
+        == "transformers"
+    ):
+        # Explicit Transformers/CUDA mode runs only inside the unified queue.
+        # Release resident Comfy models before loading a second GPU model.
+        if not free_comfy_vram(unload_models=True, free_memory=True):
+            raise RuntimeError(
+                "ComfyUI VRAM release failed; Transformers CUDA helper was not loaded."
+            )
     model_path = str(model_id or getattr(settings, "local_qwen_model_id", "") or support_model_path(LOCAL_QWEN_MODEL_ID))
     processor_source = model_path
     if "Huihui-Qwen3-VL-4B-Instruct-abliterated" in model_path:
@@ -250,6 +263,8 @@ def expand_prompt_transformers(prompt: str) -> PromptExpansionResult:
             backend="transformers",
         )
     except Exception as exc:
+        if is_cuda_oom(exc):
+            raise
         msg = (
             "Local Qwen3-VL prompt expansion failed. Use System > Krea Moodboard "
             f"Conditioning / Local AI Assets to repair the local model. Details: {exc}"
@@ -261,11 +276,21 @@ def expand_prompt_transformers(prompt: str) -> PromptExpansionResult:
         unload_local_qwen_after_use()
 
 
-def expand_prompt_comfy(prompt: str) -> PromptExpansionResult:
+def expand_prompt_comfy(
+    prompt: str, *, prompt_id_cb: PromptIdCb = None
+) -> PromptExpansionResult:
     from comfy_qwen_vl import expand_prompt_comfy as _comfy_expand
 
     try:
-        expanded = (_comfy_expand(prompt, EXPANSION_SYSTEM_PROMPT) or "").strip() or prompt
+        expanded = (
+            _comfy_expand(
+                prompt,
+                EXPANSION_SYSTEM_PROMPT,
+                keep_model_loaded=False,
+                prompt_id_cb=prompt_id_cb,
+            )
+            or ""
+        ).strip() or prompt
         return PromptExpansionResult(
             expanded=expanded,
             changed=expanded.strip() != prompt.strip(),
@@ -273,15 +298,22 @@ def expand_prompt_comfy(prompt: str) -> PromptExpansionResult:
             backend="comfy",
         )
     except Exception as exc:
-        logger.warning("Comfy QwenVL prompt expansion failed; falling back to Transformers: %s", exc)
-        result = expand_prompt_transformers(prompt)
-        if result.error is None:
-            result.backend = "transformers_fallback"
-        return result
+        if is_cuda_oom(exc):
+            raise
+        msg = f"Comfy QwenVL prompt expansion failed: {exc}"
+        logger.warning(msg)
+        return PromptExpansionResult(
+            expanded=prompt,
+            changed=False,
+            error=msg,
+            backend="comfy",
+        )
 
 
-def expand_prompt_local(prompt: str) -> PromptExpansionResult:
-    """Default local Magic Wand: Comfy QwenVL, with Transformers fallback."""
+def expand_prompt_local(
+    prompt: str, *, prompt_id_cb: PromptIdCb = None
+) -> PromptExpansionResult:
+    """Default local Magic Wand: Comfy QwenVL."""
     from settings import settings
 
     backend = str(getattr(settings, "local_llm_backend", "comfy") or "comfy")
@@ -294,7 +326,7 @@ def expand_prompt_local(prompt: str) -> PromptExpansionResult:
             model=str(getattr(settings, "gguf_helper_model", GGUF_HELPER_DEFAULT_MODEL) or GGUF_HELPER_DEFAULT_MODEL),
             timeout=int(getattr(settings, "gguf_helper_timeout_sec", 120) or 120),
         )
-    return expand_prompt_comfy(prompt)
+    return expand_prompt_comfy(prompt, prompt_id_cb=prompt_id_cb)
 
 
 # Instruction prompts for the local/remote image describer.
@@ -409,33 +441,53 @@ def describe_image_transformers(image_b64: str, mode: str = "recreate", guidance
         unload_local_qwen_after_use()
 
 
-def describe_image_comfy(image_b64: str, mode: str = "recreate", guidance: str = "") -> dict[str, str]:
+def describe_image_comfy(
+    image_b64: str,
+    mode: str = "recreate",
+    guidance: str = "",
+    *,
+    prompt_id_cb: PromptIdCb = None,
+) -> dict[str, str]:
     from comfy_qwen_vl import describe_image_comfy as _comfy_describe
 
     prompt = _describe_prompt(mode, guidance)
     logger.info("describe_image_comfy start: mode=%s guidance=%r", mode, guidance)
     t0 = time.time()
-    text = (_comfy_describe(image_b64, prompt) or "").strip()
+    text = (
+        _comfy_describe(
+            image_b64,
+            prompt,
+            keep_model_loaded=False,
+            prompt_id_cb=prompt_id_cb,
+        )
+        or ""
+    ).strip()
     logger.info("describe_image_comfy done in %.1fs: result_chars=%d", time.time() - t0, len(text))
     if not text:
         raise RuntimeError("Comfy QwenVL returned an empty image description.")
     return {"prompt": text, "backend": "comfy"}
 
 
-def describe_image_local(image_b64: str, mode: str = "recreate", guidance: str = "") -> dict[str, str]:
-    """Default local image→prompt: Comfy QwenVL, with Transformers fallback."""
+def describe_image_local(
+    image_b64: str,
+    mode: str = "recreate",
+    guidance: str = "",
+    *,
+    prompt_id_cb: PromptIdCb = None,
+) -> dict[str, str]:
+    """Default local image→prompt: Comfy QwenVL."""
     from settings import settings
 
     backend = str(getattr(settings, "local_llm_backend", "comfy") or "comfy")
     if backend == "transformers":
         return describe_image_transformers(image_b64, mode, guidance)
     try:
-        return describe_image_comfy(image_b64, mode, guidance)
-    except Exception as exc:
-        logger.warning("Comfy QwenVL describe failed; falling back to Transformers: %s", exc)
-        result = describe_image_transformers(image_b64, mode, guidance)
-        result["backend"] = "transformers_fallback"
-        return result
+        return describe_image_comfy(
+            image_b64, mode, guidance, prompt_id_cb=prompt_id_cb
+        )
+    except Exception:
+        logger.exception("Comfy QwenVL describe failed")
+        raise
 
 
 def coerce_openrouter_model(model: str, free_only: bool) -> str:
@@ -730,6 +782,7 @@ def expand_prompt_result(
     gguf_helper_base_url: str = GGUF_HELPER_DEFAULT_BASE_URL,
     gguf_helper_model: str = GGUF_HELPER_DEFAULT_MODEL,
     gguf_helper_timeout_sec: int = 120,
+    prompt_id_cb: PromptIdCb = None,
 ) -> PromptExpansionResult:
     if backend == "ideogram-json":
         result = expand_prompt_ideogram_json(prompt, ideogram_api_key)
@@ -743,7 +796,7 @@ def expand_prompt_result(
             timeout=gguf_helper_timeout_sec,
         )
     else:
-        result = expand_prompt_local(prompt)
+        result = expand_prompt_local(prompt, prompt_id_cb=prompt_id_cb)
 
     # Stage 2: invent quoted copy for readable surfaces when Stage 1 succeeded.
     if result.error or not (result.expanded or "").strip():
@@ -751,12 +804,18 @@ def expand_prompt_result(
     try:
         from sign_copy_pass import run_sign_copy_pass
 
-        final, meta = run_sign_copy_pass(result.expanded, stage1_backend=result.backend)
+        final, meta = run_sign_copy_pass(
+            result.expanded,
+            stage1_backend=result.backend,
+            prompt_id_cb=prompt_id_cb,
+        )
         result.sign_copy_pass = meta
         if meta.get("changed") and final.strip():
             result.expanded = final
             result.changed = True
     except Exception as exc:
+        if is_cuda_oom(exc):
+            raise
         logger.warning("Sign-copy pass failed open; keeping Stage 1 prompt: %s", exc)
         result.sign_copy_pass = {"ran": False, "changed": False, "skipped_reason": "error", "error": str(exc)}
     return result

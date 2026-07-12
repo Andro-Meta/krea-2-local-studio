@@ -4,6 +4,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -18,9 +19,29 @@ from moodboard_enrichment import (  # noqa: E402
     parse_style_schema_json,
     sanitize_transferable_guidance,
 )
+import moodboard_enrichment  # noqa: E402
+from comfy_client import ComfyExecutionError  # noqa: E402
 
 
 class MoodboardEnrichmentTests(unittest.TestCase):
+    def test_cancelled_comfy_guidance_never_falls_back_to_transformers(self) -> None:
+        with (
+            patch.object(
+                moodboard_enrichment,
+                "_comfy_qwen_generate",
+                side_effect=ComfyExecutionError("ComfyUI execution was interrupted."),
+            ),
+            patch.object(moodboard_enrichment, "_local_qwen_generate") as fallback,
+            patch("settings.settings.local_llm_backend", "comfy"),
+        ):
+            with self.assertRaisesRegex(ComfyExecutionError, "interrupted"):
+                moodboard_enrichment._qwen_generate(
+                    "prompt",
+                    [],
+                    cancel_probe=lambda: True,
+                )
+        fallback.assert_not_called()
+
     def test_parses_legacy_guidance_from_fenced_json(self) -> None:
         text = """
         ```json

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ PUBLIC_PATH = "/krea"
 TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download/windows"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 URL_RE = re.compile(r"https://[\w.-]+\.ts\.net\S*")
+logger = logging.getLogger(__name__)
 
 
 def current_server_port(default: int = 8200) -> int:
@@ -93,21 +95,30 @@ def tailscale_status() -> dict:
             "message": "Tailscale is not installed.",
         }
     res = _run_tailscale(["status", "--json"], timeout=10)
-    connected = res.returncode == 0
+    connected = False
+    backend_state = ""
     message = (res.stderr or "").strip()
-    if connected:
+    if res.returncode == 0:
         try:
             data = json.loads(res.stdout or "{}")
             self_node = data.get("Self") or {}
-            host = self_node.get("DNSName") or self_node.get("HostName") or "this device"
-            message = f"Tailscale connected: {str(host).rstrip('.')}"
+            backend_state = str(data.get("BackendState") or "")
+            host = str(self_node.get("DNSName") or self_node.get("HostName") or "").rstrip(".")
+            addresses = self_node.get("TailscaleIPs") or []
+            connected = bool(backend_state == "Running" and host and addresses)
+            message = (
+                f"Tailscale connected: {host}"
+                if connected
+                else f"Tailscale is not connected (state={backend_state or 'unknown'})."
+            )
         except Exception:
-            message = "Tailscale connected."
+            message = "Tailscale status could not be parsed."
     elif not message:
         message = "Tailscale is installed but not connected. Run tailscale up."
     return {
         "installed": True,
         "connected": connected,
+        "backend_state": backend_state,
         "tailscale_path": ts,
         "download_url": TAILSCALE_DOWNLOAD_URL,
         "message": message,
@@ -182,7 +193,6 @@ def local_krea_target_status(port: int | None = None) -> dict:
     except Exception:
         pass
     last_url = ""
-    last_error = ""
     body = ""
     for candidate_port in ports:
         url = f"http://127.0.0.1:{int(candidate_port)}{PUBLIC_PATH}/api/auth/me"
@@ -194,7 +204,7 @@ def local_krea_target_status(port: int | None = None) -> dict:
         except urllib.error.HTTPError as exc:
             return {"ok": False, "url": url, "auth_required": False, "message": f"Local Krea returned HTTP {exc.code}."}
         except Exception as exc:
-            last_error = str(exc)
+            logger.warning("Local Krea sharing probe failed for %s", url, exc_info=exc)
     else:
         return {
             "ok": False,
@@ -202,7 +212,7 @@ def local_krea_target_status(port: int | None = None) -> dict:
             "auth_required": False,
             "message": (
                 "Local Krea is not reachable on the expected sharing port. "
-                f"Checked ports {ports}. {last_error}".strip()
+                f"Checked ports {ports}."
             ),
         }
     try:

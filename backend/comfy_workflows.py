@@ -35,7 +35,13 @@ from typing import Any, Optional
 import requests as _rq
 from PIL import Image
 
-from comfy_client import ComfyClient, WS_IMAGE_NODE, comfy_base_url, free_comfy_vram
+from comfy_client import (
+    ComfyClient,
+    PromptIdCb,
+    WS_IMAGE_NODE,
+    comfy_base_url,
+    free_comfy_vram,
+)
 from output_saver import encode_images
 
 try:
@@ -1636,7 +1642,8 @@ def comfy_upscale(method: str, image_b64: str, *, prompt: str = "", upscale_by: 
                   sampler: str = "euler", scheduler: str = "simple",
                   tile_width: int = 1024, tile_height: int = 1024, tile_padding: int = 96,
                   mask_blur: int = 12, seam_mode: str = "band_pass", tile_mode: str = "chess",
-                  tiled_decode: bool = False, seedvr2_model: str = "") -> Image.Image:
+                  tiled_decode: bool = False, seedvr2_model: str = "",
+                  prompt_id_cb: PromptIdCb = None) -> Image.Image:
     """Model/VAE-dependent upscales routed through ComfyUI (the native pipeline
     is not loaded in Comfy mode). Returns a PIL image. realesrgan and pid keep
     their standalone Python implementations in main.py."""
@@ -1701,7 +1708,7 @@ def comfy_upscale(method: str, image_b64: str, *, prompt: str = "", upscale_by: 
             "offload_device": "cpu" if (high or use_7b) else "none",
         })
         g.add("SaveImageWebsocket", {"images": _link(up)}, node_id=WS_IMAGE_NODE)
-        blobs = ComfyClient().run(g.graph(), timeout=3600)
+        blobs = ComfyClient().run(g.graph(), timeout=3600, prompt_id_cb=prompt_id_cb)
         if not blobs:
             raise RuntimeError("SeedVR2 upscale returned no image.")
         return Image.open(io.BytesIO(blobs[0])).convert("RGB")
@@ -1719,7 +1726,7 @@ def comfy_upscale(method: str, image_b64: str, *, prompt: str = "", upscale_by: 
             "crop": "disabled",
         })
         g.add("SaveImageWebsocket", {"images": _link(exact)}, node_id=WS_IMAGE_NODE)
-        blobs = ComfyClient().run(g.graph(), timeout=600)
+        blobs = ComfyClient().run(g.graph(), timeout=600, prompt_id_cb=prompt_id_cb)
         if not blobs:
             raise RuntimeError("ESRGAN upscale returned no image.")
         return Image.open(io.BytesIO(blobs[0])).convert("RGB")
@@ -1774,14 +1781,15 @@ def comfy_upscale(method: str, image_b64: str, *, prompt: str = "", upscale_by: 
             sampled = _ksampler(g, model, pos, neg, sampled, sreq, 1, denoise=0.15)
         _finish(g, sampled, vae, req)
 
-    blobs = ComfyClient().run(g.graph())
+    blobs = ComfyClient().run(g.graph(), prompt_id_cb=prompt_id_cb)
     if not blobs:
         raise RuntimeError("ComfyUI upscale returned no image.")
     return Image.open(io.BytesIO(blobs[0])).convert("RGB")
 
 
 def comfy_depth_preview(image_b64: str, *, estimator: str = "da3",
-                        resolution: int = 504, invert: bool = False) -> Image.Image:
+                        resolution: int = 504, invert: bool = False,
+                        prompt_id_cb: PromptIdCb = None) -> Image.Image:
     """Run only the depth estimator on a source image and return the depth map,
     so the UI can preview exactly what the depth ControlNet will follow."""
     from types import SimpleNamespace
@@ -1793,7 +1801,7 @@ def comfy_depth_preview(image_b64: str, *, estimator: str = "da3",
     if invert:
         depth = g.add("ImageInvert", {"image": _link(depth)})
     g.add("SaveImageWebsocket", {"images": _link(depth)}, node_id=WS_IMAGE_NODE)
-    blobs = ComfyClient().run(g.graph(), timeout=300)
+    blobs = ComfyClient().run(g.graph(), timeout=300, prompt_id_cb=prompt_id_cb)
     if not blobs:
         raise RuntimeError("Depth preview returned no image.")
     return Image.open(io.BytesIO(blobs[0])).convert("RGB")
@@ -1828,7 +1836,14 @@ def _export_prompt_graph(graph: dict, seed: Optional[int]) -> dict:
     return g
 
 
-def comfy_generate(req: Any, progress_cb=None, save_outputs: bool = True, username: str | None = None):
+def comfy_generate(
+    req: Any,
+    progress_cb=None,
+    save_outputs: bool = True,
+    username: str | None = None,
+    prompt_id_cb: PromptIdCb = None,
+    output_file_cb=None,
+):
     """Run a GenerationRequest through ComfyUI.
 
     Returns (results_b64, seed, filenames, lora_reports, metadata)."""
@@ -1849,7 +1864,7 @@ def comfy_generate(req: Any, progress_cb=None, save_outputs: bool = True, userna
     seed = runtime["seed"]
 
     client = ComfyClient()
-    blobs = client.run(graph, progress_cb=progress_cb)
+    blobs = client.run(graph, progress_cb=progress_cb, prompt_id_cb=prompt_id_cb)
     images = [Image.open(io.BytesIO(b)).convert("RGB") for b in blobs]
     if not images:
         raise RuntimeError("ComfyUI returned no images.")
@@ -1860,7 +1875,14 @@ def comfy_generate(req: Any, progress_cb=None, save_outputs: bool = True, userna
             _buf = io.BytesIO()
             im.save(_buf, format="PNG")
             _b64 = base64.b64encode(_buf.getvalue()).decode()
-            upscaled.append(comfy_upscale("seedvr2", _b64, upscale_by=2.0))
+            upscaled.append(
+                comfy_upscale(
+                    "seedvr2",
+                    _b64,
+                    upscale_by=2.0,
+                    prompt_id_cb=prompt_id_cb,
+                )
+            )
         images = upscaled
         req.width, req.height = _tw, _th  # so saved metadata reflects the 4K result
 
@@ -1882,7 +1904,8 @@ def comfy_generate(req: Any, progress_cb=None, save_outputs: bool = True, userna
 
     comfy_graphs = [_export_prompt_graph(graph, seed + i) for i in range(len(images))]
     results, filenames = encode_images(images, OUTPUTS_DIR, save_outputs=save_outputs,
-                                       metadata=metadata, comfy_graphs=comfy_graphs, subdir=username)
+                                       metadata=metadata, comfy_graphs=comfy_graphs, subdir=username,
+                                       output_file_cb=output_file_cb)
     metadata = [{**item, "filename": filenames[i] if i < len(filenames) else item.get("filename", "")}
                 for i, item in enumerate(metadata)]
     return results, seed, filenames, runtime.get("lora_reports", []), metadata

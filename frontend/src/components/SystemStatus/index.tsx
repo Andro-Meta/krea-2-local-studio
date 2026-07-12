@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, CircularProgress, FormControlLabel, LinearProgress, Link, MenuItem, Paper, Stack, Switch, TextField, Tooltip, Typography } from '@mui/material'
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, LinearProgress, Link, MenuItem, Paper, Stack, Switch, TextField, Tooltip, Typography } from '@mui/material'
 import GpuIcon from '@mui/icons-material/Memory'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { apiFetch, publicUrl, type AcceleratorStatus, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type ModerationStatus, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
@@ -112,6 +112,8 @@ export default function SystemStatus() {
   const [sharingAutoSaving, setSharingAutoSaving] = useState(false)
   const [userMessage, setUserMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'admin' | 'user' | 'child' })
+  const [resetTarget, setResetTarget] = useState<string | null>(null)
+  const [resetPasswordValue, setResetPasswordValue] = useState('')
   const [qualityAssets, setQualityAssets] = useState<{ has_hf_token: boolean; items: QualityAsset[] } | null>(null)
   const [qualityBusy, setQualityBusy] = useState<string | null>(null)
   const [qualityMessage, setQualityMessage] = useState<{ severity: 'success' | 'error'; text: string } | null>(null)
@@ -665,9 +667,16 @@ export default function SystemStatus() {
     setUsers(await apiFetch.removeUser(username))
   }
 
-  const resetPassword = async (username: string) => {
-    const password = window.prompt(`New password for ${username}`)
-    if (!password) return
+  const resetPassword = (username: string) => {
+    setResetTarget(username)
+    setResetPasswordValue('')
+  }
+
+  const runResetPassword = async () => {
+    const username = resetTarget
+    const password = resetPasswordValue
+    setResetTarget(null)
+    if (!username || !password) return
     try {
       await apiFetch.resetUserPassword(username, password)
       setUserMessage({ severity: 'success', text: `Password reset for ${username}.` })
@@ -796,6 +805,11 @@ export default function SystemStatus() {
                 Logout
               </Button>
             )}
+            {auth?.share_auth !== false && auth && !auth.authenticated && (
+              <Button size="small" variant="contained" onClick={() => { window.location.href = './login' }}>
+                Sign in
+              </Button>
+            )}
           </Stack>
         </Paper>
 
@@ -902,9 +916,35 @@ export default function SystemStatus() {
         <GroupLabel>Models &amp; Generation</GroupLabel>
         {/* Model status */}
         <SettingsAccordion title="Model" defaultExpanded>
-          {!isAdmin && <Alert severity="info" sx={{ py: 0, mb: 1 }}>Only admins can load or unload models.</Alert>}
           {memoryMessage && <Alert severity={memoryMessage.severity} sx={{ py: 0, mb: 1 }}>{memoryMessage.text}</Alert>}
-          {report?.model_status.loading ? (
+          {report?.model_status.backend === 'comfyui' ? (
+            /* ComfyUI is the generation engine: no in-process model to load or
+               unload. Show engine health instead of the legacy native controls. */
+            <Stack spacing={1}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Chip
+                  label={report.model_status.loaded ? 'ComfyUI engine online' : 'ComfyUI engine unreachable'}
+                  color={report.model_status.loaded ? 'success' : 'error'}
+                  size="small"
+                />
+                <Chip label="models load on demand" size="small" variant="outlined" />
+              </Stack>
+              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                All image generation runs in ComfyUI, which loads the right checkpoint per job — there is nothing to load or unload here.
+              </Typography>
+              {report.model_status.auto_checkpoint && (
+                <Typography variant="caption" sx={{ color: 'text.disabled', fontFamily: 'Roboto Mono', fontSize: 11, wordBreak: 'break-all' }}>
+                  Default checkpoint: {report.model_status.auto_checkpoint} ({report.model_status.auto_quant})
+                </Typography>
+              )}
+              {!report.model_status.loaded && (
+                <Alert severity="warning" sx={{ py: 0 }}>
+                  ComfyUI is not responding. It normally starts with run.bat — give it a minute, or restart the app.
+                  {isAdmin ? ' Check logs\\comfyui.err.log if it stays offline.' : ''}
+                </Alert>
+              )}
+            </Stack>
+          ) : report?.model_status.loading ? (
             <Stack direction="row" spacing={1.5} alignItems="center">
               <CircularProgress size={18} />
               <Typography variant="body2" sx={{ color: 'text.secondary' }}>
@@ -1800,6 +1840,22 @@ export default function SystemStatus() {
           </SettingsAccordion>
         )}
       </Stack>
+
+      <Dialog open={!!resetTarget} onClose={() => setResetTarget(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Reset password{resetTarget ? ` for ${resetTarget}` : ''}</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus fullWidth type="password" label="New password" sx={{ mt: 1 }}
+            value={resetPasswordValue}
+            onChange={e => setResetPasswordValue(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && resetPasswordValue) runResetPassword() }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResetTarget(null)}>Cancel</Button>
+          <Button variant="contained" onClick={runResetPassword} disabled={!resetPasswordValue}>Reset password</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   )
 }

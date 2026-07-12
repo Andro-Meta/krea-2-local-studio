@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +29,8 @@ from moodboards_catalog import (  # noqa: E402
     is_allowed_krea_image_url,
     is_allowed_krea_moodboard_url,
     export_moodboard_seed,
+    generate_and_store_moodboard_qwen_guidance,
+    get_moodboard,
     import_moodboard_seed,
     import_moodboard_urls,
     latest_moodboard_discovery,
@@ -36,6 +41,7 @@ from moodboards_catalog import (  # noqa: E402
     should_sync_moodboards,
     upsert_moodboard,
 )
+import moodboards_catalog  # noqa: E402
 
 
 FIXTURE_HTML = """
@@ -68,6 +74,329 @@ class MoodboardCatalogTests(unittest.TestCase):
     TINY_PNG_B64 = (
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
     )
+
+    def test_reconcile_custom_storage_repairs_crash_residue_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "boards"
+            stale_prep = storage_dir / ".task-prep" / "old-job"
+            orphan_uuid = "22222222-2222-4222-8222-222222222222"
+            unrelated = storage_dir / "user-notes"
+            unrelated_file = storage_dir / "README.txt"
+
+            async def run() -> tuple[int, int]:
+                await init_moodboard_db(db_path)
+                valid = await create_custom_moodboard(
+                    title="Valid",
+                    taste_profile="Valid style",
+                    keywords=["valid"],
+                    image_b64s=[self.TINY_PNG_B64],
+                    db_path=db_path,
+                    storage_dir=storage_dir,
+                )
+                missing = await create_custom_moodboard(
+                    title="Missing",
+                    taste_profile="Missing style",
+                    keywords=["missing"],
+                    image_b64s=[self.TINY_PNG_B64],
+                    db_path=db_path,
+                    storage_dir=storage_dir,
+                )
+                shutil.rmtree(storage_dir / missing["uuid"])
+                stale_prep.mkdir(parents=True)
+                (stale_prep / "partial.png").write_bytes(b"partial")
+                (storage_dir / orphan_uuid).mkdir()
+                (storage_dir / orphan_uuid / "ref.png").write_bytes(b"orphan")
+                unrelated.mkdir()
+                (unrelated / "keep.txt").write_text("keep", encoding="utf-8")
+                unrelated_file.write_text("keep", encoding="utf-8")
+
+                await moodboards_catalog.reconcile_custom_moodboard_storage(
+                    db_path=db_path,
+                    storage_dir=storage_dir,
+                )
+                valid_after = await get_moodboard(valid["id"], db_path=db_path)
+                missing_after = await get_moodboard(missing["id"], db_path=db_path)
+                return int(valid_after is not None), int(missing_after is not None)
+
+            valid_exists, missing_exists = asyncio.run(run())
+            self.assertEqual(valid_exists, 1)
+            self.assertEqual(missing_exists, 0)
+            self.assertFalse((storage_dir / ".task-prep").exists())
+            self.assertFalse((storage_dir / orphan_uuid).exists())
+            self.assertTrue(unrelated.exists())
+            self.assertTrue((unrelated / "keep.txt").exists())
+            self.assertTrue(unrelated_file.exists())
+
+    def test_guidance_generation_keeps_event_loop_responsive(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def run() -> int:
+                await init_moodboard_db(db_path)
+                board_id = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/heartbeat-11111111-1111-5111-9111-111111111111",
+                        slug="heartbeat-11111111-1111-5111-9111-111111111111",
+                        uuid="11111111-1111-5111-9111-111111111111",
+                        title="Heartbeat",
+                        taste_profile="Low-key film grain.",
+                        keywords=["film grain"],
+                        primary_image_url="",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                ticks = 0
+                running = True
+
+                async def heartbeat() -> None:
+                    nonlocal ticks
+                    while running:
+                        ticks += 1
+                        await asyncio.sleep(0.01)
+
+                def slow_generator(_prompt: str, _images: list[str]) -> str:
+                    time.sleep(0.15)
+                    return """{
+                      "palette": "Muted charcoal",
+                      "lighting": "Low-key practical light",
+                      "medium_texture": "Heavy film grain",
+                      "composition": "Center weighted",
+                      "atmosphere": "Hushed",
+                      "era_or_movement": "1970s documentary",
+                      "style_axes": ["film grain"],
+                      "negative_style_terms": ["flat lighting"],
+                      "source_summary": "Documentary texture."
+                    }"""
+
+                pulse = asyncio.create_task(heartbeat())
+                try:
+                    await generate_and_store_moodboard_qwen_guidance(
+                        board_id,
+                        db_path=db_path,
+                        generator=slow_generator,
+                    )
+                finally:
+                    running = False
+                    await pulse
+                return ticks
+
+            self.assertGreater(asyncio.run(run()), 3)
+
+    def test_cancel_during_guidance_generation_skips_db_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+
+            async def run() -> dict:
+                await init_moodboard_db(db_path)
+                board_id = await upsert_moodboard(
+                    MoodboardRecord(
+                        url="https://www.krea.ai/moodboard-feed/cancel-guidance-11111111-1111-5111-9111-111111111111",
+                        slug="cancel-guidance-11111111-1111-5111-9111-111111111111",
+                        uuid="11111111-1111-5111-9111-111111111111",
+                        title="Cancel Guidance",
+                        taste_profile="Film grain.",
+                        keywords=["grain"],
+                        primary_image_url="",
+                        image_urls=[],
+                        related_urls=[],
+                    ),
+                    db_path,
+                )
+                cancelled = False
+
+                def generator(_prompt: str, _images: list[str]) -> str:
+                    nonlocal cancelled
+                    cancelled = True
+                    return """{
+                      "palette": "Charcoal", "lighting": "Low key",
+                      "medium_texture": "Film grain", "composition": "Centered",
+                      "atmosphere": "Quiet", "era_or_movement": "Documentary",
+                      "style_axes": ["grain"], "negative_style_terms": [],
+                      "source_summary": "Texture."
+                    }"""
+
+                with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                    await generate_and_store_moodboard_qwen_guidance(
+                        board_id,
+                        db_path=db_path,
+                        generator=generator,
+                        cancel_probe=lambda: cancelled,
+                    )
+                return await get_moodboard(board_id, db_path=db_path)
+
+            self.assertEqual(asyncio.run(run())["qwen_guidance"], {})
+
+    def test_cancel_during_custom_generation_leaves_no_files_or_row(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "boards"
+
+            async def run() -> int:
+                await init_moodboard_db(db_path)
+                cancelled = False
+
+                def generator(_prompt: str, _images: list[str]) -> str:
+                    nonlocal cancelled
+                    cancelled = True
+                    return """{
+                      "title": "Cancelled", "taste_profile": "Cancelled style",
+                      "keywords": ["cancelled"], "prompt_guidance": "Muted grain",
+                      "negative_guidance": "", "style_axes": ["grain"],
+                      "conditioning_notes": [], "source_summary": "Cancelled."
+                    }"""
+
+                with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                    await create_custom_moodboard(
+                        title="",
+                        taste_profile="",
+                        keywords=[],
+                        image_b64s=[self.TINY_PNG_B64],
+                        db_path=db_path,
+                        storage_dir=storage_dir,
+                        guidance_generator=generator,
+                        cancel_probe=lambda: cancelled,
+                    )
+                return (await list_moodboards(source="custom", db_path=db_path))["total"]
+
+            self.assertEqual(asyncio.run(run()), 0)
+            self.assertFalse(storage_dir.exists() and any(storage_dir.rglob("*")))
+
+    def test_cancel_during_custom_file_persistence_rolls_back_files_and_db(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "boards"
+            cancelled = False
+            write_started = threading.Event()
+            release_write = threading.Event()
+            original_write = Path.write_bytes
+
+            def blocked_write(path: Path, data: bytes) -> int:
+                write_started.set()
+                release_write.wait(timeout=2)
+                return original_write(path, data)
+
+            def cancel_writer() -> None:
+                nonlocal cancelled
+                write_started.wait(timeout=2)
+                cancelled = True
+                release_write.set()
+
+            async def run() -> int:
+                await init_moodboard_db(db_path)
+                watcher = threading.Thread(target=cancel_writer)
+                watcher.start()
+                try:
+                    with patch.object(Path, "write_bytes", blocked_write):
+                        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                            await create_custom_moodboard(
+                                title="Complete",
+                                taste_profile="Complete style",
+                                keywords=["style"],
+                                image_b64s=[self.TINY_PNG_B64],
+                                db_path=db_path,
+                                storage_dir=storage_dir,
+                                cancel_probe=lambda: cancelled,
+                            )
+                finally:
+                    release_write.set()
+                    watcher.join(timeout=2)
+                return (await list_moodboards(source="custom", db_path=db_path))["total"]
+
+            self.assertEqual(asyncio.run(run()), 0)
+            self.assertFalse(storage_dir.exists() and any(storage_dir.rglob("*")))
+
+    def test_cancel_during_mashup_generation_leaves_no_custom_row(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "boards"
+
+            async def run() -> int:
+                await init_moodboard_db(db_path)
+                ids = []
+                for index in range(2):
+                    ids.append(
+                        await upsert_moodboard(
+                            MoodboardRecord(
+                                url=f"https://www.krea.ai/moodboard-feed/mashup-cancel-{index}-11111111-1111-5111-9111-11111111111{index}",
+                                slug=f"mashup-cancel-{index}-11111111-1111-5111-9111-11111111111{index}",
+                                uuid=f"11111111-1111-5111-9111-11111111111{index}",
+                                title=f"Source {index}",
+                                taste_profile="Source style.",
+                                keywords=["source"],
+                                primary_image_url="",
+                                image_urls=[],
+                                related_urls=[],
+                            ),
+                            db_path,
+                        )
+                    )
+                cancelled = False
+
+                def generator(_prompt: str, _images: list[str]) -> str:
+                    nonlocal cancelled
+                    cancelled = True
+                    return """{
+                      "title": "Cancelled Mashup",
+                      "taste_profile": "Cancelled blend",
+                      "keywords": ["blend"], "prompt_guidance": "Blend grain",
+                      "negative_guidance": "", "style_axes": ["grain"],
+                      "conditioning_notes": [], "source_summary": "Blend."
+                    }"""
+
+                with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                    await create_mashup_moodboard(
+                        moodboard_ids=ids,
+                        db_path=db_path,
+                        storage_dir=storage_dir,
+                        guidance_generator=generator,
+                        cancel_probe=lambda: cancelled,
+                    )
+                return (await list_moodboards(source="custom", db_path=db_path))["total"]
+
+            self.assertEqual(asyncio.run(run()), 0)
+            self.assertFalse(storage_dir.exists() and any(storage_dir.rglob("*")))
+
+    def test_custom_image_persistence_keeps_event_loop_responsive(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "catalog.db"
+            storage_dir = Path(td) / "boards"
+            original_write = Path.write_bytes
+
+            def slow_write(path: Path, data: bytes) -> int:
+                time.sleep(0.12)
+                return original_write(path, data)
+
+            async def run() -> int:
+                await init_moodboard_db(db_path)
+                ticks = 0
+                running = True
+
+                async def heartbeat() -> None:
+                    nonlocal ticks
+                    while running:
+                        ticks += 1
+                        await asyncio.sleep(0.01)
+
+                pulse = asyncio.create_task(heartbeat())
+                try:
+                    with patch.object(Path, "write_bytes", slow_write):
+                        await create_custom_moodboard(
+                            title="Complete",
+                            taste_profile="Complete style",
+                            keywords=["style"],
+                            image_b64s=[self.TINY_PNG_B64],
+                            db_path=db_path,
+                            storage_dir=storage_dir,
+                        )
+                finally:
+                    running = False
+                    await pulse
+                return ticks
+
+            self.assertGreater(asyncio.run(run()), 5)
 
     def test_parser_extracts_krea_moodboard_details(self) -> None:
         crawler = KreaMoodboardCrawler(fetch_html=lambda _: FIXTURE_HTML)

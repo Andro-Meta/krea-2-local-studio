@@ -51,7 +51,7 @@ export default function ResultsView({ images, seed, metadata = [] }: Props) {
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null)
   const [activeIdx, setActiveIdx] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)   // method label while running
-  const [toast, setToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ text: string; severity: 'info' | 'error' } | null>(null)
 
   if (!images.length) return null
 
@@ -69,9 +69,9 @@ export default function ResultsView({ images, seed, metadata = [] }: Props) {
         ...opts,
       })
       openLightbox([{ src: `data:image/png;base64,${image_b64}`, prompt: params.prompt, metadata: upscaledMetadata }])
-      setToast(`${label} complete — opened full size`)
+      setToast({ text: `${label} complete — opened full size`, severity: 'info' })
     } catch (e: any) {
-      setToast(e?.response?.data?.detail ?? e.message ?? 'Upscale failed')
+      setToast({ text: e?.response?.data?.detail ?? e.message ?? 'Upscale failed', severity: 'error' })
     }
     setBusy(null)
   }
@@ -142,9 +142,9 @@ export default function ResultsView({ images, seed, metadata = [] }: Props) {
         </Box>
       </Backdrop>
 
-      <Snackbar open={!!toast} autoHideDuration={5000} onClose={() => setToast(null)}
+      <Snackbar open={!!toast} autoHideDuration={toast?.severity === 'error' ? 8000 : 5000} onClose={() => setToast(null)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert severity="info" onClose={() => setToast(null)} variant="filled">{toast}</Alert>
+        <Alert severity={toast?.severity ?? 'info'} onClose={() => setToast(null)} variant="filled">{toast?.text}</Alert>
       </Snackbar>
     </Box>
   )

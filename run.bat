@@ -32,7 +32,13 @@ if errorlevel 1 (
 :: entirely when KREA_COMFY_URL in .env points at a non-local engine.
 echo Bringing up ComfyUI image engine...
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\start_comfyui.ps1"
+if errorlevel 1 (
+    echo ERROR: ComfyUI startup validation failed. Resolve the error above before starting Krea.
+    exit /b 1
+)
 
+:: Sharing uses a random loopback port. Funnel targets localhost directly, so
+:: no broad permanent firewall rule is needed for this ephemeral port.
 for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()"`) do set "KREA_SERVER_PORT=%%a"
 
 %KREA_PYTHON% scripts\download_support_models.py --check >nul 2>&1
@@ -55,7 +61,11 @@ if exist ".env" (
 )
 for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); cfg=r'%KREA_SHARE_AUTH_CONFIG%' or None; print('1' if share_auth.resolve_auth_enabled(cfg, has_users=bool(share_auth.load_users(p))) else '0')"`) do set "KREA_SHARE_AUTH=%%a"
 if "%KREA_SHARE_AUTH%"=="1" (
-    for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "import secrets,sys; from pathlib import Path; sys.path.insert(0,'backend'); import share_auth; p=Path(r'%ROOT%share_auth.json'); users=share_auth.load_users(p); print('') if users else (lambda pw: (share_auth.add_user(p,'admin',pw,role='admin'), print('FIRST_ADMIN_PASSWORD='+pw)))(secrets.token_urlsafe(10))"`) do set "BOOTSTRAP_LOGIN=%%a"
+    %KREA_PYTHON% scripts\bootstrap_share_admin.py
+    if errorlevel 1 (
+        echo ERROR: First admin setup failed; server startup stopped to avoid losing the credential.
+        exit /b 1
+    )
 )
 
 echo Starting Krea 2 Studio web sharing mode...
@@ -63,7 +73,6 @@ echo.
 echo Admin sharing controls are in System ^> Tailscale Sharing.
 echo Public Funnel path is always /krea.
 if "%KREA_SHARE_AUTH%"=="0" echo Login gate is off because no users are configured.
-if defined BOOTSTRAP_LOGIN echo %BOOTSTRAP_LOGIN%
 echo.
 echo For local-only mode, run:
 echo   run.bat local
@@ -82,7 +91,7 @@ start "" /b %KREA_PYTHON% scripts\share_startup.py %KREA_SHARE_STARTUP_ARGS%
 echo Local sharing server: http://localhost:%KREA_SERVER_PORT%/krea
 echo ComfyUI image engine: http://localhost:8188
 if not exist "logs" mkdir logs
-for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`) do set "KREA_LOG_STAMP=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%%Y%%m%%d-%%H%%M%%S'))"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"
@@ -114,6 +123,10 @@ if errorlevel 1 (
 :: -- Start ComfyUI image engine (REQUIRED for generation) -----------------------
 echo Bringing up ComfyUI image engine...
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\start_comfyui.ps1"
+if errorlevel 1 (
+    echo ERROR: ComfyUI startup validation failed. Resolve the error above before starting Krea.
+    exit /b 1
+)
 
 :: -- Preflight: Krea support models --------------------------------------------
 %KREA_PYTHON% scripts\download_support_models.py --check >nul 2>&1
@@ -183,7 +196,7 @@ start "" /b %KREA_PYTHON% scripts\share_startup.py --ready-url http://127.0.0.1:
 
 :: -- Start server -------------------------------------------------------------
 if not exist "logs" mkdir logs
-for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`) do set "KREA_LOG_STAMP=%%a"
+for /f "usebackq tokens=*" %%a in (`%KREA_PYTHON% -c "from datetime import datetime; print(datetime.now().strftime('%%Y%%m%%d-%%H%%M%%S'))"`) do set "KREA_LOG_STAMP=%%a"
 set "KREA_SERVER_LOG=logs\server-local-%KREA_LOG_STAMP%.log"
 echo Server log: %KREA_SERVER_LOG%
 echo ==== Krea local server start %DATE% %TIME% ==== > "%KREA_SERVER_LOG%"

@@ -14,9 +14,38 @@ from typing import Any
 import requests
 from PIL import Image
 
-from comfy_client import ComfyClient, ComfyExecutionError, ComfyUnavailable, comfy_available, comfy_base_url, free_comfy_vram, object_info
+from comfy_client import (
+    ComfyClient,
+    ComfyExecutionError,
+    ComfyUnavailable,
+    PromptIdCb,
+    _notify_prompt_id,
+    cancel_prompt,
+    comfy_available,
+    comfy_base_url,
+    free_comfy_vram,
+    object_info,
+)
 
 logger = logging.getLogger("krea2.comfy_qwen")
+
+# main.py installs a probe that reports whether a generation is running (or the
+# GPU lease is held). When busy we must NOT free Comfy's VRAM: doing so would
+# unload the diffusion model out from under the in-flight job. The helper graph
+# just queues behind it in ComfyUI's own serial queue instead.
+_GENERATION_BUSY_PROBE: Any = None
+
+
+def set_generation_busy_probe(probe) -> None:
+    global _GENERATION_BUSY_PROBE
+    _GENERATION_BUSY_PROBE = probe
+
+
+def _generation_busy() -> bool:
+    try:
+        return bool(_GENERATION_BUSY_PROBE and _GENERATION_BUSY_PROBE())
+    except Exception:
+        return False
 
 QWEN_VL_NODE = "AILab_QwenVL_Advanced"
 QWEN_ENHANCER_NODE = "AILab_QwenVL_PromptEnhancer"
@@ -25,6 +54,17 @@ MODEL_2B_ABLITERATED = "Huihui-Qwen3-VL-2B-Instruct-abliterated"
 MODEL_4B_ABLITERATED = "Huihui-Qwen3-VL-4B-Instruct-abliterated"
 DEFAULT_MODEL = MODEL_2B_ABLITERATED
 QUANT_FP16 = "None (FP16)"
+QUANT_4BIT = "4-bit (VRAM-friendly)"
+QUANT_8BIT = "8-bit (Balanced)"
+_QUANT_VALUES = frozenset({QUANT_4BIT, QUANT_8BIT, QUANT_FP16})
+_QUANT_ALIASES = {
+    "4bit": QUANT_4BIT,
+    "4-bit": QUANT_4BIT,
+    "8bit": QUANT_8BIT,
+    "8-bit": QUANT_8BIT,
+    "fp16": QUANT_FP16,
+    "none": QUANT_FP16,
+}
 
 _COMFY_QWEN_ALIASES = {
     "": DEFAULT_MODEL,
@@ -57,6 +97,18 @@ def resolve_comfy_qwen_model(override: str = "") -> str:
     if "4B-Instruct-abliterated" in raw or "4b-instruct-abliterated" in key:
         return MODEL_4B_ABLITERATED
     return raw
+
+
+def resolve_comfy_qwen_quant(override: str = "") -> str:
+    """Return only quantization labels accepted by AILab_QwenVL_Advanced."""
+    from settings import settings
+
+    raw = str(
+        override or getattr(settings, "comfy_qwen_quant", "") or "8bit"
+    ).strip()
+    if raw in _QUANT_VALUES:
+        return raw
+    return _QUANT_ALIASES.get(raw.lower().replace("_", "").replace(" ", ""), QUANT_8BIT)
 
 
 def comfy_qwen_vl_available(timeout: float = 5.0) -> bool:
@@ -143,15 +195,19 @@ def _run_graph_for_text(
     text_node_id: str,
     timeout: int = 600,
     *,
-    free_vram: bool = True,
+    free_vram: bool = False,
+    prompt_id_cb: PromptIdCb = None,
 ) -> str:
     if not comfy_available():
         raise ComfyUnavailable(f"ComfyUI is not responding at {comfy_base_url()}.")
-    # Unload DiT/VAE so Qwen-VL can claim VRAM (skip when chaining Stage 2 after Comfy Stage 1).
-    if free_vram:
+    # Unload DiT/VAE so Qwen-VL can claim VRAM (skip when chaining Stage 2 after
+    # Comfy Stage 1, and NEVER while a generation is executing — freeing VRAM
+    # then would yank the diffusion model out from under the in-flight job).
+    if free_vram and not _generation_busy():
         free_comfy_vram(unload_models=True, free_memory=True)
     client = ComfyClient()
     prompt_id = client._post_prompt(graph)
+    _notify_prompt_id(prompt_id_cb, prompt_id)
     import time
 
     deadline = time.time() + timeout
@@ -174,7 +230,9 @@ def _run_graph_for_text(
                     f"ComfyUI QwenVL returned no text (node={text_node_id}). outputs={list((entry.get('outputs') or {}).keys())}"
                 )
         time.sleep(0.5)
-    client.interrupt()
+    # Cancel only OUR prompt: a global interrupt here could kill an unrelated
+    # generation that happens to be executing.
+    cancel_prompt(prompt_id, base_url=client.base)
     raise ComfyExecutionError("ComfyUI QwenVL timed out.")
 
 
@@ -194,6 +252,7 @@ def describe_image_comfy(
     temperature: float = 0.6,
     seed: int = 1,
     keep_model_loaded: bool = True,
+    prompt_id_cb: PromptIdCb = None,
 ) -> str:
     _ensure_nodes()
     png = _b64_to_png_bytes(image_b64, max_side=1024)
@@ -204,7 +263,7 @@ def describe_image_comfy(
             "class_type": QWEN_VL_NODE,
             "inputs": {
                 "model_name": resolve_comfy_qwen_model(),
-                "quantization": QUANT_FP16,
+                "quantization": resolve_comfy_qwen_quant(),
                 "attention_mode": "sdpa",
                 "use_torch_compile": False,
                 "device": "auto",
@@ -223,7 +282,7 @@ def describe_image_comfy(
         },
     }
     _attach_preview(nodes, "qwen")
-    return _run_graph_for_text(nodes, "preview")
+    return _run_graph_for_text(nodes, "preview", prompt_id_cb=prompt_id_cb)
 
 
 def enrich_images_comfy(
@@ -234,6 +293,7 @@ def enrich_images_comfy(
     temperature: float = 0.45,
     seed: int = 1,
     keep_model_loaded: bool = True,
+    prompt_id_cb: PromptIdCb = None,
 ) -> str:
     _ensure_nodes()
     images = [b for b in (image_b64s or []) if b][:10]
@@ -248,7 +308,7 @@ def enrich_images_comfy(
 
     qwen_inputs: dict[str, Any] = {
         "model_name": resolve_comfy_qwen_model(),
-        "quantization": QUANT_FP16,
+        "quantization": resolve_comfy_qwen_quant(),
         "attention_mode": "sdpa",
         "use_torch_compile": False,
         "device": "auto",
@@ -273,7 +333,7 @@ def enrich_images_comfy(
 
     nodes["qwen"] = {"class_type": QWEN_VL_NODE, "inputs": qwen_inputs}
     _attach_preview(nodes, "qwen")
-    return _run_graph_for_text(nodes, "preview")
+    return _run_graph_for_text(nodes, "preview", prompt_id_cb=prompt_id_cb)
 
 
 def expand_prompt_comfy(
@@ -284,7 +344,10 @@ def expand_prompt_comfy(
     temperature: float = 0.7,
     seed: int = 1,
     keep_model_loaded: bool = True,
-    free_vram: bool = True,
+    free_vram: bool = False,
+    prompt_id_cb: PromptIdCb = None,
+    model_override: str = "",
+    precision_override: str = "",
 ) -> str:
     _ensure_nodes()
     # Use Advanced VL in text-only mode so we keep Studio's ~700 token budget
@@ -294,8 +357,8 @@ def expand_prompt_comfy(
         "qwen": {
             "class_type": QWEN_VL_NODE,
             "inputs": {
-                "model_name": resolve_comfy_qwen_model(),
-                "quantization": QUANT_FP16,
+                "model_name": resolve_comfy_qwen_model(model_override),
+                "quantization": resolve_comfy_qwen_quant(precision_override),
                 "attention_mode": "sdpa",
                 "use_torch_compile": False,
                 "device": "auto",
@@ -313,4 +376,9 @@ def expand_prompt_comfy(
         }
     }
     _attach_preview(nodes, "qwen")
-    return _run_graph_for_text(nodes, "preview", free_vram=free_vram)
+    return _run_graph_for_text(
+        nodes,
+        "preview",
+        free_vram=free_vram,
+        prompt_id_cb=prompt_id_cb,
+    )

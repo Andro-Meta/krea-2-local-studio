@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from support import mock_atomic_cancel_capability
+
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -397,6 +399,7 @@ class QualityUpgradeTests(unittest.TestCase):
         import main
         import quality_assets
 
+        mock_atomic_cancel_capability(main)
         def fake_installed(spec):
             return True
 
@@ -430,6 +433,7 @@ class QualityUpgradeTests(unittest.TestCase):
         import main
         import quality_assets
 
+        mock_atomic_cancel_capability(main)
         downloaded: list[str] = []
 
         def fake_installed(spec):

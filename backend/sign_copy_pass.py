@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
+from gpu_recovery import is_cuda_oom
 
 logger = logging.getLogger("krea2.sign_copy")
 
@@ -316,7 +317,7 @@ def splice_copy_into_prompt(prompt: str, phrase: str) -> str:
     return prompt[: match.end()] + insert + prompt[match.end() :]
 
 
-def _micro_invent_and_splice(prompt: str, expand_fn) -> str:
+def _micro_invent_and_splice(prompt: str, expand_fn, *, prompt_id_cb=None) -> str:
     """Ask the LLM for only a short phrase, then splice it into the prompt."""
     invent_user = (
         "Invent ONE short sign/paper phrase for the scene below. "
@@ -330,8 +331,9 @@ def _micro_invent_and_splice(prompt: str, expand_fn) -> str:
         max_tokens=64,  # ComfyUI-QwenVL Advanced enforces min 64
         temperature=0.9,
         seed=3,
-        keep_model_loaded=True,
+        keep_model_loaded=False,
         free_vram=False,
+        prompt_id_cb=prompt_id_cb,
     )
     phrase = _extract_invented_phrase(raw or "")
     if not phrase:
@@ -344,6 +346,7 @@ def run_sign_copy_pass(
     *,
     stage1_backend: str = "",
     enabled: bool = True,
+    prompt_id_cb=None,
 ) -> tuple[str, dict[str, Any]]:
     """Run Stage 2 when needed. Never raises — returns Stage 1 text on failure."""
     meta: dict[str, Any] = {"ran": False, "changed": False, "skipped_reason": None}
@@ -378,8 +381,6 @@ def run_sign_copy_pass(
         meta["error"] = str(exc)
         return text, meta
 
-    # If Stage 1 was Comfy, Qwen is likely still loaded — skip free between stages.
-    free_vram = str(stage1_backend or "").lower() != "comfy"
     user_payload = _format_stage2_user_payload(text)
 
     try:
@@ -389,8 +390,9 @@ def run_sign_copy_pass(
             max_tokens=700,
             temperature=0.55,
             seed=1,
-            keep_model_loaded=True,
-            free_vram=free_vram,
+            keep_model_loaded=False,
+            free_vram=False,
+            prompt_id_cb=prompt_id_cb,
         )
         final = accept_sign_copy_output(text, raw or "")
         # Retry full rewrite once, then micro-invent + splice if still unchanged.
@@ -407,20 +409,27 @@ def run_sign_copy_pass(
                 max_tokens=700,
                 temperature=0.7,
                 seed=2,
-                keep_model_loaded=True,
+                keep_model_loaded=False,
                 free_vram=False,
+                prompt_id_cb=prompt_id_cb,
             )
             final = accept_sign_copy_output(text, raw2 or "")
         if final.strip() == text.strip():
             try:
-                spliced = _micro_invent_and_splice(text, _comfy_expand)
+                spliced = _micro_invent_and_splice(
+                    text, _comfy_expand, prompt_id_cb=prompt_id_cb
+                )
                 if spliced.strip() != text.strip() and quoted_strings(spliced) - quoted_strings(text):
                     final = spliced
                     meta["fallback"] = "micro_invent_splice"
             except Exception as splice_exc:
+                if is_cuda_oom(splice_exc):
+                    raise
                 logger.warning("Sign-copy micro-invent failed: %s", splice_exc)
                 meta["micro_invent_error"] = str(splice_exc)
     except Exception as exc:
+        if is_cuda_oom(exc):
+            raise
         logger.warning("Sign-copy Comfy pass failed; keeping Stage 1 prompt: %s", exc)
         meta["skipped_reason"] = "error"
         meta["error"] = str(exc)

@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
@@ -51,6 +51,7 @@ def encode_images(
     metadata: list[dict] | dict | None = None,
     comfy_graphs: list[dict] | dict | None = None,
     subdir: str | None = None,
+    output_file_cb: Callable[[str], None] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Encode (and optionally save) images. When ``subdir`` (a username) is given,
     files are written into ``outputs_dir/<username>/`` (created on demand) and the
@@ -79,9 +80,16 @@ def encode_images(
             pnginfo = _pnginfo(item_metadata, item_graph)
             final_path = target_dir / name
             tmp_path = target_dir / f".{name}.tmp"
+            if output_file_cb is not None:
+                tmp_rel = (
+                    f"{user_tag}/{tmp_path.name}" if user_tag else tmp_path.name
+                )
+                output_file_cb(tmp_rel)
             img.save(str(tmp_path), format="PNG", pnginfo=pnginfo)
             tmp_path.replace(final_path)
             filenames.append(rel)
+            if output_file_cb is not None:
+                output_file_cb(rel)
         else:
             pnginfo = _pnginfo(item_metadata, item_graph)
         buf = io.BytesIO()

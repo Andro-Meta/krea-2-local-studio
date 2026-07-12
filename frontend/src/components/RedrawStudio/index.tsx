@@ -4,9 +4,10 @@ import {
 } from 'react'
 import {
   Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Collapse, Divider,
-  FormControl, FormControlLabel, IconButton, InputLabel, MenuItem, Select, Slider,
+  Fab, FormControl, FormControlLabel, IconButton, InputLabel, MenuItem, Select, Slider,
   Stack, Switch, Tab, Tabs, TextField, ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material'
+import KeyboardDoubleArrowDownIcon from '@mui/icons-material/KeyboardDoubleArrowDown'
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate'
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh'
 import BrushIcon from '@mui/icons-material/Brush'
@@ -432,7 +433,7 @@ function CompactReference({
   }, [onImage])
 
   return (
-    <Card variant="outlined" sx={{ borderRadius: 2.5, width: 200, flexShrink: 0 }}>
+    <Card variant="outlined" sx={{ borderRadius: 2.5, width: { xs: 164, sm: 200 }, flexShrink: 0 }}>
       <CardContent sx={{ p: 1.25, '&:last-child': { pb: 1.25 } }}>
         <Stack spacing={0.75}>
           <Box
@@ -805,10 +806,9 @@ export default function RedrawStudio() {
       depth_resolution: depthResolution,
       depth_invert: depthInvert,
       // Reference workflow defaults: er_sde/beta @8, RAW CFG 3 / Turbo CFG 1.
+      // Engine/quantization are left alone: ComfyUI owns them now.
       checkpoint: turbo ? 'turbo' : 'raw',
       model_profile: turbo ? 'krea_turbo' : 'krea_raw',
-      diffusion_engine: 'native_pytorch',
-      quantization: turbo ? 'fp8' : 'fp8',
       sampler: 'er_sde',
       scheduler: turbo ? 'beta57' : 'beta',
       steps: 8,
@@ -1347,6 +1347,16 @@ export default function RedrawStudio() {
           </Button>
         </Stack>
       </Stack>
+
+      {/* Phones: the full GeneratePanel renders below this studio, which is a
+          long scroll — float a shortcut to jump straight to Generate. */}
+      <Fab
+        size="medium" color="primary" variant="extended" onClick={scrollToGenerate}
+        sx={{ position: 'fixed', bottom: 18, right: 16, zIndex: 1200, display: { xs: 'flex', md: 'none' } }}
+      >
+        <KeyboardDoubleArrowDownIcon sx={{ mr: 0.5 }} />
+        Generate
+      </Fab>
     </Box>
   )
 }

@@ -107,16 +107,17 @@ class SignCopyRunTests(unittest.TestCase):
         self.assertTrue(meta["changed"])
         self.assertFalse(expand.call_args.kwargs.get("free_vram", True))
 
-    def test_calls_comfy_with_free_vram_true_after_openrouter(self) -> None:
+    def test_calls_comfy_without_global_free_after_openrouter(self) -> None:
         inp = "a woman holds a handwritten paper toward the camera in a dim room"
         raw = 'UPDATED\n\na woman holds a handwritten paper reading "COME HOME" toward the camera in a dim room'
 
         with patch("comfy_qwen_vl.comfy_qwen_vl_available", return_value=True), patch(
             "comfy_qwen_vl.expand_prompt_comfy", return_value=raw
-        ) as expand:
+        ) as expand, patch("comfy_qwen_vl.free_comfy_vram") as free:
             text, meta = run_sign_copy_pass(inp, stage1_backend="openrouter")
         self.assertIn("COME HOME", text)
-        self.assertTrue(expand.call_args.kwargs.get("free_vram", False))
+        self.assertFalse(expand.call_args.kwargs.get("free_vram", True))
+        free.assert_not_called()
 
     def test_comfy_error_keeps_stage1(self) -> None:
         inp = "failing neon signs along the alley"

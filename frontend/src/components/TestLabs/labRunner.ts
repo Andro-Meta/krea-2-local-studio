@@ -69,7 +69,18 @@ function updateCase(run: LabRun, caseId: string, patch: Partial<LabCaseRun>) {
 
 async function waitForJob(jobId: string, onSnapshot: (job: GenerationJob) => void, shouldStop?: () => boolean): Promise<GenerationJob> {
   for (;;) {
-    const job = await apiFetch.jobStatus(jobId)
+    let job: GenerationJob
+    try {
+      job = await apiFetch.jobStatus(jobId)
+    } catch (err: any) {
+      if (err?.response?.status === 404) {
+        // Job evicted server-side (or not visible to this user) — terminal.
+        return { status: 'error', error: 'Job is no longer available on the server.' } as GenerationJob
+      }
+      // Transient network error: keep polling.
+      await new Promise(resolve => window.setTimeout(resolve, 2000))
+      continue
+    }
     onSnapshot(job)
     if (terminalStates.has(job.status)) return job
     await new Promise(resolve => window.setTimeout(resolve, 2000))

@@ -13,6 +13,34 @@ if str(BACKEND) not in sys.path:
 from generation_queue import GenerationQueue  # noqa: E402
 
 
+class GenerationQueueCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_accepted_enqueue_returns_plain_record_dict(self):
+        async def handler(_job_id, _payload):
+            return None
+
+        q = GenerationQueue(handler)
+        result = q.enqueue("a", {}, username="alice", role="user")
+
+        self.assertIs(type(result), dict)
+        self.assertEqual(result["status"], "queued")
+
+    async def test_legacy_enqueue_accepts_more_than_per_user_limit(self):
+        async def handler(_job_id, _payload):
+            return None
+
+        q = GenerationQueue(handler)
+        try:
+            results = [
+                q.enqueue(f"job-{index}", {}, username="alice", role="user")
+                for index in range(9)
+            ]
+        except Exception as exc:
+            self.fail(f"legacy enqueue unexpectedly rejected work: {exc}")
+
+        self.assertTrue(all(type(result) is dict for result in results))
+        self.assertEqual(q.status("job-8")["status"], "queued")
+
+
 class GenerationQueueCancelTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_queued_job_is_dequeued(self):
         started = asyncio.Event()
@@ -68,6 +96,78 @@ class GenerationQueueCancelTests(unittest.IsolatedAsyncioTestCase):
 
         q = GenerationQueue(handler)
         self.assertEqual(q.request_cancel("nope"), "none")
+
+
+class GenerationQueueFairnessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_round_robin_interleaves_users_batches(self):
+        """User B's single job should not wait behind all of user A's batch."""
+        order: list[str] = []
+
+        async def handler(job_id, _payload):
+            order.append(job_id)
+            await asyncio.sleep(0)
+
+        q = GenerationQueue(handler)
+        # Enqueue while the worker is not running so scheduling is deterministic.
+        for jid in ("a1", "a2", "a3", "a4"):
+            q.enqueue(jid, {}, username="alice", role="user")
+        q.enqueue("b1", {}, username="bob", role="user")
+        q.enqueue("b2", {}, username="bob", role="user")
+
+        worker = asyncio.create_task(q.run())
+        await asyncio.wait_for(q.join(), timeout=2)
+        worker.cancel()
+
+        # Round-robin: alice, bob alternate until bob runs out, then alice drains.
+        self.assertEqual(order, ["a1", "b1", "a2", "b2", "a3", "a4"])
+
+    async def test_projected_positions_reflect_round_robin(self):
+        async def handler(job_id, _payload):
+            await asyncio.sleep(3600)
+
+        q = GenerationQueue(handler)
+        for jid in ("a1", "a2", "a3"):
+            q.enqueue(jid, {}, username="alice", role="user")
+        q.enqueue("b1", {}, username="bob", role="user")
+
+        # No worker running: all four pending. Projected order alternates users.
+        positions = {jid: q.status(jid)["queue_position"] for jid in ("a1", "a2", "a3", "b1")}
+        self.assertEqual(positions["a1"], 1)
+        self.assertEqual(positions["b1"], 2)  # bob's first is 2nd, not 4th
+        self.assertEqual(positions["a2"], 3)
+        self.assertEqual(positions["a3"], 4)
+        self.assertEqual(q.status("b1")["queue_length"], 4)
+
+    async def test_single_user_stays_fifo(self):
+        order: list[str] = []
+
+        async def handler(job_id, _payload):
+            order.append(job_id)
+
+        q = GenerationQueue(handler)
+        for jid in ("j1", "j2", "j3"):
+            q.enqueue(jid, {}, username="alice", role="user")
+        worker = asyncio.create_task(q.run())
+        await asyncio.wait_for(q.join(), timeout=2)
+        worker.cancel()
+
+        self.assertEqual(order, ["j1", "j2", "j3"])
+
+    async def test_anonymous_local_jobs_share_one_lane(self):
+        """Local mode (username=None) keeps plain FIFO behavior."""
+        order: list[str] = []
+
+        async def handler(job_id, _payload):
+            order.append(job_id)
+
+        q = GenerationQueue(handler)
+        for jid in ("j1", "j2"):
+            q.enqueue(jid, {}, username=None, role="admin")
+        worker = asyncio.create_task(q.run())
+        await asyncio.wait_for(q.join(), timeout=2)
+        worker.cancel()
+
+        self.assertEqual(order, ["j1", "j2"])
 
 
 if __name__ == "__main__":

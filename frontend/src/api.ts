@@ -13,6 +13,25 @@ export function publicUrl(path: string): string {
 
 const api = axios.create({ baseURL: publicBasePath() })
 
+// Session expiry lands as 401 on every call. Instead of each component
+// showing its own cryptic failure, send the user to the login page once.
+// The auth probe itself (/api/auth/me) is exempt: it legitimately returns
+// 401 in logged-out states that don't require a redirect (e.g. local mode
+// probing) and is handled by its callers.
+api.interceptors.response.use(
+  response => response,
+  error => {
+    const status = error?.response?.status
+    const url: string = error?.config?.url ?? ''
+    if (status === 401 && typeof window !== 'undefined'
+        && !url.includes('/api/auth/')
+        && !window.location.pathname.endsWith('/login')) {
+      window.location.href = `${publicBasePath()}/login`
+    }
+    return Promise.reject(error)
+  },
+)
+
 export interface GenerationRequest {
   prompt: string
   negative_prompt?: string
@@ -175,24 +194,57 @@ export interface GenerationRequest {
   seed_variance_cutoff_strength?: number
 }
 
-export interface GenerationJob {
+export type GpuTaskKind =
+  | 'generation'
+  | 'prompt_expand'
+  | 'prompt_plan'
+  | 'image_describe'
+  | 'upscale'
+  | 'depth_preview'
+  | 'moodboard_guidance'
+  | 'background_enrichment'
+  | 'model_warmup'
+
+export type GpuTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'cancellation_requested'
+  | 'finalizing'
+  | 'done'
+  | 'error'
+  | 'blocked'
+  | 'cancelled'
+
+export interface GpuTaskResponse<TResult = unknown> {
   job_id: string
-  status: string
+  status: GpuTaskStatus
   progress: number
   images: string[]
-  error?: string
-  seed?: number
+  error?: string | null
+  seed?: number | null
   metadata?: Record<string, any>[]
   queue_position?: number | null
   queue_length?: number | null
   moderation_event_id?: number
   batch_id?: string
   child_job_ids?: string[]
+  task_kind?: GpuTaskKind
+  priority_class?: 'interactive' | 'background'
+  result?: TResult | null
+  type?: string
+  pct?: number
+  provider_warning?: string
+  lora_warnings?: Array<{ name: string; reason?: string }>
 }
+
+export type GenerationJob = GpuTaskResponse
 
 export interface QueueJob {
   job_id: string
-  status: string
+  /** True when the job belongs to the requesting user (or auth is off).
+      Foreign jobs arrive anonymized: position/progress only, no content. */
+  mine: boolean
+  status: GpuTaskStatus
   progress: number
   queue_position?: number | null
   queue_length?: number | null
@@ -203,6 +255,27 @@ export interface QueueJob {
   is_batch: boolean
   batch_count?: number | null
   num_images: number
+  /** Omitted for anonymous foreign entries. */
+  task_kind?: GpuTaskKind
+  priority_class?: 'interactive' | 'background'
+  /** Unix seconds; only present on your own jobs. */
+  queued_at?: number | null
+  started_at?: number | null
+  finished_at?: number | null
+}
+
+export interface GpuTaskAdmission {
+  per_user_active: number
+  per_user_limit: number
+  global_interactive_active: number
+  global_interactive_limit: number
+  global_background_active: number
+  global_background_limit: number
+}
+
+export interface QueueJobsResponse {
+  jobs: QueueJob[]
+  admission: GpuTaskAdmission
 }
 
 export interface BatchPlan {
@@ -403,7 +476,7 @@ export interface SystemReport {
   disk_free_gb?: number
   gpu_processes: string[]
   gpu_process_details?: Array<{ pid: number; name: string; used_memory_gb?: number }>
-  model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null; text_encoder_source?: { kind: string; path: string; runtime?: string; status?: string } | null; memory?: Record<string, any> }
+  model_status: { loaded: boolean; loading?: boolean; checkpoint?: string; quantization?: string; auto_checkpoint?: string; auto_quant?: string; load_error?: string | null; text_encoder_source?: { kind: string; path: string; runtime?: string; status?: string } | null; memory?: Record<string, any>; backend?: 'comfyui' | 'native' }
   attention_acceleration?: { status: string; available: boolean; reason: string; recommendation: string }
   gpu_capabilities?: { name: string; arch: string; compute_capability: string | null; vram_total_gb: number | null; supports_bf16: boolean; supports_fp8_compute: boolean; supports_nvfp4: boolean; fp8_storage_only: boolean; fp8_note: string }
   recommended_runtime?: { quantization: string; blocks_to_swap: number; max_tier: string; notes: string }
@@ -481,6 +554,8 @@ export interface AppSettings {
   prompt_expander_backend: 'local' | 'openrouter' | 'ideogram-json'
   local_llm_backend: 'comfy' | 'transformers' | 'gguf_server'
   comfy_qwen_model: string
+  comfy_qwen_quant: string
+  krea_comfy_warmup: boolean
   local_qwen_model_id: string
   local_qwen_device: 'auto' | 'cuda' | 'cpu'
   gguf_helper_base_url: string
@@ -582,18 +657,82 @@ export interface ModerationStatus {
   message: string
 }
 
+export interface HelperQueueResponse {
+  job_id: string
+  status: 'queued'
+  task_kind: GpuTaskKind
+  queue_position: number | null
+  queue_length: number | null
+}
+
+const TERMINAL_GPU_TASK_STATUSES = new Set<GpuTaskStatus>(['done', 'error', 'blocked', 'cancelled'])
+
+export function isGpuTaskTerminal(status?: string): status is Extract<GpuTaskStatus, 'done' | 'error' | 'blocked' | 'cancelled'> {
+  return TERMINAL_GPU_TASK_STATUSES.has(status as GpuTaskStatus)
+}
+
+export function gpuTaskTerminalError(job: Pick<GpuTaskResponse, 'status' | 'error'>): Error | null {
+  if (job.status === 'done') return null
+  return isGpuTaskTerminal(job.status)
+    ? new Error(job.error || `GPU task ${job.status}.`)
+    : null
+}
+
+export function responseStatus(error: unknown): number | undefined {
+  return (error as { response?: { status?: number } })?.response?.status
+}
+
+export async function waitForGpuTask<T>(jobId: string, timeoutMs = 65 * 60 * 1000): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  let transientFailures = 0
+  while (Date.now() < deadline) {
+    let job: GpuTaskResponse<T>
+    try {
+      job = await api.get<GpuTaskResponse<T>>(`/api/generate/${jobId}`).then(r => r.data)
+      transientFailures = 0
+    } catch (error: unknown) {
+      if (responseStatus(error) === 404) throw new Error('GPU task was not found or is no longer available.')
+      transientFailures += 1
+      if (transientFailures > 8) throw error
+      const backoffMs = Math.min(500 * (2 ** (transientFailures - 1)), 5000)
+      await new Promise(resolve => setTimeout(resolve, backoffMs))
+      continue
+    }
+    if (job.status === 'done') {
+      const result = job.result as T
+      await api.post(`/api/generate/${jobId}/ack`).catch(() => undefined)
+      return result
+    }
+    const terminalError = gpuTaskTerminalError(job)
+    if (terminalError) throw terminalError
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  await api.post(`/api/generate/${jobId}/cancel`).catch(() => undefined)
+  throw new Error('GPU task timed out while waiting for a result.')
+}
+
+async function resolveGpuSubmission<T extends object>(
+  submitted: T | HelperQueueResponse,
+): Promise<T> {
+  return 'job_id' in submitted
+    ? waitForGpuTask<T>(submitted.job_id)
+    : submitted
+}
+
 export const apiFetch = {
   generate: (req: GenerationRequest) =>
-    api.post<{ job_id: string; status: string; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number; batch_id?: string; child_job_ids?: string[] }>('/api/generate', req).then(r => r.data),
+    api.post<{ job_id: string; status: GpuTaskStatus; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number; batch_id?: string; child_job_ids?: string[] }>('/api/generate', req).then(r => r.data),
 
   jobStatus: (jobId: string) =>
     api.get<GenerationJob>(`/api/generate/${jobId}`).then(r => r.data),
 
   jobs: (limit = 24) =>
-    api.get<{ jobs: QueueJob[] }>(`/api/jobs`, { params: { limit } }).then(r => r.data.jobs),
+    api.get<QueueJobsResponse>(`/api/jobs`, { params: { limit } }).then(r => r.data),
 
   cancelJob: (jobId: string) =>
     api.post<{ ok: boolean; job_id: string; status: string; cancelled: number }>(`/api/generate/${jobId}/cancel`).then(r => r.data),
+  ackJob: (jobId: string) =>
+    api.post<{ ok: boolean; job_id: string; status: string }>(`/api/generate/${jobId}/ack`).then(r => r.data),
 
   loadModel: (path: string, quant: string, blocksToSwap = 0, fp8FastMatmul = false, torchCompile = false) =>
     api.post('/api/load-model', { checkpoint_path: path, quantization: quant, blocks_to_swap: blocksToSwap, fp8_fast_matmul: fp8FastMatmul, torch_compile: torchCompile }).then(r => r.data),
@@ -662,17 +801,27 @@ export const apiFetch = {
   setMoodboardFavorite: (id: number, favorite: boolean) =>
     api.put(`/api/moodboards/${id}/favorite`, { favorite }).then(r => r.data),
 
-  generateMoodboardGuidance: (id: number) =>
-    api.post<MoodboardItem>(`/api/moodboards/${id}/qwen-guidance`, {}, { timeout: 180000 }).then(r => r.data),
+  generateMoodboardGuidance: async (id: number) => {
+    const submitted = await api.post<MoodboardItem | HelperQueueResponse>(`/api/moodboards/${id}/qwen-guidance`, {}).then(r => r.data)
+    return resolveGpuSubmission<MoodboardItem>(submitted)
+  },
 
-  generateMissingMoodboardGuidance: (limit = 10) =>
-    api.post<{ processed: number; items: MoodboardItem[] }>('/api/moodboards/qwen-guidance-missing', { limit }, { timeout: 600000 }).then(r => r.data),
+  generateMissingMoodboardGuidance: async (limit = 10) => {
+    const submitted = await api.post<{ processed: number; items: MoodboardItem[] } | HelperQueueResponse>('/api/moodboards/qwen-guidance-missing', { limit }).then(r => r.data)
+    return resolveGpuSubmission<{ processed: number; items: MoodboardItem[] }>(submitted)
+  },
 
-  createCustomMoodboard: (req: { title: string; taste_profile?: string; keywords?: string[]; image_b64s: string[] }) =>
-    api.post<MoodboardItem>('/api/moodboards/custom', req, { timeout: 120000 }).then(r => r.data),
+  createCustomMoodboard: async (req: { title: string; taste_profile?: string; keywords?: string[]; image_b64s: string[] }) => {
+    const submitted = await api.post<MoodboardItem | HelperQueueResponse>('/api/moodboards/custom', req).then(r => r.data)
+    return 'job_id' in submitted
+      ? waitForGpuTask<MoodboardItem>(submitted.job_id)
+      : submitted
+  },
 
-  createMoodboardMashup: (req: { moodboard_ids: number[]; weights?: number[] }) =>
-    api.post<MoodboardItem>('/api/moodboards/mashup', req, { timeout: 180000 }).then(r => r.data),
+  createMoodboardMashup: async (req: { moodboard_ids: number[]; weights?: number[] }) => {
+    const submitted = await api.post<MoodboardItem | HelperQueueResponse>('/api/moodboards/mashup', req).then(r => r.data)
+    return resolveGpuSubmission<MoodboardItem>(submitted)
+  },
 
   deleteCustomMoodboard: (id: number) =>
     api.delete(`/api/moodboards/custom/${id}`).then(r => r.data),
@@ -709,8 +858,8 @@ export const apiFetch = {
     cfg?: number
     tiled_decode?: boolean
     seam_fix?: boolean
-  }) =>
-    api.post<{ image_b64: string; metadata?: Record<string, any> }>('/api/upscale', {
+  }) => {
+    const body = {
       image_b64, method,
       scale: opts?.scale ?? (method === 'realesrgan' ? 4 : 2),
       upscale_by: opts?.upscale_by ?? 2,
@@ -729,7 +878,10 @@ export const apiFetch = {
       cfg: opts?.cfg ?? 1,
       tiled_decode: opts?.tiled_decode ?? false,
       seam_fix: opts?.seam_fix ?? true,
-    }, { timeout: 1800000 }).then(r => r.data),
+    }
+    return api.post<{ image_b64: string; metadata?: Record<string, any> } | HelperQueueResponse>('/api/upscale', body)
+      .then(r => resolveGpuSubmission<{ image_b64: string; metadata?: Record<string, any> }>(r.data))
+  },
 
   autoMask: (image_b64: string, prompt: string, threshold?: number) =>
     api.post<{ mask_b64: string }>('/api/automask', { image_b64, prompt, threshold: threshold ?? 0.35 })
@@ -747,13 +899,14 @@ export const apiFetch = {
       high_threshold: opts?.high_threshold ?? 160,
     }).then(r => r.data),
 
-  describeImage: (image_b64: string, mode: 'recreate' | 'style' | 'character' = 'recreate', guidance = '') =>
-    api.post<{ prompt: string; backend: 'local' | 'openrouter' }>('/api/describe-image', { image_b64, mode, guidance })
-      .then(r => r.data),
+  describeImage: async (image_b64: string, mode: 'recreate' | 'style' | 'character' = 'recreate', guidance = '') => {
+    const queued = await api.post<HelperQueueResponse>('/api/describe-image', { image_b64, mode, guidance }).then(r => r.data)
+    return waitForGpuTask<{ prompt: string; backend: 'local' | 'openrouter' }>(queued.job_id)
+  },
 
   depthPreview: (image_b64: string, estimator: 'da3' | 'depth_anything_v2' | 'zoe' | 'midas' = 'da3', resolution = 504, invert = false) =>
-    api.post<{ image_b64: string }>('/api/depth-preview', { image_b64, estimator, resolution, invert }, { timeout: 120000 })
-      .then(r => r.data),
+    api.post<{ image_b64: string } | HelperQueueResponse>('/api/depth-preview', { image_b64, estimator, resolution, invert })
+      .then(r => resolveGpuSubmission<{ image_b64: string }>(r.data)),
 
   system: () => api.get<SystemReport>('/api/system').then(r => r.data),
 
@@ -789,15 +942,21 @@ export const apiFetch = {
     api.post<{ ok: boolean; backend: string; expanded: string }>('/api/gguf/helper-test', {}, { timeout: 180000 }).then(r => r.data),
 
   ggufStatus: () => api.get<{ diffusion_engine: string; paths: Record<string, { path: string; configured: boolean }> }>('/api/gguf/status').then(r => r.data),
-  int8Status: () => api.get<{ ok: boolean; torch: string; cuda?: string | null; torch_int_mm: boolean; comfy_kitchen: boolean; triton: boolean; diffusion_engine: string; assets: Record<string, QualityAsset & { configured_path: string; inspection?: Record<string, any>; inspection_error?: string }> }>('/api/int8/status').then(r => r.data),
+  int8Status: () => api.get<{ ok: boolean; backend: string; loader: string; diffusion_engine: string; note?: string; assets: Record<string, { installed: boolean; path?: string; configured_path?: string }> }>('/api/int8/status').then(r => r.data),
   acceleratorStatus: () => api.get<AcceleratorStatus>('/api/accelerators/status').then(r => r.data),
   installTritonWindows: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-triton-windows', {}, { timeout: 600000 }).then(r => r.data),
   installSageAttention: () => api.post<{ ok: boolean; status: AcceleratorStatus; message: string }>('/api/accelerators/install-sageattention', {}, { timeout: 600000 }).then(r => r.data),
 
-  expandPrompt: (prompt: string) =>
-    api.post<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' | 'gguf-server'; suggested_moodboards?: MoodboardSuggestion[] }>('/api/expand-prompt', { prompt, suggest_moodboards: true }).then(r => r.data),
-  planPrompt: (prompt: string, max_tokens = 700) =>
-    api.post<PromptPlan>('/api/plan-prompt', { prompt, max_tokens }).then(r => r.data),
+  submitExpandPrompt: (prompt: string, backend?: string) =>
+    api.post<HelperQueueResponse>('/api/expand-prompt', { prompt, suggest_moodboards: true, ...(backend ? { backend } : {}) }).then(r => r.data),
+  expandPrompt: async (prompt: string, backend?: string) => {
+    const queued = await apiFetch.submitExpandPrompt(prompt, backend)
+    return waitForGpuTask<{ expanded: string; changed: boolean; error?: string | null; backend: 'local' | 'openrouter' | 'ideogram-json' | 'gguf-server'; suggested_moodboards?: MoodboardSuggestion[]; sign_copy_pass?: boolean | null }>(queued.job_id)
+  },
+  planPrompt: async (prompt: string, max_tokens = 700) => {
+    const queued = await api.post<HelperQueueResponse>('/api/plan-prompt', { prompt, max_tokens }).then(r => r.data)
+    return waitForGpuTask<PromptPlan>(queued.job_id)
+  },
   promptingGuide: () =>
     api.get<{ guidelines: string; examples: string[]; source: string }>('/api/prompting-guide').then(r => r.data),
   resolutionOptions: () =>
@@ -845,14 +1004,16 @@ export const apiFetch = {
     ).then(r => r.data),
 }
 
-export function connectWS(jobId: string, onMessage: (data: unknown) => void, onClose?: () => void): WebSocket {
+export function connectWS(jobId: string, onMessage: (data: unknown) => void, onClose?: (ev?: CloseEvent) => void): WebSocket {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const host = window.location.host
   const ws = new WebSocket(`${proto}://${host}${publicBasePath()}/ws/${jobId}`)
   ws.onmessage = e => onMessage(JSON.parse(e.data))
   if (onClose) {
-    ws.onclose = onClose
-    ws.onerror = onClose
+    // Forward the CloseEvent so callers can tell a policy rejection (1008:
+    // not your job / not signed in) from a transient network drop.
+    ws.onclose = ev => onClose(ev)
+    ws.onerror = () => onClose(undefined)
   }
   return ws
 }

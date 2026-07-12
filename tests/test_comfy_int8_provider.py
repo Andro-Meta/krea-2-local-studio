@@ -10,12 +10,15 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from support import mock_atomic_cancel_capability  # noqa: E402
+
 
 class NativeInt8ApiTests(unittest.TestCase):
     def test_int8_status_reports_comfy_loader_and_assets(self) -> None:
         from fastapi.testclient import TestClient
         import main
 
+        mock_atomic_cancel_capability(main)
         with TestClient(main.app) as client:
             response = client.get("/api/int8/status")
 
@@ -33,6 +36,7 @@ class NativeInt8ApiTests(unittest.TestCase):
         from fastapi.testclient import TestClient
         import main
 
+        mock_atomic_cancel_capability(main)
         with TestClient(main.app) as client:
             response = client.post("/api/int8/test-workflow")
 
@@ -43,6 +47,7 @@ class NativeInt8ApiTests(unittest.TestCase):
         import main
         import quality_assets
 
+        mock_atomic_cancel_capability(main)
         def fake_download(spec, token=None):
             return spec.local_path
 
@@ -55,7 +60,9 @@ class NativeInt8ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["diffusion_engine"], "comfyui_int8")
+        # Must be a member of the shared engine union — the UI stores this
+        # verbatim in its settings draft (comfyui_int8 was an invalid id).
+        self.assertEqual(data["diffusion_engine"], "native_int8_convrot")
         self.assertEqual(data["quantization"], "int8")
         self.assertEqual(data["sampler"], {"sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 0.0, "mu": 1.15})
         self.assertTrue(any("deprecated" in w.lower() or "comfyui" in w.lower() for w in data.get("warnings", [])))

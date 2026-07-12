@@ -244,16 +244,24 @@ export default function Lightbox() {
   const toggleFavorite = async () => {
     if (!item.id) return
     const favorite = !item.favorite
-    await apiFetch.setFavorite(item.id, favorite)
-    patchLightboxItem(item.id, { favorite })
-    window.dispatchEvent(new CustomEvent('krea-gallery-item-updated', { detail: { id: item.id, favorite } }))
+    try {
+      await apiFetch.setFavorite(item.id, favorite)
+      patchLightboxItem(item.id, { favorite })
+      window.dispatchEvent(new CustomEvent('krea-gallery-item-updated', { detail: { id: item.id, favorite } }))
+    } catch (e: any) {
+      setToast({ text: e?.response?.data?.detail ?? e?.message ?? 'Could not update favorite', severity: 'error' })
+    }
   }
 
   const deleteCurrent = async () => {
     if (!item.id || !window.confirm('Delete this image from the gallery?')) return
-    await apiFetch.deleteGalleryItem(item.id)
-    removeLightboxItem(item.id)
-    window.dispatchEvent(new CustomEvent('krea-gallery-item-deleted', { detail: { id: item.id } }))
+    try {
+      await apiFetch.deleteGalleryItem(item.id)
+      removeLightboxItem(item.id)
+      window.dispatchEvent(new CustomEvent('krea-gallery-item-deleted', { detail: { id: item.id } }))
+    } catch (e: any) {
+      setToast({ text: e?.response?.data?.detail ?? e?.message ?? 'Could not delete image', severity: 'error' })
+    }
   }
 
   const actionSx = { bgcolor: 'rgba(0,0,0,0.55)', minWidth: 44, minHeight: 44, flexShrink: 0, zIndex: 3 }

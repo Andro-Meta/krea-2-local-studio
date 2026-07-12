@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 RECIPE_PATH = Path(__file__).resolve().parent.parent / "data" / "prompt_recipes.json"
+_RECIPE_LOCK = threading.RLock()
 
 
 def _slug(value: str) -> str:
@@ -26,7 +30,25 @@ def _read(path: Path = RECIPE_PATH) -> list[dict[str, Any]]:
 
 def _write(recipes: list[dict[str, Any]], path: Path = RECIPE_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(recipes, indent=2, ensure_ascii=False), encoding="utf-8")
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp:
+            temp_path = Path(temp.name)
+            json.dump(recipes, temp, indent=2, ensure_ascii=False)
+            temp.flush()
+            os.fsync(temp.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _clean_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
@@ -53,21 +75,53 @@ def _clean_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_recipes(*, path: Path = RECIPE_PATH) -> list[dict[str, Any]]:
-    return sorted(_read(path), key=lambda item: str(item.get("name", "")).lower())
+def _visible_to(item: dict[str, Any], username: str | None) -> bool:
+    """Legacy recipes (no owner) are shared with everyone; owned recipes are
+    private to their creator. Local mode (username=None) sees everything."""
+    if username is None:
+        return True
+    owner = item.get("owner")
+    return owner is None or owner == username
 
 
-def save_recipe(recipe: dict[str, Any], *, path: Path = RECIPE_PATH) -> dict[str, Any]:
+def list_recipes(*, path: Path = RECIPE_PATH, username: str | None = None) -> list[dict[str, Any]]:
+    with _RECIPE_LOCK:
+        items = [item for item in _read(path) if _visible_to(item, username)]
+    return sorted(items, key=lambda item: str(item.get("name", "")).lower())
+
+
+def save_recipe(recipe: dict[str, Any], *, path: Path = RECIPE_PATH, username: str | None = None) -> dict[str, Any]:
     cleaned = _clean_recipe(recipe)
-    recipes = [item for item in _read(path) if item.get("id") != cleaned["id"]]
-    recipes.append(cleaned)
-    _write(recipes, path)
+    if username is not None:
+        cleaned["owner"] = username
+    with _RECIPE_LOCK:
+        existing = _read(path)
+        # A save may only replace a recipe the caller can see (their own or a
+        # legacy shared one); someone else's same-named recipe stays untouched.
+        recipes = [
+            item for item in existing
+            if not (item.get("id") == cleaned["id"] and _visible_to(item, username))
+        ]
+        recipes.append(cleaned)
+        _write(recipes, path)
     return cleaned
 
 
-def delete_recipe(recipe_id: str, *, path: Path = RECIPE_PATH) -> bool:
+def delete_recipe(recipe_id: str, *, path: Path = RECIPE_PATH, username: str | None = None, is_admin: bool = False) -> bool:
     recipe_id = _slug(recipe_id)
-    recipes = _read(path)
-    kept = [item for item in recipes if item.get("id") != recipe_id]
-    _write(kept, path)
+    with _RECIPE_LOCK:
+        recipes = _read(path)
+
+        def deletable(item: dict[str, Any]) -> bool:
+            if item.get("id") != recipe_id:
+                return False
+            if username is None or is_admin:
+                return True
+            owner = item.get("owner")
+            # Users may delete their own recipes; legacy shared ones are admin-only
+            # to delete since everyone can see them.
+            return owner == username
+
+        kept = [item for item in recipes if not deletable(item)]
+        _write(kept, path)
     return len(kept) != len(recipes)

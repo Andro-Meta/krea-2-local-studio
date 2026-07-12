@@ -120,9 +120,16 @@ def model_profile_options() -> list[dict[str, Any]]:
 
 
 def engine_catalog() -> dict[str, Any]:
+    """Engine choices as the UI sees them.
+
+    All generation executes in ComfyUI; the "engine" now selects which
+    checkpoint format Comfy loads (standard safetensors, GGUF, or INT8
+    ConvRot). Labels say so to avoid implying a separate native runtime.
+    """
     native = {
         "engine_id": "native_pytorch",
-        "label": "Native PyTorch Krea",
+        "label": "Standard checkpoint (BF16/FP8) · ComfyUI",
+        "runtime": "comfyui",
         "default": True,
         "experimental": False,
         "profiles": ["krea_turbo", "krea_raw"],
@@ -147,7 +154,7 @@ def engine_catalog() -> dict[str, Any]:
     native_gguf = {
         **native,
         "engine_id": "native_gguf",
-        "label": "Native GGUF",
+        "label": "GGUF checkpoint (low VRAM) · ComfyUI",
         "default": False,
         "experimental": False,
         "profiles": ["krea_turbo"],
@@ -158,7 +165,7 @@ def engine_catalog() -> dict[str, Any]:
     int8 = {
         **native,
         "engine_id": "native_int8_convrot",
-        "label": "Native INT8 ConvRot",
+        "label": "INT8 ConvRot checkpoint (fast) · ComfyUI",
         "default": False,
         "experimental": True,
         "profiles": ["krea_turbo", "krea_raw"],
@@ -180,7 +187,18 @@ def engine_catalog() -> dict[str, Any]:
         "recommended_steps": 8,
         "unsupported_controls": [],
     }
-    return {"engines": [native, native_gguf, int8], "default_engine": "native_pytorch"}
+    # Reflect the server's configured engine so the UI marks the right default.
+    try:
+        from settings import settings
+        configured = str(getattr(settings, "diffusion_engine", "") or "native_pytorch")
+    except Exception:
+        configured = "native_pytorch"
+    engines = [native, native_gguf, int8]
+    engine_ids = {engine["engine_id"] for engine in engines}
+    if configured in engine_ids:
+        for e in engines:
+            e["default"] = e["engine_id"] == configured
+    return {"engines": engines, "default_engine": configured if configured in engine_ids else "native_pytorch"}
 
 
 def resolve_model_profile(profile_id: str | None, checkpoint: str = "turbo") -> ModelProfile:

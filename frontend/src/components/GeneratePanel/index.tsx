@@ -1,10 +1,20 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, CircularProgress, LinearProgress, Stack, Typography } from '@mui/material'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { TAB, useStore } from '../../store'
-import { apiFetch, connectWS } from '../../api'
+import { apiFetch, connectWS, type GpuTaskResponse } from '../../api'
+import {
+  activeGpuTaskStorageKey,
+  adoptActiveTaskPersistence,
+  canDeliverTaskResult,
+  clearPersistedActiveTask,
+  persistActiveTask,
+  readPersistedActiveTask,
+  reconcileActiveTaskIdentity,
+} from '../../lib/activeTaskPersistence'
+import { createTaskWatcher, type TaskWatcher } from '../../lib/taskWatcher'
 import PromptSection from './PromptSection'
 import ModelSection from './ModelSection'
 import DimensionSection from './DimensionSection'
@@ -20,35 +30,30 @@ import MrFlowSettings from './MrFlowSettings'
 import GenerationQueue from './GenerationQueue'
 import ResultsView from './ResultsView'
 
-const ACTIVE_JOB_KEY = 'krea2_active_generation_job'
-
 export default function GeneratePanel() {
   const { params, generating, progress, results, resultsMetadata, lastSeed, generationError,
           queuePosition, queueLength,
           promptBusy,
           setGenerating, setJobId, setProgress, setResults, setError,
-          setQueue, modelLoaded, setModelLoaded, setTab, engineCatalog, setEngineCatalog } = useStore()
+          setQueue, modelLoaded, setModelLoaded, setTab, engineCatalog, setEngineCatalog,
+          admission, setActiveTask } = useStore()
   const inRedrawStudio = params.mode !== 'txt2img'
   const activeEngine = engineCatalog?.engines.find(engine => engine.engine_id === params.diffusion_engine)
   const supports = activeEngine ?? engineCatalog?.engines.find(engine => engine.engine_id === 'native_pytorch')
+  const atTaskCap = !!admission && admission.per_user_active >= admission.per_user_limit
 
-  const wsRef = useRef<WebSocket | null>(null)
-  const pollRef = useRef<number | null>(null)
-  const reconnectRef = useRef<number | null>(null)
-  const heartbeatRef = useRef<number | null>(null)
+  const watcherRef = useRef<TaskWatcher | null>(null)
+  const watchedJobIdRef = useRef<string | null>(null)
+  const watchedStorageKeyRef = useRef<string | null>(null)
+  const activeTaskKeyRef = useRef<string | null>(null)
+  const resolvedStorageKeyRef = useRef<string | null>(null)
   const [modelLoading, setModelLoading] = useState(false)
+  const [backendMode, setBackendMode] = useState<'comfyui' | 'native'>('comfyui')
   const [connectionNote, setConnectionNote] = useState('')
+  const [childAccount, setChildAccount] = useState(false)
+  const [activeTaskKey, setActiveTaskKey] = useState<string | null>(null)
 
-  useEffect(() => () => {
-    wsRef.current?.close()
-    wsRef.current = null
-    if (pollRef.current) window.clearInterval(pollRef.current)
-    pollRef.current = null
-    if (reconnectRef.current) window.clearTimeout(reconnectRef.current)
-    reconnectRef.current = null
-    if (heartbeatRef.current) window.clearInterval(heartbeatRef.current)
-    heartbeatRef.current = null
-  }, [])
+  useEffect(() => () => watcherRef.current?.stop(), [])
 
   // Poll model status every 5s
   useEffect(() => {
@@ -56,6 +61,7 @@ export default function GeneratePanel() {
       apiFetch.system().then(r => {
         setModelLoaded(r.model_status?.loaded ?? false)
         setModelLoading(r.model_status?.loading ?? false)
+        setBackendMode(r.model_status?.backend ?? 'native')
       }).catch(() => {})
     check()
     const t = setInterval(check, 5000)
@@ -66,22 +72,76 @@ export default function GeneratePanel() {
     apiFetch.engineCatalog().then(setEngineCatalog).catch(() => undefined)
   }, [setEngineCatalog])
 
-  const stopWatchingJob = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.onclose = null
-      wsRef.current.onerror = null
-      wsRef.current.close()
+  useEffect(() => {
+    let disposed = false
+    let inFlight = false
+    let rerunRequested = false
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null
+    const resolveAuth = () => {
+      if (disposed) return
+      if (inFlight) {
+        rerunRequested = true
+        return
+      }
+      inFlight = true
+      apiFetch.authMe()
+        .then(session => {
+          if (disposed) return
+          setChildAccount(session?.role === 'child')
+          const nextKey = activeGpuTaskStorageKey(session?.username, 'generation')
+          if (
+            activeTaskKeyRef.current === null
+            && watcherRef.current
+            && watchedStorageKeyRef.current === null
+            && watchedJobIdRef.current
+          ) {
+            persistActiveTask(localStorage, nextKey, watchedJobIdRef.current)
+            watchedStorageKeyRef.current = nextKey
+          }
+          activeTaskKeyRef.current = nextKey
+          setActiveTaskKey(nextKey)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false
+          if (disposed || !rerunRequested) return
+          rerunRequested = false
+          refreshTimer = setTimeout(resolveAuth, 75)
+        })
     }
-    wsRef.current = null
-    if (pollRef.current) window.clearInterval(pollRef.current)
-    pollRef.current = null
-    if (reconnectRef.current) window.clearTimeout(reconnectRef.current)
-    reconnectRef.current = null
-    if (heartbeatRef.current) window.clearInterval(heartbeatRef.current)
-    heartbeatRef.current = null
-    localStorage.removeItem(ACTIVE_JOB_KEY)
-    setConnectionNote('')
+    const scheduleAuthRefresh = () => {
+      if (disposed) return
+      if (refreshTimer !== null) clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(resolveAuth, 75)
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') scheduleAuthRefresh()
+    }
+    resolveAuth()
+    window.addEventListener('online', scheduleAuthRefresh)
+    window.addEventListener('focus', scheduleAuthRefresh)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      disposed = true
+      if (refreshTimer !== null) clearTimeout(refreshTimer)
+      window.removeEventListener('online', scheduleAuthRefresh)
+      window.removeEventListener('focus', scheduleAuthRefresh)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
+
+  const stopWatchingJob = useCallback(() => {
+    watcherRef.current?.stop()
+    watcherRef.current = null
+    const watchedJobId = watchedJobIdRef.current
+    if (watchedJobId) {
+      clearPersistedActiveTask(localStorage, watchedStorageKeyRef.current, watchedJobId)
+    }
+    watchedJobIdRef.current = null
+    watchedStorageKeyRef.current = null
+    setActiveTask(null)
+    setConnectionNote('')
+  }, [setActiveTask])
 
   const applyJobSnapshot = useCallback((data: any) => {
     if (data.type === 'init' || data.type === 'queue') {
@@ -99,13 +159,11 @@ export default function GeneratePanel() {
         setGenerating(false)
         setProgress(100)
         setQueue(null, null)
-        stopWatchingJob()
       }
       if (data.status === 'error' || data.status === 'blocked') {
         setError(data.error ?? 'Batch generation failed.')
         setGenerating(false)
         setQueue(null, null)
-        stopWatchingJob()
       }
     }
     if (data.status === 'queued') {
@@ -128,113 +186,141 @@ export default function GeneratePanel() {
       } else if (data.provider_warning) {
         setError(data.provider_warning)
       }
-      stopWatchingJob()
     }
     if (data.type === 'error' || data.status === 'error') {
       setError(data.error ?? 'Unknown error')
       setGenerating(false)
       setQueue(null, null)
-      stopWatchingJob()
     }
     if (data.type === 'blocked' || data.status === 'blocked') {
       setError(data.error ?? 'Blocked by child safety filter.')
       setGenerating(false)
       setQueue(null, null)
-      stopWatchingJob()
     }
     if (data.type === 'cancelled' || data.status === 'cancelled') {
       setGenerating(false)
       setProgress(0)
       setQueue(null, null)
-      stopWatchingJob()
     }
-  }, [setError, setGenerating, setProgress, setQueue, setResults, stopWatchingJob])
+  }, [setError, setGenerating, setProgress, setQueue, setResults])
 
-  const watchJob = useCallback((jobId: string) => {
-    localStorage.setItem(ACTIVE_JOB_KEY, jobId)
-    if (reconnectRef.current) window.clearTimeout(reconnectRef.current)
-    reconnectRef.current = null
-    if (heartbeatRef.current) window.clearInterval(heartbeatRef.current)
-    heartbeatRef.current = null
-    if (wsRef.current) {
-      wsRef.current.onclose = null
-      wsRef.current.onerror = null
-      wsRef.current.close()
-    }
-    wsRef.current = connectWS(
+  const watchJob = useCallback((jobId: string, storageKey: string | null) => {
+    watcherRef.current?.stop()
+    watchedJobIdRef.current = jobId
+    watchedStorageKeyRef.current = storageKey
+    persistActiveTask(localStorage, storageKey, jobId)
+    const watcher = createTaskWatcher({
       jobId,
-      (data: any) => {
-        setConnectionNote('')
-        applyJobSnapshot(data)
+      fetchSnapshot: () => apiFetch.jobStatus(jobId),
+      openSocket: (onSnapshot, onClose) => connectWS(
+        jobId,
+        data => onSnapshot(data as Partial<GpuTaskResponse>),
+        onClose,
+      ),
+      onSnapshot: snapshot => {
+        if (
+          watchedJobIdRef.current !== jobId
+          || !canDeliverTaskResult(activeTaskKeyRef.current, watchedStorageKeyRef.current)
+        ) return
+        setActiveTask(snapshot)
+        applyJobSnapshot(snapshot)
       },
-      () => {
-        setConnectionNote('Live connection dropped. Reconnecting and checking the job every few seconds.')
-        if (reconnectRef.current) window.clearTimeout(reconnectRef.current)
-        reconnectRef.current = window.setTimeout(() => {
-          if (localStorage.getItem(ACTIVE_JOB_KEY) === jobId) watchJob(jobId)
-        }, 2500)
+      onTerminal: () => {
+        if (
+          watchedJobIdRef.current !== jobId
+          || !canDeliverTaskResult(activeTaskKeyRef.current, watchedStorageKeyRef.current)
+        ) return
+        clearPersistedActiveTask(localStorage, watchedStorageKeyRef.current, jobId)
+        watcherRef.current = null
+        watchedJobIdRef.current = null
+        watchedStorageKeyRef.current = null
+        setActiveTask(null)
       },
-    )
-    heartbeatRef.current = window.setInterval(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        try { wsRef.current.send('ping') } catch {}
-      }
-    }, 20000)
-    if (pollRef.current) window.clearInterval(pollRef.current)
-    pollRef.current = window.setInterval(() => {
-      apiFetch.jobStatus(jobId)
-        .then(data => {
-          setConnectionNote('')
-          applyJobSnapshot(data)
-        })
-        .catch(() => {
-          setConnectionNote('Network is spotty. Krea is still trying to reconnect to this job.')
-        })
-    }, 2500)
-  }, [applyJobSnapshot])
+      onConnectionNote: note => {
+        if (
+          watchedJobIdRef.current === jobId
+          && canDeliverTaskResult(activeTaskKeyRef.current, watchedStorageKeyRef.current)
+        ) {
+          setConnectionNote(note)
+        }
+      },
+      onError: error => {
+        if (
+          watchedJobIdRef.current !== jobId
+          || !canDeliverTaskResult(activeTaskKeyRef.current, watchedStorageKeyRef.current)
+        ) return
+        clearPersistedActiveTask(localStorage, watchedStorageKeyRef.current, jobId)
+        watcherRef.current = null
+        watchedJobIdRef.current = null
+        watchedStorageKeyRef.current = null
+        setActiveTask(null)
+        setGenerating(false)
+        setQueue(null, null)
+        setError(error.message)
+      },
+      acknowledgeAfterDelivery: snapshot =>
+        snapshot.status === 'done'
+          ? apiFetch.ackJob(jobId).then(() => undefined).catch(() => undefined)
+          : undefined,
+    })
+    watcherRef.current = watcher
+    watcher.start()
+  }, [applyJobSnapshot, setActiveTask, setError, setGenerating, setQueue])
 
   useEffect(() => {
-    const resumeJob = () => {
-      const jobId = localStorage.getItem(ACTIVE_JOB_KEY)
-      if (!jobId) return
-      apiFetch.jobStatus(jobId)
-        .then(data => {
-          if (['queued', 'running'].includes(data.status)) {
-            setGenerating(true)
-            setJobId(jobId)
-            applyJobSnapshot(data)
-            watchJob(jobId)
-          } else if (data.status === 'done' && data.images?.length) {
-            applyJobSnapshot(data)
-          } else {
-            localStorage.removeItem(ACTIVE_JOB_KEY)
-          }
-        })
-        .catch(() => {
-          setConnectionNote('Could not reconnect yet. Krea will retry when the phone is back online.')
-        })
+    if (!activeTaskKey) return
+    const transition = reconcileActiveTaskIdentity({
+      previousResolvedKey: resolvedStorageKeyRef.current,
+      nextResolvedKey: activeTaskKey,
+      watcherActive: watcherRef.current !== null,
+      watchedStorageKey: watchedStorageKeyRef.current,
+    })
+    resolvedStorageKeyRef.current = activeTaskKey
+
+    if (transition.stopWatcher) {
+      watcherRef.current?.stop()
+      watcherRef.current = null
+      watchedJobIdRef.current = null
+      watchedStorageKeyRef.current = null
     }
-    resumeJob()
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') resumeJob()
+    if (transition.identityChanged) {
+      setActiveTask(null)
+      setGenerating(false)
+      setJobId(null)
+      setProgress(0)
+      setQueue(null, null)
+      setResults([])
+      setError(null)
+      setConnectionNote('')
     }
-    window.addEventListener('online', resumeJob)
-    window.addEventListener('focus', resumeJob)
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      window.removeEventListener('online', resumeJob)
-      window.removeEventListener('focus', resumeJob)
-      document.removeEventListener('visibilitychange', onVisible)
+
+    if (transition.adoptStorageKey) {
+      const adoptedKey = adoptActiveTaskPersistence(
+        localStorage,
+        transition.adoptStorageKey,
+        watchedJobIdRef.current,
+        true,
+      )
+      if (adoptedKey) watchedStorageKeyRef.current = adoptedKey
+      return
     }
-  }, [applyJobSnapshot, setGenerating, setJobId, watchJob])
+
+    if (!transition.consultStorageKey) return
+    const jobId = readPersistedActiveTask(localStorage, transition.consultStorageKey)
+    if (!jobId) return
+    setGenerating(true)
+    setJobId(jobId)
+    watchJob(jobId, transition.consultStorageKey)
+  }, [activeTaskKey, setActiveTask, setError, setGenerating, setJobId, setProgress, setQueue, setResults, watchJob])
 
   const handleGenerate = useCallback(async () => {
-    if (generating || promptBusy) return
+    if (generating || promptBusy || atTaskCap) return
     setError(null)
     setGenerating(true)
     setProgress(0)
     setQueue(null, null)
-    setResults([])
+    // Previous results stay visible while the new job queues/renders; they are
+    // replaced when the first new image arrives.
     try {
       const { job_id, status, queue_position, queue_length } = await apiFetch.generate({
         prompt: params.prompt,
@@ -365,20 +451,31 @@ export default function GeneratePanel() {
       })
       setJobId(job_id)
       setQueue(queue_position ?? null, queue_length ?? null)
+      setActiveTask({
+        job_id,
+        status,
+        progress: 0,
+        images: [],
+        task_kind: 'generation',
+        queue_position: queue_position ?? null,
+        queue_length: queue_length ?? null,
+      })
       if (status === 'blocked') {
         setGenerating(false)
+        setActiveTask(null)
         setError('This prompt was blocked by the child safety filter and sent to an admin for review.')
         return
       }
 
-      watchJob(job_id)
+      watchJob(job_id, activeTaskKeyRef.current)
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e.message ?? 'Request failed')
+      const detail = e?.response?.data?.detail
+      setError((typeof detail === 'string' ? detail : detail?.message) ?? e.message ?? 'Request failed')
       setGenerating(false)
       setQueue(null, null)
       stopWatchingJob()
     }
-  }, [params, generating, promptBusy, setQueue, setJobId, setGenerating, setProgress, setResults, setError, watchJob, stopWatchingJob])
+  }, [params, generating, promptBusy, atTaskCap, activeTaskKey, setQueue, setJobId, setGenerating, setProgress, setResults, setError, setActiveTask, watchJob, stopWatchingJob])
 
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 900, mx: 'auto' }}>
@@ -389,21 +486,41 @@ export default function GeneratePanel() {
           </Alert>
         )}
         {!modelLoaded && !modelLoading && (
-          <Alert
-            severity="warning"
-            icon={<WarningAmberIcon />}
-            action={
-              <Button color="inherit" size="small" onClick={() => setTab(TAB.SYSTEM)}>
-                Load model
-              </Button>
-            }
-          >
-            No model loaded — go to System tab to load a checkpoint before generating.
-          </Alert>
+          backendMode === 'comfyui' ? (
+            <Alert
+              severity="warning"
+              icon={<WarningAmberIcon />}
+              action={
+                <Button color="inherit" size="small" onClick={() => setTab(TAB.SYSTEM)}>
+                  System status
+                </Button>
+              }
+            >
+              The ComfyUI engine isn't reachable — generation is paused. It usually starts with the app;
+              give it a moment or check the System tab. (Models load on demand, nothing to load manually.)
+            </Alert>
+          ) : (
+            <Alert
+              severity="warning"
+              icon={<WarningAmberIcon />}
+              action={
+                <Button color="inherit" size="small" onClick={() => setTab(TAB.SYSTEM)}>
+                  Load model
+                </Button>
+              }
+            >
+              No model loaded — go to System tab to load a checkpoint before generating.
+            </Alert>
+          )
         )}
         {activeEngine && !!activeEngine.unsupported_controls?.length && (
           <Alert severity="warning" sx={{ py: 0.75 }}>
             {`${activeEngine.label}: unsupported Krea-native controls are hidden or ignored: ${activeEngine.unsupported_controls.join(', ')}.`}
+          </Alert>
+        )}
+        {childAccount && (
+          <Alert severity="info" sx={{ py: 0.5 }}>
+            This is a supervised account: prompts and images pass a safety filter, and anything blocked is sent to an admin for review.
           </Alert>
         )}
 
@@ -465,6 +582,11 @@ export default function GeneratePanel() {
 
         {generationError && <Alert severity="error" onClose={() => setError(null)}>{generationError}</Alert>}
         {promptBusy && <Alert severity="info" sx={{ py: 0 }}>Magic Wand is still rewriting the prompt. Generate will be available when it finishes.</Alert>}
+        {atTaskCap && (
+          <Alert severity="warning" sx={{ py: 0 }}>
+            All {admission?.per_user_limit ?? 8} GPU task slots are in use. Finish or cancel a task before starting another.
+          </Alert>
+        )}
         {connectionNote && <Alert severity="info" sx={{ py: 0 }}>{connectionNote}</Alert>}
         {inRedrawStudio && (
           <Alert severity={(params.init_image_b64 || params.moodboard_images.length) ? 'success' : 'warning'} sx={{ py: 0 }}>
@@ -490,11 +612,11 @@ export default function GeneratePanel() {
           size="large"
           startIcon={generating ? <CircularProgress size={18} color="inherit" /> : <AutoAwesomeIcon />}
           onClick={handleGenerate}
-          disabled={generating || promptBusy || !params.prompt.trim() || !modelLoaded}
+          disabled={generating || promptBusy || atTaskCap || !params.prompt.trim() || !modelLoaded}
           fullWidth
           sx={{ height: 52, fontSize: '1rem' }}
         >
-          {generating ? 'Generating…' : promptBusy ? 'Waiting for Magic Wand…' : 'Generate'}
+          {generating ? 'Generating…' : promptBusy ? 'Waiting for Magic Wand…' : atTaskCap ? 'GPU task slots full' : 'Generate'}
         </Button>
 
         <ResultsView images={results} seed={lastSeed} metadata={resultsMetadata} />

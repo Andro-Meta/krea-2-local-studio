@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
-  Box, Button, Chip, CircularProgress, Collapse, Dialog, DialogContent, DialogTitle,
+  Alert, Box, Button, Chip, CircularProgress, Collapse, Dialog, DialogContent, DialogTitle,
   IconButton, InputAdornment, LinearProgress, MenuItem, Slider, Stack, TextField,
   ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material'
@@ -197,6 +197,7 @@ export default function LoraSection() {
   const [importUrl, setImportUrl] = useState('')
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState('')
+  const [downloadError, setDownloadError] = useState('')
   const [showImport, setShowImport] = useState(false)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'attached' | 'krea2'>('all')
@@ -235,7 +236,7 @@ export default function LoraSection() {
   const download = async (name: string) => {
     setDownloading(d => ({ ...d, [name]: true }))
     try { await apiFetch.downloadLora(name); await refresh() }
-    catch (e: any) { alert(`Download failed: ${e?.response?.data?.detail ?? e.message}`) }
+    catch (e: any) { setDownloadError(`Download failed: ${e?.response?.data?.detail ?? e.message}`) }
     setDownloading(d => ({ ...d, [name]: false }))
   }
 
@@ -264,6 +265,10 @@ export default function LoraSection() {
 
   if (!loras.length) return null
 
+  const downloadErrorAlert = downloadError ? (
+    <Alert severity="error" onClose={() => setDownloadError('')} sx={{ mb: 1 }}>{downloadError}</Alert>
+  ) : null
+
   // ---- attached editor row ------------------------------------------------
   const renderAttachedEditor = (attached: NonNullable<ReturnType<typeof attachedFor>>) => {
     const info = infoFor(attached.name)
@@ -285,6 +290,11 @@ export default function LoraSection() {
               : [{ value: -2, label: 'avoid' }, { value: 0, label: 'off' }, { value: 2, label: 'apply' }, { value: 4, label: 'max' }]}
             onChange={(_, v) => setStrength(attached.name, v as number)} size="small" valueLabelDisplay="auto"
             sx={{ '& .MuiSlider-markLabel': { fontSize: 10 } }} />
+          {isBypass && (
+            <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: -0.5 }}>
+              This LoRA uses a huge scale on purpose: its weights are near-zero, so thousands ≈ a normal 1.0. Default 6850.
+            </Typography>
+          )}
         </Box>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 0.25 }}>
           {isBypass && (
@@ -377,6 +387,7 @@ export default function LoraSection() {
       </Stack>
       {syncing && <LinearProgress sx={{ mb: 0.75, borderRadius: 1 }} />}
       {syncMsg && <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mb: 0.75 }}>{syncMsg}</Typography>}
+      {downloadErrorAlert}
 
       {/* Search + filters */}
       <Stack direction="row" spacing={1} sx={{ mb: 1 }} alignItems="center">
