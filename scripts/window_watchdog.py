@@ -205,7 +205,7 @@ def _already_running() -> bool:
     itself makes API calls in between, which let duplicates slip through."""
     ERROR_ALREADY_EXISTS = 183
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW(None, False, "Global\\KreaWindowWatchdog")
+    kernel32.CreateMutexW(None, False, "Local\\KreaWindowWatchdog")
     return ctypes.get_last_error() == ERROR_ALREADY_EXISTS
 
 

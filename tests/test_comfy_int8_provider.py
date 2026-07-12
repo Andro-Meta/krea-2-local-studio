@@ -10,12 +10,15 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from support import mock_atomic_cancel_capability  # noqa: E402
+
 
 class NativeInt8ApiTests(unittest.TestCase):
     def test_int8_status_reports_comfy_loader_and_assets(self) -> None:
         from fastapi.testclient import TestClient
         import main
 
+        mock_atomic_cancel_capability(main)
         with TestClient(main.app) as client:
             response = client.get("/api/int8/status")
 
@@ -33,6 +36,7 @@ class NativeInt8ApiTests(unittest.TestCase):
         from fastapi.testclient import TestClient
         import main
 
+        mock_atomic_cancel_capability(main)
         with TestClient(main.app) as client:
             response = client.post("/api/int8/test-workflow")
 
@@ -43,6 +47,7 @@ class NativeInt8ApiTests(unittest.TestCase):
         import main
         import quality_assets
 
+        mock_atomic_cancel_capability(main)
         def fake_download(spec, token=None):
             return spec.local_path
 

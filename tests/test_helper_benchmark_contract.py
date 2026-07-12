@@ -18,6 +18,9 @@ for path in (BACKEND, SCRIPTS):
 
 import benchmark_qwen_helper as benchmark  # noqa: E402
 import main  # noqa: E402
+from support import mock_atomic_cancel_capability  # noqa: E402
+
+mock_atomic_cancel_capability(main)
 from gpu_task_queue import GpuTaskQueue  # noqa: E402
 from gpu_tasks import GENERATION, MODEL_WARMUP, PROMPT_EXPAND  # noqa: E402
 
@@ -380,6 +383,33 @@ class BenchmarkContractTests(unittest.TestCase):
             self.assertTrue(forced["warnings"])
             self.assertIn("serialized", forced["warnings"][0])
             warning.assert_called()
+
+    def test_real_run_reports_generic_error_without_exception_details(self):
+        valid = {
+            "ok": True,
+            "models": [benchmark.DEFAULT_MODEL],
+            "precisions": list(benchmark.DEFAULT_PRECISIONS),
+            "errors": [],
+        }
+        secret = "private studio command detail"
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "failed.json"
+            with (
+                patch.object(benchmark, "validate_comfy_options", return_value=valid),
+                patch.object(
+                    benchmark,
+                    "authenticate_studio_session",
+                    side_effect=RuntimeError(secret),
+                ),
+                patch.object(benchmark.logger, "exception") as logged,
+            ):
+                code = benchmark.main(["--force", "--output", str(output)])
+            report = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 3)
+        self.assertTrue(report["errors"])
+        self.assertNotIn(secret, json.dumps(report))
+        logged.assert_called_once()
 
     def test_share_auth_password_is_prompted_and_never_logged(self):
         class Response:

@@ -21,6 +21,9 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 import main  # noqa: E402
+from support import mock_atomic_cancel_capability  # noqa: E402
+
+mock_atomic_cancel_capability(main)
 from comfy_client import ComfyExecutionError  # noqa: E402
 from gpu_task_queue import BACKGROUND, GpuTaskQueue  # noqa: E402
 from gpu_tasks import (  # noqa: E402

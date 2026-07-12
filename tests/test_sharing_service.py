@@ -166,6 +166,22 @@ class SharingServiceTests(unittest.TestCase):
         self.assertTrue(any(":8200/" in url for url in seen_urls))
         self.assertTrue(any(":57569/" in url for url in seen_urls))
 
+    def test_local_krea_target_does_not_expose_connection_exception(self) -> None:
+        secret = "private-host-detail"
+        with (
+            patch("sharing_service.funnel_status", return_value={"message": ""}),
+            patch(
+                "sharing_service.urllib.request.urlopen",
+                side_effect=OSError(secret),
+            ),
+            patch.object(sharing_service.logger, "warning") as warning,
+        ):
+            status = sharing_service.local_krea_target_status(port=45678)
+
+        self.assertFalse(status["ok"])
+        self.assertNotIn(secret, status["message"])
+        warning.assert_called()
+
     def test_repair_funnel_runs_tailscale_up_and_reapplies_krea_path(self) -> None:
         calls = []
 

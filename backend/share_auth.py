@@ -286,7 +286,8 @@ def consume_bootstrap_credential(credential_path: Path, username: str, *, attemp
     if not isinstance(payload, dict) or payload.get("username") != username:
         return False
     last_error: OSError | None = None
-    for _ in range(max(1, attempts)):
+    attempt_count = max(1, attempts)
+    for attempt in range(attempt_count):
         try:
             credential_path.unlink()
             return True
@@ -294,6 +295,8 @@ def consume_bootstrap_credential(credential_path: Path, username: str, *, attemp
             return True
         except OSError as exc:
             last_error = exc
+            if attempt + 1 < attempt_count:
+                time.sleep(0.1)
     raise BootstrapCredentialDeletionError(
         "one-time bootstrap credential could not be deleted"
     ) from last_error

@@ -22,6 +22,9 @@ if str(BACKEND) not in sys.path:
 
 import comfy_qwen_vl  # noqa: E402
 import main  # noqa: E402
+from support import mock_atomic_cancel_capability  # noqa: E402
+
+mock_atomic_cancel_capability(main)
 import prompt_expander  # noqa: E402
 import prompt_planner  # noqa: E402
 import settings as settings_module  # noqa: E402
@@ -493,6 +496,9 @@ class QueueAndModelTests(unittest.IsolatedAsyncioTestCase):
 
     def test_explicit_transformers_cuda_frees_comfy_before_load(self):
         events: list[str] = []
+        fake_torch = ModuleType("torch")
+        fake_torch.bfloat16 = object()
+        fake_torch.float32 = object()
         fake_transformers = ModuleType("transformers")
         fake_transformers.AutoTokenizer = SimpleNamespace(
             from_pretrained=Mock(
@@ -509,7 +515,10 @@ class QueueAndModelTests(unittest.IsolatedAsyncioTestCase):
             patch.object(prompt_expander, "_resolve_local_qwen_device", return_value="cuda"),
             patch.object(prompt_expander, "free_comfy_vram", side_effect=lambda **_k: events.append("free") or True),
             patch("settings.settings.local_llm_backend", "transformers"),
-            patch.dict(sys.modules, {"transformers": fake_transformers}),
+            patch.dict(
+                sys.modules,
+                {"torch": fake_torch, "transformers": fake_transformers},
+            ),
         ):
             with self.assertRaises(RuntimeError):
                 prompt_expander._load_local_qwen.__wrapped__("fake-model")

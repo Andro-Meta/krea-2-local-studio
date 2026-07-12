@@ -995,6 +995,7 @@ def main(argv: list[str] | None = None) -> int:
         write_report_atomic(args.output, report)
         return 0
 
+    warning: str | None = None
     try:
         if args.force:
             warning = (
@@ -1017,10 +1018,13 @@ def main(argv: list[str] | None = None) -> int:
                 "subsequent_krea": bool(args.subsequent_krea),
             },
         )
-        if args.force:
+        if warning is not None:
             report.setdefault("warnings", []).append(warning)
-    except Exception as exc:
-        report.setdefault("errors", []).append(f"{type(exc).__name__}: {exc}")
+    except Exception:
+        logger.exception("Queued benchmark failed")
+        report.setdefault("errors", []).append(
+            "Queued benchmark failed. Check the benchmark log for details."
+        )
         write_report_atomic(args.output, report)
         return 3
     write_report_atomic(args.output, report)

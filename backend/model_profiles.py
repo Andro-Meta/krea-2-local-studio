@@ -194,10 +194,11 @@ def engine_catalog() -> dict[str, Any]:
     except Exception:
         configured = "native_pytorch"
     engines = [native, native_gguf, int8]
-    if configured in {e["engine_id"] for e in engines}:
+    engine_ids = {engine["engine_id"] for engine in engines}
+    if configured in engine_ids:
         for e in engines:
             e["default"] = e["engine_id"] == configured
-    return {"engines": engines, "default_engine": configured if configured in {e["engine_id"] for e in engines} else "native_pytorch"}
+    return {"engines": engines, "default_engine": configured if configured in engine_ids else "native_pytorch"}
 
 
 def resolve_model_profile(profile_id: str | None, checkpoint: str = "turbo") -> ModelProfile:

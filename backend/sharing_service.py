@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ PUBLIC_PATH = "/krea"
 TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download/windows"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 URL_RE = re.compile(r"https://[\w.-]+\.ts\.net\S*")
+logger = logging.getLogger(__name__)
 
 
 def current_server_port(default: int = 8200) -> int:
@@ -191,7 +193,6 @@ def local_krea_target_status(port: int | None = None) -> dict:
     except Exception:
         pass
     last_url = ""
-    last_error = ""
     body = ""
     for candidate_port in ports:
         url = f"http://127.0.0.1:{int(candidate_port)}{PUBLIC_PATH}/api/auth/me"
@@ -203,7 +204,7 @@ def local_krea_target_status(port: int | None = None) -> dict:
         except urllib.error.HTTPError as exc:
             return {"ok": False, "url": url, "auth_required": False, "message": f"Local Krea returned HTTP {exc.code}."}
         except Exception as exc:
-            last_error = str(exc)
+            logger.warning("Local Krea sharing probe failed for %s", url, exc_info=exc)
     else:
         return {
             "ok": False,
@@ -211,7 +212,7 @@ def local_krea_target_status(port: int | None = None) -> dict:
             "auth_required": False,
             "message": (
                 "Local Krea is not reachable on the expected sharing port. "
-                f"Checked ports {ports}. {last_error}".strip()
+                f"Checked ports {ports}."
             ),
         }
     try:

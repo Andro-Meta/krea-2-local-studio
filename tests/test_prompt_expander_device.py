@@ -5,7 +5,8 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -35,6 +36,14 @@ class _FakeTorch:
         self.cuda = _FakeCuda(free_gb=free_gb, available=available, allocated_gb=allocated_gb)
 
 
+def _fake_transformers_module() -> ModuleType:
+    module = ModuleType("transformers")
+    module.AutoTokenizer = SimpleNamespace(from_pretrained=Mock())
+    module.Qwen3VLProcessor = SimpleNamespace(from_pretrained=Mock())
+    module.Qwen3VLForConditionalGeneration = SimpleNamespace(from_pretrained=Mock())
+    return module
+
+
 class PromptExpanderDeviceTests(unittest.TestCase):
     def test_auto_fails_fast_when_vram_is_tight(self) -> None:
         import prompt_expander
@@ -44,12 +53,17 @@ class PromptExpanderDeviceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Auto mode no longer falls back to CPU"):
                 prompt_expander._resolve_local_qwen_device(_FakeTorch(free_gb=8.0))
     def test_shared_classifier_is_precise(self) -> None:
-        import torch
         from gpu_recovery import is_cuda_oom
 
-        self.assertTrue(is_cuda_oom(torch.cuda.OutOfMemoryError("allocation")))
-        self.assertTrue(is_cuda_oom(RuntimeError("CUDA out of memory")))
-        self.assertFalse(is_cuda_oom(RuntimeError("CPU out of memory")))
+        class FakeCudaOutOfMemoryError(RuntimeError):
+            pass
+
+        fake_torch = ModuleType("torch")
+        fake_torch.cuda = SimpleNamespace(OutOfMemoryError=FakeCudaOutOfMemoryError)
+        with patch.dict(sys.modules, {"torch": fake_torch}):
+            self.assertTrue(is_cuda_oom(FakeCudaOutOfMemoryError("allocation")))
+            self.assertTrue(is_cuda_oom(RuntimeError("CUDA out of memory")))
+            self.assertFalse(is_cuda_oom(RuntimeError("CPU out of memory")))
 
     def test_prompt_expander_reraises_cuda_oom_but_soft_fails_other_errors(self):
         import prompt_expander
@@ -187,12 +201,21 @@ class PromptExpanderDeviceTests(unittest.TestCase):
     def test_explicit_transformers_cuda_frees_comfy_before_model_load(self) -> None:
         import prompt_expander
 
+        fake_torch = ModuleType("torch")
+        fake_torch.bfloat16 = object()
+        fake_torch.float32 = object()
+        fake_transformers = _fake_transformers_module()
         with (
+            patch.dict(
+                sys.modules,
+                {"torch": fake_torch, "transformers": fake_transformers},
+            ),
             patch.object(prompt_expander, "_resolve_local_qwen_device", return_value="cuda"),
             patch.object(prompt_expander, "free_comfy_vram") as free,
             patch("settings.settings.local_llm_backend", "transformers"),
-            patch(
-                "transformers.AutoTokenizer.from_pretrained",
+            patch.object(
+                fake_transformers.AutoTokenizer,
+                "from_pretrained",
                 side_effect=RuntimeError("stop after free"),
             ),
         ):
@@ -204,13 +227,21 @@ class PromptExpanderDeviceTests(unittest.TestCase):
     def test_transformers_cuda_aborts_when_comfy_vram_release_fails(self) -> None:
         import prompt_expander
 
+        fake_torch = ModuleType("torch")
+        fake_torch.bfloat16 = object()
+        fake_torch.float32 = object()
+        fake_transformers = _fake_transformers_module()
         with (
+            patch.dict(
+                sys.modules,
+                {"torch": fake_torch, "transformers": fake_transformers},
+            ),
             patch.object(prompt_expander, "_resolve_local_qwen_device", return_value="cuda"),
             patch.object(prompt_expander, "free_comfy_vram", return_value=False),
             patch("settings.settings.local_llm_backend", "transformers"),
-            patch("transformers.AutoTokenizer.from_pretrained") as tokenizer_loader,
-            patch("transformers.Qwen3VLProcessor.from_pretrained") as processor_loader,
-            patch("transformers.Qwen3VLForConditionalGeneration.from_pretrained") as model_loader,
+            patch.object(fake_transformers.AutoTokenizer, "from_pretrained") as tokenizer_loader,
+            patch.object(fake_transformers.Qwen3VLProcessor, "from_pretrained") as processor_loader,
+            patch.object(fake_transformers.Qwen3VLForConditionalGeneration, "from_pretrained") as model_loader,
         ):
             with self.assertRaisesRegex(RuntimeError, "ComfyUI VRAM"):
                 prompt_expander._load_local_qwen.__wrapped__("fake-model")

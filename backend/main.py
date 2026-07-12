@@ -5,7 +5,6 @@ import asyncio
 import base64
 import copy
 import io
-import json
 import logging
 import os
 import random
@@ -75,17 +74,15 @@ from moodboards_catalog import (
     set_moodboard_favorite,
     should_sync_moodboards,
 )
-from prompt_expander import describe_image_local, describe_image_openrouter, expand_prompt_result, openrouter_error_hint
+from prompt_expander import describe_image_local, describe_image_openrouter, expand_prompt_result
 from prompt_planner import plan_prompt
 from prompt_recipes import delete_recipe, list_recipes, save_recipe
 from settings_env import read_env, secret_value, write_env
 from schemas import (
     AutoMaskRequest,
     DescribeImageRequest,
-    DescribeImageResponse,
     DepthPreviewRequest,
     ExpandPromptRequest,
-    ExpandPromptResponse,
     FavoriteRequest,
     GenerationRequest,
     HelperBenchmarkRequest,
@@ -102,7 +99,6 @@ from schemas import (
     MoodboardMashupRequest,
     MoodboardListResponse,
     PlanPromptRequest,
-    PlanPromptResponse,
     PromptRecipe,
     PromptRecipeListResponse,
     MoodboardItem,
@@ -493,7 +489,14 @@ async def sharing_funnel_start():
 @app.post("/api/sharing/funnel/repair")
 async def sharing_funnel_repair():
     _funnel_health_monitor.enable()
-    return repair_funnel()
+    try:
+        return repair_funnel()
+    except Exception:
+        logger.exception("Sharing Funnel repair failed")
+        raise HTTPException(
+            status_code=502,
+            detail="Sharing repair failed. Check the server logs and retry.",
+        )
 
 
 @app.post("/api/sharing/funnel/stop")

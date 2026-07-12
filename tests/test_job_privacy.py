@@ -11,6 +11,9 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 import main  # noqa: E402
+from support import mock_atomic_cancel_capability  # noqa: E402
+
+mock_atomic_cancel_capability(main)
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 

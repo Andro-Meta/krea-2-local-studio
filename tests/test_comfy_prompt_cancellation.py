@@ -23,6 +23,9 @@ import comfy_client  # noqa: E402
 import comfy_qwen_vl  # noqa: E402
 import comfy_workflows  # noqa: E402
 import main  # noqa: E402
+from support import mock_atomic_cancel_capability  # noqa: E402
+
+mock_atomic_cancel_capability(main)
 import sign_copy_pass  # noqa: E402
 from gpu_task_queue import GpuTaskQueue  # noqa: E402
 from gpu_tasks import GENERATION  # noqa: E402

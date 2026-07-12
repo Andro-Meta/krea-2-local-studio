@@ -33,6 +33,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import main  # noqa: E402
 from backend.gpu_task_queue import GpuTaskQueue  # noqa: E402
 from backend.gpu_tasks import MOODBOARD_GUIDANCE  # noqa: E402
+from support import mock_atomic_cancel_capability  # noqa: E402
+
+mock_atomic_cancel_capability(main)
 
 if inserted_torch_stub:
     sys.modules.pop("torch", None)

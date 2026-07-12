@@ -22,6 +22,9 @@ if str(BACKEND) not in sys.path:
 
 import share_auth  # noqa: E402
 import main  # noqa: E402
+from support import mock_atomic_cancel_capability  # noqa: E402
+
+mock_atomic_cancel_capability(main)
 
 
 class FunnelHealthStateTests(unittest.TestCase):
@@ -277,7 +280,10 @@ class BootstrapCredentialTests(unittest.TestCase):
                     password="correct horse",
                 )
 
-            with patch.object(Path, "unlink", side_effect=[OSError("busy"), None]) as unlink:
+            with (
+                patch.object(Path, "unlink", side_effect=[OSError("busy"), None]) as unlink,
+                patch("share_auth.time.sleep") as sleep,
+            ):
                 self.assertTrue(
                     share_auth.verify_login(
                         auth_path,
@@ -287,6 +293,7 @@ class BootstrapCredentialTests(unittest.TestCase):
                     )
                 )
             self.assertEqual(unlink.call_count, 2)
+            sleep.assert_called_once_with(0.1)
 
     def test_bootstrap_credential_unlink_failure_denies_login(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -299,7 +306,10 @@ class BootstrapCredentialTests(unittest.TestCase):
                     password="correct horse",
                 )
 
-            with patch.object(Path, "unlink", side_effect=OSError("busy")):
+            with (
+                patch.object(Path, "unlink", side_effect=OSError("busy")),
+                patch("share_auth.time.sleep") as sleep,
+            ):
                 with self.assertRaises(share_auth.BootstrapCredentialDeletionError):
                     share_auth.verify_login(
                         auth_path,
@@ -307,6 +317,7 @@ class BootstrapCredentialTests(unittest.TestCase):
                         "correct horse",
                         bootstrap_credential_path=credential_path,
                     )
+            self.assertEqual(sleep.call_args_list, [unittest.mock.call(0.1), unittest.mock.call(0.1)])
 
     def test_existing_user_login_without_bootstrap_marker_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -426,6 +437,23 @@ class BackendComfyCapabilityStartupTests(unittest.IsolatedAsyncioTestCase):
         capability.assert_called_once()
         execute.assert_awaited_once()
         self.assertEqual(jobs["warm"]["status"], "done")
+
+
+class SharingRepairEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repair_failure_is_logged_and_returns_generic_http_error(self) -> None:
+        secret = "tailscale --auth-key private-command"
+        with (
+            patch.object(main, "_funnel_health_monitor") as monitor,
+            patch.object(main, "repair_funnel", side_effect=RuntimeError(secret)),
+            patch.object(main.logger, "exception") as logged,
+        ):
+            with self.assertRaises(main.HTTPException) as raised:
+                await main.sharing_funnel_repair()
+
+        monitor.enable.assert_called_once()
+        logged.assert_called_once()
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertNotIn(secret, str(raised.exception.detail))
 
 
 class RuntimeScriptContractTests(unittest.TestCase):
@@ -603,6 +631,50 @@ Finalize-MrFlowLayout -ComfyDir '{comfy}' -CustomNodes '{comfy / "custom_nodes"}
         self.assertNotIn("New-NetFirewallRule", sharing)
         self.assertIn("Funnel targets localhost", sharing)
         self.assertIn("-LocalPort 8200", local)
+
+    def test_watchdog_uses_user_session_mutex(self) -> None:
+        watchdog = (ROOT / "scripts" / "window_watchdog.py").read_text(encoding="utf-8")
+        self.assertIn('"Local\\\\KreaWindowWatchdog"', watchdog)
+        self.assertNotIn('"Global\\\\KreaWindowWatchdog"', watchdog)
+
+    def test_watchdog_installer_generates_location_independent_vbs(self) -> None:
+        installer = ROOT / "scripts" / "install_watchdog_autostart.bat"
+        static_vbs = ROOT / "scripts" / "watchdog_autostart.vbs"
+        self.assertFalse(static_vbs.exists())
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "Non E Drive & Krea Space"
+            scripts = root / "scripts"
+            startup = Path(td) / "Startup"
+            scripts.mkdir(parents=True)
+            startup.mkdir()
+            copied_installer = scripts / installer.name
+            copied_installer.write_bytes(installer.read_bytes())
+            env = os.environ.copy()
+            env["APPDATA"] = str(Path(td))
+            result = subprocess.run(
+                ["cmd.exe", "/d", "/c", copied_installer.name],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=env,
+                cwd=scripts,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            generated = (
+                Path(td)
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+                / "Startup"
+                / "krea_window_watchdog.vbs"
+            ).read_text(encoding="utf-8")
+            resolved_root = str(root.resolve())
+            self.assertIn(resolved_root, generated)
+            self.assertIn("pythonw.exe", generated)
+            self.assertIn("window_watchdog.py", generated)
+            self.assertIn("WScript.Sleep 5000", generated)
+            self.assertNotIn("E:\\Krea 2", generated)
 
 
 if __name__ == "__main__":
