@@ -7,7 +7,6 @@ import copy
 import io
 import logging
 import os
-import random
 import re
 import secrets
 import subprocess
@@ -73,6 +72,7 @@ from moodboards_catalog import (
     reconcile_custom_moodboard_storage,
     set_moodboard_favorite,
     should_sync_moodboards,
+    suggest_moodboards,
 )
 from prompt_expander import describe_image_local, describe_image_openrouter, expand_prompt_result
 from prompt_planner import plan_prompt
@@ -183,6 +183,7 @@ _funnel_health_monitor = FunnelHealthMonitor(
     enabled=auto_repair_configured(os.environ.get("KREA_SHARE_AUTO_FUNNEL_ENABLED"))
 )
 SHARE_COOKIE = "krea_share_session"
+PUBLIC_ANONYMOUS_USERNAME = ":public-anonymous:"
 SHARE_COOKIE_SECURE = os.environ.get("KREA_SHARE_COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
 SHARE_SESSION_TTL_SECONDS = 12 * 60 * 60
 _share_sessions: dict[str, tuple[str, float]] = {}
@@ -237,6 +238,21 @@ def _request_user_role(request: Request) -> tuple[str | None, str, bool]:
     role = get_user_role(SHARE_AUTH_FILE, username) if username else None
     role = role or "user"
     return username, role, role == "admin"
+
+
+def _public_moodboard_username(request: Request) -> str:
+    """Resolve optional identity on an auth-exempt catalog request."""
+    if not SHARE_AUTH_ENABLED:
+        return "__local__"
+    state = getattr(request, "state", None)
+    username = getattr(state, "share_user", None) if state is not None else None
+    if username:
+        return str(username)
+    cookies = getattr(request, "cookies", None) or {}
+    return (
+        _auth_username_from_cookie(cookies.get(SHARE_COOKIE))
+        or PUBLIC_ANONYMOUS_USERNAME
+    )
 
 
 # Last time each authenticated user was seen making a request (for admin-only
@@ -1747,27 +1763,20 @@ async def _moderate_worker_text(job_id: str, text: str, *, action: str) -> bool:
     return False
 
 
-async def _moodboard_suggestions(prompt: str) -> list[dict]:
-    suggestions: list[dict] = []
+async def _moodboard_suggestions(
+    original_prompt: str,
+    expanded_prompt: str,
+    username: str,
+) -> list[dict]:
     try:
-        found = await list_moodboards(prompt, page_size=48)
-        pool = list(found.get("items", []) or [])
-        locked = pool[:4]
-        rotating = pool[4:48]
-        random.shuffle(rotating)
-        for item in (locked + rotating)[:12]:
-            guidance = item.get("qwen_guidance") or {}
-            reason = str(guidance.get("prompt_guidance") or item.get("taste_profile") or "")
-            suggestions.append({
-                "id": int(item["id"]),
-                "uuid": str(item.get("uuid") or ""),
-                "title": str(item.get("title") or f"Moodboard #{item['id']}"),
-                "reason": reason[:180],
-                "preview_image_urls": list(item.get("preview_image_urls") or [])[:4],
-            })
+        return await suggest_moodboards(
+            original_prompt,
+            expanded_prompt,
+            username,
+        )
     except Exception:
         logger.debug("Moodboard suggestions failed during prompt expansion", exc_info=True)
-    return suggestions
+        return []
 
 
 async def _run_helper_task(job_id: str, payload: dict) -> None:
@@ -1806,7 +1815,11 @@ async def _run_helper_task(job_id: str, payload: dict) -> None:
                 "error": expanded.error,
                 "backend": expanded.backend,
                 "suggested_moodboards": (
-                    await _moodboard_suggestions(payload["prompt"])
+                    await _moodboard_suggestions(
+                        payload["prompt"],
+                        expanded.expanded if not expanded.error else "",
+                        str(job.get("username") or ""),
+                    )
                     if payload.get("suggest_moodboards") and payload["prompt"].strip()
                     else []
                 ),
@@ -3219,7 +3232,7 @@ async def moderation_quarantine_file(filename: str):
 
 @app.get("/api/moodboards", response_model=MoodboardListResponse)
 async def moodboards(request: Request, q: str = "", page: int = 1, page_size: int = 50, favorites: bool = False, source: str = "", shuffle_seed: str = ""):
-    username, _role, _is_admin = _request_user_role(request)
+    username = _public_moodboard_username(request)
     return await list_moodboards(
         query=q,
         page=page,
@@ -3227,13 +3240,15 @@ async def moodboards(request: Request, q: str = "", page: int = 1, page_size: in
         favorites_only=favorites,
         source=source,
         shuffle_seed=shuffle_seed,
-        username=username or "",
+        username=username,
     )
 
 
 @app.get("/api/moodboards/discoveries/latest", response_model=MoodboardDiscoveryResponse)
-async def moodboard_latest_discovery():
-    return await latest_moodboard_discovery()
+async def moodboard_latest_discovery(request: Request):
+    return await latest_moodboard_discovery(
+        username=_public_moodboard_username(request)
+    )
 
 
 @app.get("/api/moodboards/cached-image")
@@ -3254,8 +3269,10 @@ async def moodboard_cached_image(url: str):
 
 @app.get("/api/moodboards/{moodboard_id}", response_model=MoodboardItem)
 async def moodboard_detail(moodboard_id: int, request: Request):
-    username, _role, _is_admin = _request_user_role(request)
-    item = await get_moodboard(moodboard_id, username=username or "")
+    item = await get_moodboard(
+        moodboard_id,
+        username=_public_moodboard_username(request),
+    )
     if item is None:
         raise HTTPException(404, "Not found")
     return item

@@ -18,6 +18,11 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 import aiosqlite
 import requests
 
+from moodboard_search import (
+    format_matched_reason,
+    get_cached_moodboard_search,
+    invalidate_moodboard_search_cache,
+)
 from settings import BASE_DIR, DB_PATH
 
 KREA_BASE_URL = "https://www.krea.ai"
@@ -538,6 +543,7 @@ async def seed_andrometa_moodboards(db_path: Path = DB_PATH) -> int:
             )
             seeded += 1
         await db.commit()
+    invalidate_moodboard_search_cache(db_path)
     return seeded
 
 
@@ -581,7 +587,9 @@ async def upsert_moodboard(record: MoodboardRecord, db_path: Path = DB_PATH) -> 
         )
         row = await (await db.execute("SELECT id FROM moodboards WHERE url = ?", (record.url,))).fetchone()
         await db.commit()
-        return int(row[0])
+        moodboard_id = int(row[0])
+    invalidate_moodboard_search_cache(db_path)
+    return moodboard_id
 
 
 async def set_moodboard_favorite(moodboard_id: int, favorite: bool, db_path: Path = DB_PATH, *, username: str = "") -> None:
@@ -617,6 +625,7 @@ async def set_moodboard_qwen_guidance(
             (json.dumps(guidance, sort_keys=True), _now_iso(), version, _now_iso(), moodboard_id),
         )
         await db.commit()
+    invalidate_moodboard_search_cache(db_path)
 
 
 def _raise_if_cancelled(cancel_probe) -> None:
@@ -920,6 +929,7 @@ async def reconcile_custom_moodboard_storage(
                 [(row_id,) for row_id in missing_ids],
             )
             await db.commit()
+        invalidate_moodboard_search_cache(db_path)
     return {
         "removed_prep": removed_prep,
         "removed_orphan_dirs": removed_orphans,
@@ -952,6 +962,7 @@ async def commit_prepared_moodboard_task(
                     ),
                 )
             await db.commit()
+        invalidate_moodboard_search_cache(db_path)
         items = [
             await get_moodboard(moodboard_id, db_path=db_path)
             for moodboard_id, _guidance in prepared.guidance_items
@@ -1000,6 +1011,7 @@ async def commit_prepared_moodboard_task(
     except Exception:
         await asyncio.to_thread(shutil.rmtree, prepared.final_dir, ignore_errors=True)
         raise
+    invalidate_moodboard_search_cache(db_path)
     await cleanup_prepared_moodboard_task(prepared)
     item = await get_moodboard(moodboard_id, db_path=db_path)
     if not item:
@@ -1201,6 +1213,7 @@ async def create_custom_moodboard(
     except Exception:
         await asyncio.to_thread(shutil.rmtree, board_dir, ignore_errors=True)
         raise
+    invalidate_moodboard_search_cache(db_path)
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
         row = await (await db.execute("SELECT * FROM moodboards WHERE url = ?", (url,))).fetchone()
@@ -1219,6 +1232,7 @@ async def delete_custom_moodboard(
     async with aiosqlite.connect(str(db_path)) as db:
         await db.execute("DELETE FROM moodboards WHERE id = ? AND source = 'custom'", (moodboard_id,))
         await db.commit()
+    invalidate_moodboard_search_cache(db_path)
     if item.get("uuid"):
         shutil.rmtree(storage_dir / str(item["uuid"]), ignore_errors=True)
     return True
@@ -1377,42 +1391,80 @@ def _sync_row_to_item(row: sqlite3.Row) -> dict:
     return item
 
 
-def _tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", text.lower())
+def _load_search_documents_sync(db_path: Path) -> list[dict]:
+    db = sqlite3.connect(str(db_path))
+    db.row_factory = sqlite3.Row
+    try:
+        rows = db.execute(
+            """
+            SELECT id, uuid, title, taste_profile, keywords, source,
+                   qwen_guidance_json, qwen_guidance_version
+            FROM moodboards
+            """
+        ).fetchall()
+        documents: list[dict] = []
+        for row in rows:
+            guidance = _json_dict(str(row["qwen_guidance_json"] or ""))
+            documents.append(
+                {
+                    "id": int(row["id"]),
+                    "uuid": str(row["uuid"] or ""),
+                    "title": str(row["title"] or ""),
+                    "taste_profile": str(row["taste_profile"] or ""),
+                    "keywords": _json_list(str(row["keywords"] or "[]")),
+                    "source": str(row["source"] or "official"),
+                    "qwen_guidance": guidance,
+                    "qwen_guidance_version": int(
+                        row["qwen_guidance_version"] or 0
+                    ),
+                }
+            )
+        return documents
+    finally:
+        db.close()
 
 
-def _score_item(item: dict, query: str) -> int:
-    if not query.strip():
-        return 1
-    guidance = item.get("qwen_guidance") or {}
-    haystack = " ".join(
-        [
-            item.get("title", ""),
-            item.get("taste_profile", ""),
-            " ".join(item.get("keywords", [])),
-            str(guidance.get("prompt_guidance") or ""),
-            str(guidance.get("negative_guidance") or ""),
-            " ".join(str(v) for v in guidance.get("style_axes", []) or []),
-            " ".join(str(v) for v in guidance.get("conditioning_notes", []) or []),
-            str(guidance.get("source_summary") or ""),
-        ]
-    ).lower()
-    score = 0
-    for token in _tokens(query):
-        variants = {token, token.rstrip("s"), f"{token}s"}
-        if any(variant and variant in haystack for variant in variants):
-            score += 10
-        if token in item.get("title", "").lower():
-            score += 10
-        if any(token in keyword.lower() for keyword in item.get("keywords", [])):
-            score += 8
-        if token in str(guidance.get("prompt_guidance") or "").lower():
-            score += 6
-        if token in " ".join(str(v) for v in guidance.get("style_axes", []) or []).lower():
-            score += 4
-        if token in " ".join(str(v) for v in guidance.get("conditioning_notes", []) or []).lower():
-            score += 4
-    return score
+async def _favorite_ids(username: str, db_path: Path) -> set[int]:
+    user = (username or "__local__").strip() or "__local__"
+    async with aiosqlite.connect(str(db_path)) as db:
+        rows = await (
+            await db.execute(
+                "SELECT moodboard_id FROM moodboard_favorites WHERE username = ?",
+                (user,),
+            )
+        ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
+async def _hydrate_moodboard_items(
+    ids: list[int],
+    *,
+    favorite_ids: set[int],
+    db_path: Path,
+) -> list[dict]:
+    if not ids:
+        return []
+    rows: list[aiosqlite.Row] = []
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        for start in range(0, len(ids), 900):
+            chunk = ids[start : start + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                await (
+                    await db.execute(
+                        f"SELECT * FROM moodboards WHERE id IN ({placeholders})",
+                        chunk,
+                    )
+                ).fetchall()
+            )
+    by_id: dict[int, dict] = {}
+    for row in rows:
+        item = _row_to_item(row)
+        item_id = int(item["id"])
+        item["favorite"] = item_id in favorite_ids
+        by_id[item_id] = item
+    return [by_id[item_id] for item_id in ids if item_id in by_id]
 
 
 async def list_moodboards(
@@ -1426,42 +1478,107 @@ async def list_moodboards(
     username: str = "",
     db_path: Path = DB_PATH,
 ) -> dict:
-    user = (username or "__local__").strip() or "__local__"
-    where_parts: list[str] = []
-    params: list[object] = []
+    cached, favorites = await asyncio.gather(
+        asyncio.to_thread(
+            get_cached_moodboard_search,
+            db_path,
+            lambda: _load_search_documents_sync(db_path),
+        ),
+        _favorite_ids(username, db_path),
+    )
+    documents_by_id = {
+        int(document["id"]): document
+        for document in cached.items
+        if source not in {"official", "custom", "andrometa"}
+        or document.get("source") == source
+    }
     if favorites_only:
-        where_parts.append("mf.username IS NOT NULL")
-    if source in {"official", "custom", "andrometa"}:
-        where_parts.append("m.source = ?")
-        params.append(source)
-    where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
-    async with aiosqlite.connect(str(db_path)) as db:
-        db.row_factory = aiosqlite.Row
-        rows = await (await db.execute(
-            f"""
-            SELECT m.*, CASE WHEN mf.username IS NULL THEN 0 ELSE 1 END AS user_favorite
-            FROM moodboards m
-            LEFT JOIN moodboard_favorites mf
-              ON mf.moodboard_id = m.id AND mf.username = ?
-            {where}
-            """,
-            [user, *params],
-        )).fetchall()
-    items = [_row_to_item(row) for row in rows]
+        documents_by_id = {
+            item_id: document
+            for item_id, document in documents_by_id.items()
+            if item_id in favorites
+        }
     if query.strip():
-        scored = [(_score_item(item, query), item) for item in items]
-        items = [item for score, item in scored if score > 0]
-        items.sort(key=lambda item: (-_score_item(item, query), item["title"]))
+        ranked = await asyncio.to_thread(cached.index.search, query)
+        ordered_ids = [
+            result.item_id
+            for result in ranked
+            if result.item_id in documents_by_id
+        ]
     elif shuffle_seed.strip():
         seed = shuffle_seed.strip()
-        items.sort(
-            key=lambda item: hashlib.sha256(f"{seed}:{item.get('id')}:{item.get('uuid', '')}".encode("utf-8")).hexdigest()
+        ordered_ids = sorted(
+            documents_by_id,
+            key=lambda item_id: hashlib.sha256(
+                f"{seed}:{item_id}:{documents_by_id[item_id].get('uuid', '')}".encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
         )
     else:
-        items.sort(key=lambda item: item["title"])
-    total = len(items)
+        ordered_ids = sorted(
+            documents_by_id,
+            key=lambda item_id: (
+                str(documents_by_id[item_id].get("title") or "").casefold(),
+                str(documents_by_id[item_id].get("uuid") or ""),
+                item_id,
+            ),
+        )
+    total = len(ordered_ids)
     start = max(0, page - 1) * page_size
-    return {"items": items[start:start + page_size], "total": total}
+    page_ids = ordered_ids[start : start + page_size]
+    items = await _hydrate_moodboard_items(
+        page_ids,
+        favorite_ids=favorites,
+        db_path=db_path,
+    )
+    return {"items": items, "total": total}
+
+
+async def suggest_moodboards(
+    original_prompt: str,
+    expanded_prompt: str,
+    username: str,
+    limit: int = 12,
+    db_path: Path = DB_PATH,
+) -> list[dict]:
+    cached, favorites = await asyncio.gather(
+        asyncio.to_thread(
+            get_cached_moodboard_search,
+            db_path,
+            lambda: _load_search_documents_sync(db_path),
+        ),
+        _favorite_ids(username, db_path),
+    )
+    ranked = await asyncio.to_thread(
+        cached.index.suggest,
+        original_prompt,
+        expanded_prompt,
+        favorite_ids=favorites,
+        limit=limit,
+    )
+    hydrated = await _hydrate_moodboard_items(
+        [result.item_id for result in ranked],
+        favorite_ids=favorites,
+        db_path=db_path,
+    )
+    by_id = {int(item["id"]): item for item in hydrated}
+    suggestions: list[dict] = []
+    for result in ranked:
+        source = by_id.get(result.item_id)
+        if source is None:
+            continue
+        cues = list(result.matched_cues[:3])
+        suggestions.append(
+            {
+                "id": result.item_id,
+                "uuid": str(source.get("uuid") or ""),
+                "title": str(source.get("title") or f"Moodboard #{result.item_id}"),
+                "reason": format_matched_reason(cues),
+                "preview_image_urls": list(source.get("preview_image_urls") or [])[:4],
+            }
+        )
+    return suggestions
 
 
 async def get_moodboard(moodboard_id: int, db_path: Path = DB_PATH, *, username: str = "") -> dict | None:
@@ -1614,13 +1731,30 @@ async def _get_existing_moodboard_urls(db_path: Path = DB_PATH) -> set[str]:
     return {str(row[0]) for row in rows}
 
 
-async def _items_by_ids(ids: list[int], db_path: Path = DB_PATH) -> list[dict]:
+async def _items_by_ids(
+    ids: list[int],
+    db_path: Path = DB_PATH,
+    *,
+    username: str = "",
+) -> list[dict]:
     if not ids:
         return []
+    user = (username or "__local__").strip() or "__local__"
     placeholders = ",".join("?" for _ in ids)
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
-        rows = await (await db.execute(f"SELECT * FROM moodboards WHERE id IN ({placeholders})", ids)).fetchall()
+        rows = await (
+            await db.execute(
+                f"""
+                SELECT m.*, CASE WHEN mf.username IS NULL THEN 0 ELSE 1 END AS user_favorite
+                FROM moodboards m
+                LEFT JOIN moodboard_favorites mf
+                  ON mf.moodboard_id = m.id AND mf.username = ?
+                WHERE m.id IN ({placeholders})
+                """,
+                [user, *ids],
+            )
+        ).fetchall()
     by_id = {int(row["id"]): _row_to_item(row) for row in rows}
     return [by_id[item_id] for item_id in ids if item_id in by_id]
 
@@ -1643,7 +1777,11 @@ async def _record_moodboard_discovery(new_ids: list[int], db_path: Path = DB_PAT
         await db.commit()
 
 
-async def latest_moodboard_discovery(db_path: Path = DB_PATH) -> dict:
+async def latest_moodboard_discovery(
+    db_path: Path = DB_PATH,
+    *,
+    username: str = "",
+) -> dict:
     empty = {"id": "", "discovered_at": "", "new_count": 0, "new_ids": [], "items": []}
     async with aiosqlite.connect(str(db_path)) as db:
         row = await (await db.execute("SELECT value FROM app_meta WHERE key = ?", (DISCOVERY_META_KEY,))).fetchone()
@@ -1654,7 +1792,7 @@ async def latest_moodboard_discovery(db_path: Path = DB_PATH) -> dict:
     except json.JSONDecodeError:
         return empty
     ids = [int(v) for v in payload.get("new_ids", []) if str(v).isdigit()]
-    items = await _items_by_ids(ids, db_path=db_path)
+    items = await _items_by_ids(ids, db_path=db_path, username=username)
     return {
         "id": str(payload.get("id", "")),
         "discovered_at": str(payload.get("discovered_at", "")),
@@ -1785,6 +1923,8 @@ async def apply_title_qualifiers(
                 await db.execute("UPDATE moodboards SET title = ? WHERE id = ?", (new_title, int(row["id"])))
                 updated += 1
         await db.commit()
+    if updated:
+        invalidate_moodboard_search_cache(db_path)
     return updated
 
 
