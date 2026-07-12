@@ -24,6 +24,7 @@ from moodboard_search import (  # noqa: E402
     normalize_tokens,
 )
 from moodboards_catalog import (  # noqa: E402
+    _hydrate_moodboard_items,
     _load_search_documents_sync,
     MoodboardRecord,
     init_moodboard_db,
@@ -33,7 +34,6 @@ from moodboards_catalog import (  # noqa: E402
     suggest_moodboards,
     upsert_moodboard,
 )
-import moodboards_catalog  # noqa: E402
 
 
 def item(
@@ -430,10 +430,9 @@ class MoodboardSearchCatalogTests(unittest.TestCase):
                     self.assertNotIn("related_urls", document)
                     self.assertNotIn("qwen_guidance_json", document)
 
-                with patch.object(
-                    moodboards_catalog,
-                    "_hydrate_moodboard_items",
-                    wraps=moodboards_catalog._hydrate_moodboard_items,
+                with patch(
+                    "moodboards_catalog._hydrate_moodboard_items",
+                    wraps=_hydrate_moodboard_items,
                 ) as hydrate:
                     page = await list_moodboards(
                         query="analog film grain",

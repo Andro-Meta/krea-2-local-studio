@@ -36,6 +36,7 @@ from backend import main  # noqa: E402
 from backend.gpu_task_queue import GpuTaskQueue  # noqa: E402
 from backend.gpu_tasks import MOODBOARD_GUIDANCE  # noqa: E402
 from moodboards_catalog import (  # noqa: E402
+    _record_moodboard_discovery,
     get_moodboard as catalog_get_moodboard,
     latest_moodboard_discovery as catalog_latest_discovery,
     MoodboardRecord,
@@ -44,7 +45,6 @@ from moodboards_catalog import (  # noqa: E402
     set_moodboard_favorite,
     upsert_moodboard,
 )
-import moodboards_catalog  # noqa: E402
 from support import mock_atomic_cancel_capability  # noqa: E402
 
 mock_atomic_cancel_capability(main)
@@ -91,6 +91,7 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
             cookies={main.SHARE_COOKIE: "unused"},
         )
         anonymous_request = SimpleNamespace(state=SimpleNamespace(), cookies={})
+        missing_cookies_request = SimpleNamespace(state=SimpleNamespace(), cookies=None)
         with (
             patch.object(main, "SHARE_AUTH_ENABLED", True),
             patch.object(main, "_auth_username_from_cookie", return_value=None) as cookie_auth,
@@ -99,6 +100,10 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
             cookie_auth.assert_not_called()
             self.assertEqual(
                 main._public_moodboard_username(anonymous_request),
+                main.PUBLIC_ANONYMOUS_USERNAME,
+            )
+            self.assertEqual(
+                main._public_moodboard_username(missing_cookies_request),
                 main.PUBLIC_ANONYMOUS_USERNAME,
             )
             self.assertFalse(
@@ -139,7 +144,7 @@ class MoodboardApiTests(unittest.IsolatedAsyncioTestCase):
             await set_moodboard_favorite(alice_board, True, db_path, username="alice")
             await set_moodboard_favorite(bob_board, True, db_path, username="bob")
             await set_moodboard_favorite(alice_board, True, db_path, username="__local__")
-            await moodboards_catalog._record_moodboard_discovery(
+            await _record_moodboard_discovery(
                 [alice_board, bob_board], db_path=db_path
             )
 

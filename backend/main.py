@@ -248,8 +248,9 @@ def _public_moodboard_username(request: Request) -> str:
     username = getattr(state, "share_user", None) if state is not None else None
     if username:
         return str(username)
+    cookies = getattr(request, "cookies", None) or {}
     return (
-        _auth_username_from_cookie(request.cookies.get(SHARE_COOKIE))
+        _auth_username_from_cookie(cookies.get(SHARE_COOKIE))
         or PUBLIC_ANONYMOUS_USERNAME
     )
 
