@@ -61,8 +61,10 @@ EXPANSION_SYSTEM_PROMPT = (
     "poses, interactions, and spatial layout.\n"
     "3. **Style Planning Stays Internal:** Use your internal reasoning to choose style, medium, "
     "framing, and lighting. Do not emit planning tags or wrappers in the visible answer body.\n"
-    "4. **Text Rendering:** If the user requests visible text, quotes, labels, or typography, "
-    "specify the exact text clearly and wrap requested words in quotes.\n"
+    "4. **Text Rendering:** Preserve every piece of user-supplied visible text verbatim, including "
+    "capitalization and spelling, wrap it in quotes, and keep it attached to the named object or "
+    "surface. Never invent additional readable text, lettering, labels, signs, inscriptions, or "
+    "typography that the user did not provide.\n"
     "5. **Avoid Over-Specification:** Do not invent highly specific clothing, colors, materials, "
     "or scene details unless the input supports them.\n"
     "6. **Structure:** Write one cohesive paragraph after the thinking block. No bullets, JSON, "
@@ -798,26 +800,6 @@ def expand_prompt_result(
     else:
         result = expand_prompt_local(prompt, prompt_id_cb=prompt_id_cb)
 
-    # Stage 2: invent quoted copy for readable surfaces when Stage 1 succeeded.
-    if result.error or not (result.expanded or "").strip():
-        return result
-    try:
-        from sign_copy_pass import run_sign_copy_pass
-
-        final, meta = run_sign_copy_pass(
-            result.expanded,
-            stage1_backend=result.backend,
-            prompt_id_cb=prompt_id_cb,
-        )
-        result.sign_copy_pass = meta
-        if meta.get("changed") and final.strip():
-            result.expanded = final
-            result.changed = True
-    except Exception as exc:
-        if is_cuda_oom(exc):
-            raise
-        logger.warning("Sign-copy pass failed open; keeping Stage 1 prompt: %s", exc)
-        result.sign_copy_pass = {"ran": False, "changed": False, "skipped_reason": "error", "error": str(exc)}
     return result
 
 

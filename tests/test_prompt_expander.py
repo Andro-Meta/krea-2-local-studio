@@ -15,6 +15,7 @@ from prompt_expander import (
     _strip_think_blocks,
     describe_image_openrouter,
     describe_image_transformers,
+    expand_prompt_comfy,
     expand_prompt_result,
     expand_prompt_transformers,
     ideogram_json_to_krea_prompt,
@@ -91,6 +92,20 @@ class PromptExpanderTests(unittest.TestCase):
         self.assertTrue(result.changed)
         self.assertEqual(result.backend, "transformers")
         self.assertIn("v5-compatible", result.expanded)
+
+    def test_comfy_failure_does_not_invoke_a_second_model(self) -> None:
+        with (
+            patch("comfy_qwen_vl.expand_prompt_comfy", side_effect=RuntimeError("Comfy down")),
+            patch("prompt_expander.expand_prompt_transformers") as transformers,
+            patch("prompt_expander.logger.warning"),
+        ):
+            result = expand_prompt_comfy("a small chapel")
+
+        transformers.assert_not_called()
+        self.assertEqual(result.expanded, "a small chapel")
+        self.assertFalse(result.changed)
+        self.assertEqual(result.backend, "comfy")
+        self.assertIn("Comfy down", result.error)
 
     def test_decode_generation_accepts_tensor_like_outputs(self) -> None:
         class FakeInput:
