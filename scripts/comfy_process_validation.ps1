@@ -63,46 +63,73 @@ function Test-ComfyProcessOwnership {
     if (-not $Process -or -not $Process.ExecutablePath -or -not $Process.CommandLine) {
         return $false
     }
-    $executable = [IO.Path]::GetFullPath([string]$Process.ExecutablePath)
     $expectedExecutable = [IO.Path]::GetFullPath($ExpectedPython)
-    if (-not $executable.Equals($expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
-        return $false
-    }
     $expectedMainPath = [IO.Path]::GetFullPath($ExpectedMain)
+    $arguments = @(ConvertTo-ComfyCommandArguments ([string]$Process.CommandLine))
+    $hasLauncherToken = $false
     $hasMainToken = $false
-    foreach ($argument in ConvertTo-ComfyCommandArguments ([string]$Process.CommandLine)) {
+    foreach ($argument in $arguments) {
         try {
-            if (
-                $argument -match '^(?:[A-Za-z]:[\\/]|\\\\)' -and
-                [IO.Path]::GetFullPath($argument).Equals($expectedMainPath, [StringComparison]::OrdinalIgnoreCase)
-            ) {
-                $hasMainToken = $true
+            if ($argument -match '^(?:[A-Za-z]:[\\/]|\\\\)') {
+                $resolved = [IO.Path]::GetFullPath($argument)
+                if ($resolved.Equals($expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+                    $hasLauncherToken = $true
+                }
+                if ($resolved.Equals($expectedMainPath, [StringComparison]::OrdinalIgnoreCase)) {
+                    $hasMainToken = $true
+                }
+            }
+            if ($hasLauncherToken -and $hasMainToken) {
                 break
             }
         } catch {}
     }
-    if (-not $hasMainToken) {
+    if (-not $hasLauncherToken -or -not $hasMainToken) {
         return $false
     }
-    if ($StartedPid -le 0) {
-        return $true
-    }
+
     $candidate = $Process
     $visited = @{}
+    $managedLauncherFound = $false
+    $startedProcessFound = $StartedPid -le 0
     while ($candidate -and -not $visited.ContainsKey([int]$candidate.ProcessId)) {
         $candidatePid = [int]$candidate.ProcessId
         $visited[$candidatePid] = $true
+        try {
+            $candidateExecutable = [IO.Path]::GetFullPath([string]$candidate.ExecutablePath)
+            if ($candidateExecutable.Equals($expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+                $candidateArguments = @(ConvertTo-ComfyCommandArguments ([string]$candidate.CommandLine))
+                $candidateHasMain = $false
+                foreach ($candidateArgument in $candidateArguments) {
+                    if ($candidateArgument -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)') {
+                        continue
+                    }
+                    if (
+                        [IO.Path]::GetFullPath($candidateArgument).Equals(
+                            $expectedMainPath,
+                            [StringComparison]::OrdinalIgnoreCase
+                        )
+                    ) {
+                        $candidateHasMain = $true
+                        break
+                    }
+                }
+                if ($candidateHasMain) {
+                    $managedLauncherFound = $true
+                }
+            }
+        } catch {}
         if ($candidatePid -eq $StartedPid) {
-            return $true
+            $startedProcessFound = $true
         }
         $parentPid = [int]$candidate.ParentProcessId
         if ($parentPid -eq $StartedPid) {
-            return $true
+            $startedProcessFound = $true
         }
         if ($parentPid -le 0 -or -not $ProcessLookup) {
             break
         }
         $candidate = & $ProcessLookup $parentPid
     }
-    return $false
+    return $managedLauncherFound -and $startedProcessFound
 }

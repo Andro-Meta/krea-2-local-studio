@@ -502,11 +502,16 @@ $good = [pscustomobject]@{{ ProcessId=22; ParentProcessId=11; ExecutablePath='C:
 $spoof = [pscustomobject]@{{ ProcessId=23; ParentProcessId=11; ExecutablePath='C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe'; CommandLine='"C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe" --note=C:\\repo\\ComfyUI\\main.py --port 8188' }}
 $evil = [pscustomobject]@{{ ProcessId=24; ParentProcessId=11; ExecutablePath='C:\\repo\\ComfyUI\\venv\\Scripts\\evil.exe'; CommandLine='"C:\\repo\\ComfyUI\\venv\\Scripts\\evil.exe" "C:\\repo\\ComfyUI\\main.py" --port 8188' }}
 $bare = [pscustomobject]@{{ ProcessId=25; ParentProcessId=11; ExecutablePath='C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe'; CommandLine='"C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe" main.py --port 8188' }}
-$lookup = {{ param($id) if ($id -eq 11) {{ return $parent }}; return $null }}
+$venvLauncher = [pscustomobject]@{{ ProcessId=26; ParentProcessId=1; ExecutablePath='C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe'; CommandLine='"C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe" "C:\\repo\\ComfyUI\\main.py" --port 8188' }}
+$venvChild = [pscustomobject]@{{ ProcessId=27; ParentProcessId=26; ExecutablePath='C:\\Python313\\python.exe'; CommandLine='"C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe" "C:\\repo\\ComfyUI\\main.py" --port 8188' }}
+$unownedChild = [pscustomobject]@{{ ProcessId=28; ParentProcessId=11; ExecutablePath='C:\\Python313\\python.exe'; CommandLine='"C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe" "C:\\repo\\ComfyUI\\main.py" --port 8188' }}
+$lookup = {{ param($id) if ($id -eq 11) {{ return $parent }}; if ($id -eq 26) {{ return $venvLauncher }}; return $null }}
 if (-not (Test-ComfyProcessOwnership -Process $good -ExpectedPython 'C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe' -ExpectedMain 'C:\\repo\\ComfyUI\\main.py' -StartedPid 11 -ProcessLookup $lookup)) {{ exit 12 }}
 if (Test-ComfyProcessOwnership -Process $spoof -ExpectedPython 'C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe' -ExpectedMain 'C:\\repo\\ComfyUI\\main.py' -StartedPid 11 -ProcessLookup $lookup) {{ exit 13 }}
 if (Test-ComfyProcessOwnership -Process $evil -ExpectedPython 'C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe' -ExpectedMain 'C:\\repo\\ComfyUI\\main.py' -StartedPid 11 -ProcessLookup $lookup) {{ exit 14 }}
 if (Test-ComfyProcessOwnership -Process $bare -ExpectedPython 'C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe' -ExpectedMain 'C:\\repo\\ComfyUI\\main.py' -StartedPid 11 -ProcessLookup $lookup) {{ exit 15 }}
+if (-not (Test-ComfyProcessOwnership -Process $venvChild -ExpectedPython 'C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe' -ExpectedMain 'C:\\repo\\ComfyUI\\main.py' -StartedPid 26 -ProcessLookup $lookup)) {{ exit 16 }}
+if (Test-ComfyProcessOwnership -Process $unownedChild -ExpectedPython 'C:\\repo\\ComfyUI\\venv\\Scripts\\python.exe' -ExpectedMain 'C:\\repo\\ComfyUI\\main.py' -ProcessLookup $lookup) {{ exit 17 }}
 exit 0
 """
         )
