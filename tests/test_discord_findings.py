@@ -20,6 +20,13 @@ class OfficialExpansionTests(unittest.TestCase):
         self.assertIn("two or three alternatives", EXPANSION_SYSTEM_PROMPT)
         self.assertIn("dignity", EXPANSION_SYSTEM_PROMPT)
 
+    def test_expander_preserves_visible_text_without_inventing_copy(self) -> None:
+        from prompt_expander import EXPANSION_SYSTEM_PROMPT
+
+        self.assertIn("verbatim", EXPANSION_SYSTEM_PROMPT)
+        self.assertIn("named object or surface", EXPANSION_SYSTEM_PROMPT)
+        self.assertIn("Never invent additional readable text", EXPANSION_SYSTEM_PROMPT)
+
 
 class EmotionRebalanceTests(unittest.TestCase):
     def test_emotion_preset_matches_community_weights(self) -> None:

@@ -26,7 +26,6 @@ import main  # noqa: E402
 from support import mock_atomic_cancel_capability  # noqa: E402
 
 mock_atomic_cancel_capability(main)
-import sign_copy_pass  # noqa: E402
 from gpu_task_queue import GpuTaskQueue  # noqa: E402
 from gpu_tasks import GENERATION  # noqa: E402
 
@@ -490,60 +489,6 @@ class WorkflowForwardingTests(unittest.TestCase):
         ):
             comfy_qwen_vl.expand_prompt_comfy("prompt", "system")
         free.assert_not_called()
-
-    def test_sign_copy_forwards_all_prompt_ids_and_unloads_final_stage(self):
-        callback = Mock()
-        calls = []
-
-        def expand(prompt, _system, **kwargs):
-            calls.append(kwargs)
-            kwargs["prompt_id_cb"](f"sign-{len(calls)}")
-            if len(calls) < 3:
-                return "NO_CHANGE"
-            return '"OPEN LATE"'
-
-        with (
-            patch.object(comfy_qwen_vl, "comfy_qwen_vl_available", return_value=True),
-            patch.object(comfy_qwen_vl, "expand_prompt_comfy", side_effect=expand),
-        ):
-            final, meta = sign_copy_pass.run_sign_copy_pass(
-                "A storefront sign with no readable wording.",
-                stage1_backend="comfy",
-                prompt_id_cb=callback,
-            )
-
-        self.assertTrue(meta["ran"])
-        self.assertIn('"OPEN LATE"', final)
-        self.assertEqual(
-            [call.args[0] for call in callback.call_args_list],
-            ["sign-1", "sign-2", "sign-3"],
-        )
-        self.assertTrue(all(call["free_vram"] is False for call in calls))
-        self.assertTrue(
-            all(call["keep_model_loaded"] is False for call in calls)
-        )
-
-    def test_sign_copy_failure_releases_without_global_free(self):
-        callback = Mock()
-        with (
-            patch.object(comfy_qwen_vl, "comfy_qwen_vl_available", return_value=True),
-            patch.object(
-                comfy_qwen_vl,
-                "expand_prompt_comfy",
-                side_effect=RuntimeError("failed"),
-            ) as expand,
-            patch.object(comfy_qwen_vl, "free_comfy_vram") as free,
-        ):
-            final, meta = sign_copy_pass.run_sign_copy_pass(
-                "A storefront sign with no readable wording.",
-                prompt_id_cb=callback,
-            )
-        self.assertIn("storefront", final)
-        self.assertEqual(meta["skipped_reason"], "error")
-        self.assertFalse(expand.call_args.kwargs["keep_model_loaded"])
-        self.assertFalse(expand.call_args.kwargs["free_vram"])
-        free.assert_not_called()
-
 
 class _RunningQueue:
     active_job_id = "job-1"
