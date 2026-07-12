@@ -123,6 +123,26 @@ class HelperEndpointTests(unittest.TestCase):
 
 
 class HelperWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_moodboard_suggestions_use_original_expanded_and_username(self):
+        expected = [{"id": 7, "reason": "Matched: analog grain"}]
+        with patch.object(
+            main,
+            "suggest_moodboards",
+            new=AsyncMock(return_value=expected),
+            create=True,
+        ) as suggest:
+            result = await main._moodboard_suggestions(
+                "cat in a cafe",
+                "cat in a cafe, analog grain",
+                "alice",
+            )
+        self.assertEqual(result, expected)
+        suggest.assert_awaited_once_with(
+            "cat in a cafe",
+            "cat in a cafe, analog grain",
+            "alice",
+        )
+
     async def test_prompt_expander_cuda_oom_reaches_shared_retry(self):
         jobs = {
             "helper": {
