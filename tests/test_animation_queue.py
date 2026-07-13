@@ -276,7 +276,14 @@ class AnimationQueueTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_periodic_upload_cleanup_runs_and_is_cancellable(self):
         uploads = Mock()
-        uploads.cleanup.return_value = []
+        cleanup_called = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def cleanup(*_args, **_kwargs):
+            loop.call_soon_threadsafe(cleanup_called.set)
+            return []
+
+        uploads.cleanup.side_effect = cleanup
         with (
             patch.object(main, "animation_store", Mock(recoverable=Mock(return_value=[]))),
             patch.object(main, "animation_upload_store", uploads),
@@ -287,7 +294,7 @@ class AnimationQueueTests(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             task = asyncio.create_task(main._animation_upload_cleanup_loop())
-            await asyncio.sleep(0.04)
+            await asyncio.wait_for(cleanup_called.wait(), timeout=1.0)
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
