@@ -2,14 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Box, Chip, CircularProgress, IconButton, LinearProgress, Paper, Snackbar, Stack, Tooltip, Typography } from '@mui/material'
 import CloseIcon from '@mui/icons-material/Close'
 import QueueMusicIcon from '@mui/icons-material/PlaylistPlay'
-import { apiFetch, type GpuTaskKind, type QueueJob } from '../../api'
+import { apiFetch, type AnimationResult, type GpuTaskKind, type QueueJob } from '../../api'
+import { persistAnimationResultHandoff } from '../../lib/animationResultHandoff'
 import { reconcilePendingCancellations } from '../../lib/queueState'
-import { useStore } from '../../store'
+import { TAB, useStore } from '../../store'
 
 const ACTIVE = new Set(['queued', 'running', 'cancellation_requested', 'finalizing'])
 
 const TASK_LABELS: Record<GpuTaskKind, string> = {
   generation: 'Generation',
+  animation: 'Animation',
   prompt_expand: 'Magic Wand',
   prompt_plan: 'Prompt planner',
   image_describe: 'Image description',
@@ -71,6 +73,8 @@ export default function GenerationQueue() {
   const setJobId = useStore(s => s.setJobId)
   const admission = useStore(s => s.admission)
   const setAdmission = useStore(s => s.setAdmission)
+  const setTab = useStore(s => s.setTab)
+  const setCreateMode = useStore(s => s.setCreateMode)
   const [jobs, setJobs] = useState<QueueJob[]>([])
   const [toast, setToast] = useState('')
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set())
@@ -145,7 +149,21 @@ export default function GenerationQueue() {
   const openJob = async (j: QueueJob) => {
     if (j.mine === false || j.status !== 'done') return
     try {
-      const full = await apiFetch.jobStatus(j.job_id)
+      const full = await apiFetch.jobStatus<AnimationResult>(j.job_id)
+      if (j.task_kind === 'animation') {
+        const session = await apiFetch.authMe()
+        const identity = session.authenticated
+          ? session.username
+          : session.share_auth === false
+            ? 'local'
+            : null
+        if (!identity || !persistAnimationResultHandoff(localStorage, identity, full)) {
+          throw new Error('Animation result is incomplete.')
+        }
+        setCreateMode('animate')
+        setTab(TAB.CREATE)
+        return
+      }
       if (full.images?.length) {
         setResults(full.images, full.seed ?? undefined, full.metadata)
         setJobId(j.job_id)

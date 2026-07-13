@@ -6,6 +6,7 @@ try:
     from pydantic_settings import BaseSettings
 except ImportError:
     from pydantic import BaseSettings  # type: ignore
+from pydantic import Field
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -52,6 +53,34 @@ class AppSettings(BaseSettings):
     krea2_torch_compile: bool = False  # opt-in: torch.compile the DiT (experimental; needs Triton/inductor)
     krea_attention_backend: str = "sdpa"  # sdpa | sage
     seedvr2_model: str = "3b"  # 3b (fast fp8 default) | 7b (best-quality fp16, needs block-swap)
+    animation_state_root: str = str(BASE_DIR / "data" / "animations")
+    animation_upload_root: str = str(BASE_DIR / "data" / "animation_uploads")
+    animation_chunk_size: int = Field(default=8, ge=8, le=8)
+    animation_max_frames: int = Field(default=720, ge=1, le=720)
+    animation_max_dimension: int = Field(default=1536, ge=256, le=1536)
+    animation_max_upload_bytes: int = Field(
+        default=256 * 1024 * 1024, ge=1024 * 1024, le=2 * 1024 * 1024 * 1024
+    )
+    animation_uploads_per_user: int = Field(default=3, ge=1, le=16)
+    animation_upload_bytes_per_user: int = Field(
+        default=512 * 1024 * 1024, ge=1024 * 1024, le=4 * 1024 * 1024 * 1024
+    )
+    animation_uploads_global: int = Field(default=32, ge=1, le=256)
+    animation_upload_bytes_global: int = Field(
+        default=2 * 1024 * 1024 * 1024,
+        ge=1024 * 1024,
+        le=16 * 1024 * 1024 * 1024,
+    )
+    animation_upload_ttl_seconds: int = Field(
+        default=24 * 60 * 60, ge=60, le=7 * 24 * 60 * 60
+    )
+    animation_upload_cleanup_interval_seconds: int = Field(
+        default=300, ge=30, le=3600
+    )
+    animation_max_source_duration_seconds: float = Field(
+        default=60.0, ge=0.5, le=60.0
+    )
+    animation_active_per_user: int = Field(default=1, ge=1, le=1)
 
     class Config:
         env_file = str(BASE_DIR / ".env")

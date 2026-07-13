@@ -146,6 +146,11 @@ async def init_db() -> None:
                 loras TEXT DEFAULT '[]',
                 mode TEXT DEFAULT 'txt2img',
                 metadata_json TEXT DEFAULT '{}',
+                media_type TEXT NOT NULL DEFAULT 'image',
+                poster_filename TEXT DEFAULT NULL,
+                duration REAL DEFAULT NULL,
+                frame_count INTEGER DEFAULT NULL,
+                project_job_id TEXT DEFAULT NULL,
                 favorite INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
             )
@@ -156,6 +161,18 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE gallery ADD COLUMN metadata_json TEXT DEFAULT '{}'")
         if "owner_username" not in names:
             await db.execute("ALTER TABLE gallery ADD COLUMN owner_username TEXT DEFAULT NULL")
+        migrations = {
+            "media_type": "TEXT NOT NULL DEFAULT 'image'",
+            "poster_filename": "TEXT DEFAULT NULL",
+            "duration": "REAL DEFAULT NULL",
+            "frame_count": "INTEGER DEFAULT NULL",
+            "project_job_id": "TEXT DEFAULT NULL",
+        }
+        for name, declaration in migrations.items():
+            if name not in names:
+                await db.execute(
+                    f"ALTER TABLE gallery ADD COLUMN {name} {declaration}"
+                )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_gallery_created ON gallery(created_at DESC)"
         )
@@ -164,6 +181,10 @@ async def init_db() -> None:
         )
         await db.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_filename ON gallery(filename)"
+        )
+        await db.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_gallery_project_job
+               ON gallery(project_job_id) WHERE project_job_id IS NOT NULL"""
         )
         await db.commit()
 
@@ -198,6 +219,58 @@ async def save_image(
         )
         await db.commit()
         return cursor.lastrowid
+
+
+async def save_media(
+    filename: str,
+    *,
+    poster_filename: str,
+    duration: float,
+    frame_count: int,
+    project_job_id: str,
+    owner_username: str | None,
+    prompt: str = "",
+    width: int = 0,
+    height: int = 0,
+    seed: int = 0,
+    metadata: dict | None = None,
+) -> int:
+    created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    payload = dict(metadata or {})
+    if owner_username:
+        payload["owner_username"] = owner_username
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            """INSERT OR IGNORE INTO gallery
+               (filename, prompt, width, height, seed, mode, metadata_json,
+                owner_username, media_type, poster_filename, duration,
+                frame_count, project_job_id, favorite, created_at)
+               VALUES (?, ?, ?, ?, ?, 'animation', ?, ?, 'video', ?, ?, ?, ?, 0, ?)""",
+            (
+                filename,
+                prompt,
+                width,
+                height,
+                seed,
+                json.dumps(payload),
+                owner_username,
+                poster_filename,
+                float(duration),
+                int(frame_count),
+                project_job_id,
+                created_at,
+            ),
+        )
+        row = await (
+            await db.execute(
+                "SELECT id FROM gallery WHERE project_job_id = ?",
+                (project_job_id,),
+            )
+        ).fetchone()
+        await db.commit()
+        if row is None:
+            raise RuntimeError("gallery media publication failed")
+        return int(row[0])
 
 
 def _make_thumbnail(img_path: Path, *, filename: str | None = None) -> str | None:
@@ -235,8 +308,17 @@ def _hydrate_item(row: aiosqlite.Row | dict) -> dict:
         item["metadata"] = json.loads(item.get("metadata_json") or "{}")
     except json.JSONDecodeError:
         item["metadata"] = {}
-    img_path = OUTPUTS_DIR / item["filename"]
-    item["thumbnail_b64"] = _make_thumbnail(img_path, filename=item["filename"]) if img_path.exists() else None
+    item["media_type"] = item.get("media_type") or "image"
+    item["url"] = f"/api/outputs/{item['filename']}"
+    poster_filename = item.get("poster_filename")
+    item["poster_url"] = (
+        f"/api/outputs/{poster_filename}" if poster_filename else None
+    )
+    image_filename = poster_filename or item["filename"]
+    img_path = OUTPUTS_DIR / image_filename
+    item["thumbnail_b64"] = (
+        _make_thumbnail(img_path, filename=image_filename) if img_path.exists() else None
+    )
     item["filesystem_only"] = False
     return item
 
@@ -331,6 +413,42 @@ async def get_image_record_by_filename(filename: str) -> dict | None:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         row = await (
-            await db.execute("SELECT id, filename, owner_username FROM gallery WHERE filename = ?", (filename,))
+            await db.execute(
+                """SELECT id, filename, owner_username, media_type,
+                          poster_filename, project_job_id
+                   FROM gallery
+                   WHERE filename = ? OR poster_filename = ?""",
+                (filename, filename),
+            )
         ).fetchone()
     return dict(row) if row else None
+
+
+async def delete_media_record(
+    gallery_id: int,
+    *,
+    owner_username: str | None = None,
+    is_admin: bool = False,
+) -> dict | None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        if is_admin:
+            row = await (
+                await db.execute(
+                    "SELECT * FROM gallery WHERE id = ? AND media_type = 'video'",
+                    (gallery_id,),
+                )
+            ).fetchone()
+        else:
+            row = await (
+                await db.execute(
+                    """SELECT * FROM gallery
+                       WHERE id = ? AND owner_username = ? AND media_type = 'video'""",
+                    (gallery_id, owner_username or ""),
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        await db.execute("DELETE FROM gallery WHERE id = ?", (gallery_id,))
+        await db.commit()
+        return dict(row)

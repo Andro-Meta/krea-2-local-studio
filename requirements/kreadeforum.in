@@ -1,0 +1,10 @@
+# KreaDeforum upstream requirements at tested revision:
+# 49bb6752ab045fac25652f3e9207d4706bf5c646
+# Windows CPython 3.12 baseline (installer-supported range: 3.12-3.13).
+# PyTorch is installed separately from the CUDA index and must not enter this lock.
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+matplotlib>=3.7.0
+timm>=0.9.0

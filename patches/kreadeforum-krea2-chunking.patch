@@ -1,0 +1,178 @@
+diff --git a/animator_node.py b/animator_node.py
+--- a/animator_node.py
++++ b/animator_node.py
+@@ -13,6 +13,7 @@
+ assumes a specific latent shape, conditioning format, or sampler list.
+ """
+ 
++import json
+ import os
+ import time
+ import numpy as np
+@@ -88,6 +89,11 @@
+                 "hybrid_strength_schedule": ("STRING", {"default": "0:(0.5)"}),
+                 "hybrid_mode": (["normal", "optical_flow"], {"default": "optical_flow"}),
+                 "init_image": ("IMAGE",),
++                "frame_offset": ("INT", {"default": 0, "min": 0, "max": 100000}),
++                "init_image_is_previous": ("BOOLEAN", {"default": False}),
++                "reference_image": ("IMAGE",),
++                "seed_plan": ("STRING", {"default": "", "multiline": False}),
++                "hybrid_video_has_context": ("BOOLEAN", {"default": False}),
+             },
+         }
+ 
+@@ -125,7 +131,9 @@
+                 rotation_3d_x_schedule, rotation_3d_y_schedule, rotation_3d_z_schedule,
+                 color_coherence, diffusion_cadence,
+                 hybrid_video_path="", hybrid_strength_schedule="0:(0.5)",
+-                hybrid_mode="optical_flow", init_image=None):
++                hybrid_mode="optical_flow", init_image=None, frame_offset=0,
++                init_image_is_previous=False, reference_image=None, seed_plan="",
++                hybrid_video_has_context=False):
+ 
+         rng = np.random.default_rng(seed if seed else 0)
+ 
+@@ -156,33 +163,62 @@
+         hybrid_frames = None
+         if animation_mode == "Video Input" or (hybrid_video_path and hybrid_video_path.strip()):
+-            hybrid_frames = load_video_frames(hybrid_video_path.strip(), max_frames=max_frames,
++            hybrid_frame_count = max_frames + (1 if hybrid_video_has_context else 0)
++            hybrid_frames = load_video_frames(hybrid_video_path.strip(), max_frames=hybrid_frame_count,
+                                                resize_to=(width, height))
+         hybrid_strength_vals = get_schedule(hybrid_strength_schedule, max_frames)
+ 
+-        prev_frame_np = None
+-        reference_frame_np = None
++        exact_seeds = None
++        if seed_plan and seed_plan.strip():
++            try:
++                exact_seeds = json.loads(seed_plan)
++            except (TypeError, ValueError) as exc:
++                raise ValueError("seed_plan must be valid JSON") from exc
++            if not isinstance(exact_seeds, list) or len(exact_seeds) != max_frames:
++                raise ValueError("seed_plan must contain exactly max_frames values")
++            if any(
++                isinstance(value, bool) or not isinstance(value, int)
++                or value < 0 or value > 0xffffffffffffffff
++                for value in exact_seeds
++            ):
++                raise ValueError("seed_plan values must be unsigned 64-bit integers")
++
++        def image_to_numpy(image, name):
++            value = tensor_to_numpy(image)
++            if value.shape[0] != height or value.shape[1] != width:
++                import cv2
++                value = cv2.resize(value, (width, height), interpolation=cv2.INTER_LANCZOS4)
++            validate_frame(value, name)
++            return value
++
++        prev_frame_np = (
++            image_to_numpy(init_image, "previous init_image")
++            if init_image_is_previous and init_image is not None else None
++        )
++        if init_image_is_previous and prev_frame_np is None:
++            raise ValueError("init_image_is_previous requires init_image")
++        reference_frame_np = (
++            image_to_numpy(reference_image, "reference_image")
++            if reference_image is not None else None
++        )
+         last_prompt_text = None
+         positive_cond = None
+         output_frames = []
+         warnings = []
+ 
+         for i in range(max_frames):
+-            frame_seed = self._next_seed(seed, i, seed_behavior, rng)
++            global_i = frame_offset + i
++            frame_seed = exact_seeds[i] if exact_seeds is not None else self._next_seed(seed, global_i, seed_behavior, rng)
+ 
+             if prompts[i] != last_prompt_text or positive_cond is None:
+                 positive_cond = encode_text(clip, prompts[i])
+                 last_prompt_text = prompts[i]
+ 
+             cfg = max(0.0, float(cfg_vals[i]))
+-            run_diffusion_this_frame = (i == 0) or (diffusion_cadence <= 1) or (i % diffusion_cadence == 0)
++            run_diffusion_this_frame = (global_i == 0) or (diffusion_cadence <= 1) or (global_i % diffusion_cadence == 0)
+ 
+-            if i == 0:
++            if i == 0 and not init_image_is_previous:
+                 if init_image is not None:
+-                    base_np = tensor_to_numpy(init_image)
+-                    if base_np.shape[0] != height or base_np.shape[1] != width:
+-                        import cv2
+-                        base_np = cv2.resize(base_np, (width, height), interpolation=cv2.INTER_LANCZOS4)
+-                    validate_frame(base_np, "resized init_image")
++                    base_np = image_to_numpy(init_image, "resized init_image")
+                     latent = vae.encode(numpy_to_tensor(base_np)[:, :, :, :3])
+                     latent = {"samples": latent}
+                     denoise = self._resolve_denoise(float(strength_vals[0]), steps)
+@@ -205,16 +242,17 @@
+                 # "Video Input" and "None" modes: no geometric warp, hybrid compositing (below) drives change
+ 
+-                if hybrid_frames is not None and i < len(hybrid_frames):
++                hybrid_i = i + (1 if hybrid_video_has_context else 0)
++                if hybrid_frames is not None and hybrid_i < len(hybrid_frames):
+                     flow = None
+-                    if hybrid_mode == "optical_flow" and i > 0 and i - 1 < len(hybrid_frames):
+-                        flow = compute_optical_flow(hybrid_frames[i - 1], hybrid_frames[i])
+-                    warped = hybrid_composite(warped, hybrid_frames[i], alpha=float(hybrid_strength_vals[i]),
++                    if hybrid_mode == "optical_flow" and hybrid_i > 0:
++                        flow = compute_optical_flow(hybrid_frames[hybrid_i - 1], hybrid_frames[hybrid_i])
++                    warped = hybrid_composite(warped, hybrid_frames[hybrid_i], alpha=float(hybrid_strength_vals[i]),
+                                                mode=hybrid_mode, flow=flow)
+ 
+                 if color_coherence == "Match Frame 0 LAB" and reference_frame_np is not None:
+                     warped = match_color(warped, reference_frame_np)
+ 
+-                validate_frame(warped, f"frame {i} after warp/composite")
++                validate_frame(warped, f"frame {global_i} after warp/composite")
+ 
+                 if not run_diffusion_this_frame:
+                     output_frames.append(warped)
+@@ -230,13 +264,13 @@
+                 positive_cond, negative_cond, latent, denoise,
+             )
+             decoded = vae.decode(sampled["samples"])
+-            if i == 0:
++            if global_i == 0:
+                 print(f"[KreaDeforum] Diagnostic — raw VAE decode output shape: {tuple(decoded.shape)}, "
+                       f"dtype: {decoded.dtype}")
+             frame_np = tensor_to_numpy(decoded)
+-            validate_frame(frame_np, f"frame {i} after VAE decode")
++            validate_frame(frame_np, f"frame {global_i} after VAE decode")
+ 
+-            if i == 0:
++            if global_i == 0 and reference_frame_np is None:
+                 reference_frame_np = frame_np
+ 
+             output_frames.append(frame_np)
+@@ -251,5 +286,28 @@
+         return (out_tensor, info)
+ 
+ 
+-NODE_CLASS_MAPPINGS = {"KreaDeforumAnimator": KreaDeforumAnimator}
++class KreaDeforumChunkAdapterVersion:
++    @classmethod
++    def INPUT_TYPES(cls):
++        return {
++            "required": {
++                "version": (
++                    ["krea2-chunking-v1"],
++                    {"default": "krea2-chunking-v1"},
++                ),
++            },
++        }
++
++    RETURN_TYPES = ("STRING",)
++    FUNCTION = "report"
++    CATEGORY = "KreaDeforum"
++
++    def report(self, version):
++        return (version,)
++
++
++NODE_CLASS_MAPPINGS = {
++    "KreaDeforumAnimator": KreaDeforumAnimator,
++    "KreaDeforumChunkAdapterVersion": KreaDeforumChunkAdapterVersion,
++}
+ NODE_DISPLAY_NAME_MAPPINGS = {"KreaDeforumAnimator": "Krea Deforum Animator"}

@@ -359,6 +359,64 @@ class QualityUpgradeTests(unittest.TestCase):
             self.assertIn(node, installer)
         self.assertIn("Required default ComfyUI node failed to clone", installer)
 
+    def test_comfy_installer_pins_required_krea_deforum_node(self) -> None:
+        installer = (ROOT / "scripts" / "install_comfyui.ps1").read_text(encoding="utf-8")
+        helper = (ROOT / "scripts" / "kreadeforum_install.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("Dream-Making-Git/KreaDeforum", installer)
+        self.assertIn("49bb6752ab045fac25652f3e9207d4706bf5c646", installer)
+        for node_class in [
+            "KreaDeforumAnimator",
+            "KreaDeforumSaveVideo",
+            "KreaDeforumSchedulePreview",
+        ]:
+            self.assertIn(node_class, installer)
+        self.assertIn("kreadeforum_install.ps1", installer)
+        self.assertIn("Install-KreaDeforumCheckout", installer)
+        self.assertIn("status --porcelain", helper)
+        self.assertIn("Test-Path $kreaDeforumRequirements", installer)
+
+    def test_krea_deforum_requirements_are_hash_locked_without_torch(self) -> None:
+        installer = (ROOT / "scripts" / "install_comfyui.ps1").read_text(encoding="utf-8")
+        source = (ROOT / "requirements" / "kreadeforum.in").read_text(encoding="utf-8")
+        lock = (ROOT / "requirements" / "kreadeforum-windows-py312.txt").read_text(encoding="utf-8")
+        direct_packages = [
+            "opencv-python-headless",
+            "numpy",
+            "imageio",
+            "imageio-ffmpeg",
+            "matplotlib",
+            "timm",
+        ]
+
+        self.assertIn("49bb6752ab045fac25652f3e9207d4706bf5c646", source)
+        self.assertEqual(
+            [line for line in source.splitlines() if line and not line.startswith("#")],
+            [
+                "opencv-python-headless>=4.8.0",
+                "numpy>=1.24.0",
+                "imageio>=2.31.0",
+                "imageio-ffmpeg>=0.4.9",
+                "matplotlib>=3.7.0",
+                "timm>=0.9.0",
+            ],
+        )
+        for package in direct_packages:
+            self.assertRegex(
+                lock,
+                rf"(?m)^{package}==[^\s\\]+ \\\n\s+--hash=sha256:[0-9a-f]{{64}}",
+            )
+        self.assertNotRegex(lock, r"(?mi)^(torch|torchvision|torchaudio)==")
+        self.assertIn(
+            '$kreaDeforumLock = Join-Path $root "requirements\\kreadeforum-windows-py312.txt"',
+            installer,
+        )
+        self.assertIn(
+            "$venvPy -m pip install --require-hashes -r $kreaDeforumLock",
+            installer,
+        )
+        self.assertIn("$kreaDeforumLock --no-deps", installer)
+
     def test_comfy_installer_includes_character_edit_node(self) -> None:
         installer = (ROOT / "scripts" / "install_comfyui.ps1").read_text(encoding="utf-8")
 

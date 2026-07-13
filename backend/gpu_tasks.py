@@ -1,4 +1,5 @@
 GENERATION = "generation"
+ANIMATION = "animation"
 PROMPT_EXPAND = "prompt_expand"
 PROMPT_PLAN = "prompt_plan"
 IMAGE_DESCRIBE = "image_describe"
@@ -25,6 +26,7 @@ HELPER_KINDS = frozenset(
 
 DISPLAY_LABELS = {
     GENERATION: "Generation",
+    ANIMATION: "Animation",
     PROMPT_EXPAND: "Prompt expansion",
     PROMPT_PLAN: "Prompt planning",
     IMAGE_DESCRIBE: "Image description",

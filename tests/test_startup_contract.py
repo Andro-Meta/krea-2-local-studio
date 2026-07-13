@@ -23,6 +23,17 @@ class StartupContractTests(unittest.TestCase):
         text = (ROOT / ".env.example").read_text(encoding="utf-8")
         self.assertIn("KREA_COMFY_VRAM_MODE=highvram", text)
 
+    def test_animate_documentation_matches_pinned_runtime_contract(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+        self.assertIn("https://github.com/Dream-Making-Git/KreaDeforum", readme)
+        self.assertIn("49bb6752ab045fac25652f3e9207d4706bf5c646", readme)
+        self.assertIn("krea2-chunking-v1", readme)
+        self.assertIn("60 FPS controls playback/interpolation", readme)
+        self.assertIn("Animate", example)
+        self.assertIn("owner-scoped animation frames", example)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ const GalleryPanel = lazy(() => import('./components/Gallery'))
 const MoodboardsPanel = lazy(() => import('./components/Moodboards'))
 const TestLabsPanel = lazy(() => import('./components/TestLabs'))
 const CharacterEditPanel = lazy(() => import('./components/CharacterEdit'))
+const AnimatePanel = lazy(() => import('./components/Animate'))
 
 function LazyTabFallback() {
   return (
@@ -96,6 +97,7 @@ export default function App() {
           scrollButtons="auto"
         >
           <Tab label="Text → Image" value="txt2img" />
+          <Tab label="Animate" value="animate" />
           <Tab label="Test Labs" value="test_labs" />
           <Tab label="Character Edit" value="character_edit" />
           <Tab label="Upscale" value="upscale" />
@@ -103,6 +105,11 @@ export default function App() {
         </Tabs>
       </Box>
       {createMode === 'txt2img' && <GeneratePanel />}
+      {createMode === 'animate' && (
+        <Suspense fallback={<LazyTabFallback />}>
+          <AnimatePanel />
+        </Suspense>
+      )}
       {createMode === 'test_labs' && (
         <Suspense fallback={<LazyTabFallback />}>
           <TestLabsPanel />

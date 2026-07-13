@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import hashlib
 import io
 import logging
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
 # No triton on Windows → disable dynamo before torch loads it (mmdit posemb uses
@@ -31,10 +33,20 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from crash_reporter import archive_stale_generation_breadcrumbs, clear_generation_breadcrumb, disable_fault_logging, enable_fault_logging, stale_generation_breadcrumbs, write_generation_breadcrumb
-from gallery import delete_image, get_gallery, get_image_record_by_filename, init_db, save_image, set_favorite
+from gallery import (
+    delete_image,
+    delete_media_record,
+    get_gallery,
+    get_image_record_by_filename,
+    init_db,
+    save_image,
+    save_media,
+    set_favorite,
+)
 from gpu_task_queue import BACKGROUND, INTERACTIVE, EnqueueResult, GpuTaskQueue
 from gpu_recovery import is_cuda_oom
 from gpu_tasks import (
+    ANIMATION,
     BACKGROUND_ENRICHMENT,
     DEPTH_PREVIEW,
     GENERATION,
@@ -79,6 +91,8 @@ from prompt_planner import plan_prompt
 from prompt_recipes import delete_recipe, list_recipes, save_recipe
 from settings_env import read_env, secret_value, write_env
 from schemas import (
+    AnimateRequest,
+    AnimationResult,
     AutoMaskRequest,
     DescribeImageRequest,
     DepthPreviewRequest,
@@ -132,6 +146,7 @@ from comfy_client import (
     comfy_atomic_cancel_available,
     free_comfy_vram,
 )
+from comfy_deforum import status as krea_deforum_status
 from sharing_service import PUBLIC_PATH as SHARING_PUBLIC_PATH, funnel_status, repair_funnel, start_funnel, stop_funnel, tailscale_status, tailscale_up
 from security_utils import append_query_param, is_civitai_url, normalize_lora_import_url, safe_lora_filename
 from system_check import get_system_report
@@ -151,6 +166,13 @@ from moderation import (
     moderate_prompt,
     save_moderation_event,
 )
+from animation_state import AnimationProject, AnimationStore
+from animation_uploads import (
+    ALLOWED_VIDEO_TYPES,
+    AnimationUploadStore,
+    UploadQuotaError,
+)
+from video_output import finalize_mp4
 
 logger = logging.getLogger(__name__)
 setup_logging(LOGS_DIR)
@@ -528,6 +550,27 @@ _jobs: dict[str, dict] = {}
 _JOBS_MAX = 200  # ponytail: simple FIFO cap; raise if clients poll very old jobs
 _TERMINAL_JOB_STATUSES = {"done", "error", "blocked", "cancelled"}
 generation_queue: GpuTaskQueue | None = None
+animation_store = AnimationStore(
+    Path(settings.animation_state_root), OUTPUTS_DIR
+)
+animation_upload_store = AnimationUploadStore(
+    Path(settings.animation_upload_root),
+    max_bytes=settings.animation_max_upload_bytes,
+    max_frames=settings.animation_max_frames,
+    max_dimension=settings.animation_max_dimension,
+    max_duration=settings.animation_max_source_duration_seconds,
+    ttl_seconds=settings.animation_upload_ttl_seconds,
+    max_user_uploads=settings.animation_uploads_per_user,
+    max_user_bytes=settings.animation_upload_bytes_per_user,
+    max_global_uploads=settings.animation_uploads_global,
+    max_global_bytes=settings.animation_upload_bytes_global,
+)
+_animation_finalizer_tasks: set[asyncio.Task] = set()
+_animation_finalizer_project_ids: set[tuple[str, str]] = set()
+_animation_admission_reservations: set[str] = set()
+_animation_recovery_guard: set[tuple[str, str]] = set()
+_animation_recovery_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+_animation_upload_cleanup_task: asyncio.Task | None = None
 _model_warmup_job_id: str | None = None
 _last_model_signature: dict | None = None
 _last_warm_state: dict = {"status": "never", "updated_at": None}
@@ -824,6 +867,245 @@ async def _enqueue_helper_task(
     }
 
 
+def _animation_summary(req: AnimateRequest) -> str:
+    return f"Animation · {req.width}×{req.height} · {req.total_frames} frames"
+
+
+def _animation_parent_from_project(project: AnimationProject) -> dict:
+    return {
+        "status": project.status,
+        "progress": int(100 * project.completed_frames / project.total_frames),
+        "images": [],
+        "error": project.error or None,
+        "seed": project.seed_base,
+        "username": project.owner,
+        "role": project.role,
+        "task_kind": ANIMATION,
+        "priority_class": INTERACTIVE,
+        "summary": (
+            f"Animation · {project.request['width']}×{project.request['height']} "
+            f"· {project.total_frames} frames"
+        ),
+        "result": None,
+        "comfy_prompt_id": None,
+        "queued_at": time.time(),
+        "started_at": None,
+        "finished_at": None,
+        "moderation_event_id": None,
+        "project_job_id": project.job_id,
+        "child_job_ids": [],
+        "completed_frames": project.completed_frames,
+        "total_frames": project.total_frames,
+    }
+
+
+async def _enqueue_animation_chunk(parent_id: str, chunk_index: int) -> str:
+    project = await asyncio.to_thread(animation_store.load, parent_id)
+    parent = _jobs[parent_id]
+    child_id = _new_job(
+        username=project.owner,
+        role=project.role,
+        task_kind=ANIMATION,
+        summary=f"Animation chunk {chunk_index + 1}/{len(project.chunk_ranges)}",
+    )
+    child = _jobs[child_id]
+    child.update(
+        {
+            "parent_job_id": parent_id,
+            "operation": "chunk",
+            "chunk_index": chunk_index,
+        }
+    )
+    children = list(parent.get("child_job_ids") or [])
+    children.append(child_id)
+    parent["child_job_ids"] = children[-4:]
+    retained = set(parent["child_job_ids"])
+    for old_id in children[:-4]:
+        old = _jobs.get(old_id)
+        if old and old.get("status") in _TERMINAL_JOB_STATUSES and old_id not in retained:
+            _jobs.pop(old_id, None)
+    try:
+        await _enqueue_interactive_gpu_task(
+            child_id,
+            {"operation": "chunk", "parent_job_id": parent_id, "chunk_index": chunk_index},
+            username=project.owner,
+            role=project.role,
+            task_kind=ANIMATION,
+        )
+    except Exception:
+        parent["child_job_ids"] = [
+            item for item in parent["child_job_ids"] if item != child_id
+        ]
+        raise
+    _sync_queue_state_to_jobs()
+    active = _jobs.get(child_id, {})
+    parent["status"] = "queued"
+    parent["queue_position"] = active.get("queue_position")
+    parent["queue_length"] = active.get("queue_length")
+    return child_id
+
+
+async def _create_animation_impl(
+    req: AnimateRequest, *, username: str | None, role: str
+) -> dict:
+    if generation_queue is None:
+        raise HTTPException(503, "Generation queue is not ready yet.")
+    if req.total_frames > settings.animation_max_frames or max(
+        req.width, req.height
+    ) > settings.animation_max_dimension:
+        raise HTTPException(422, "Animation exceeds configured limits.")
+    if await asyncio.to_thread(animation_store.active_for_owner, username):
+        raise HTTPException(409, "An active animation already exists for this user.")
+    status = await asyncio.to_thread(krea_deforum_status, timeout=2.0)
+    if not status.get("available"):
+        raise HTTPException(503, "KreaDeforum animation runtime is unavailable.")
+    if req.animation_mode == "3D" and not status.get("midas_ready"):
+        raise HTTPException(
+            503,
+            str(status.get("midas_reason") or (
+                "MiDaS 3D setup is incomplete. Run install.bat, then restart ComfyUI."
+            )),
+        )
+    if not comfy_atomic_cancel_available():
+        raise HTTPException(503, "Atomic ComfyUI cancellation is unavailable.")
+    from comfy_workflows import VALID_SAMPLERS
+
+    preferred = "er_sde" if "er_sde" in VALID_SAMPLERS else "euler"
+    if req.sampler_name not in VALID_SAMPLERS:
+        req = req.model_copy(update={"sampler_name": preferred})
+    decision = moderate_prompt(req.prompt_schedule, req.negative_prompt, role=role)
+    if not decision.allowed:
+        raise HTTPException(403, "This prompt was blocked by the child safety filter.")
+    if req.source_video_upload_id and req.animation_mode != "Video Input":
+        raise HTTPException(
+            422, "A source video upload is valid only for Video Input animation."
+        )
+    if req.source_video_upload_id:
+        try:
+            await asyncio.to_thread(
+                animation_upload_store.resolve,
+                req.source_video_upload_id,
+                username=username,
+                is_admin=role == "admin",
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Animation upload not found.") from exc
+    if req.init_image_b64:
+        try:
+            from comfy_deforum import _decode_init_png
+
+            normalized = await asyncio.to_thread(
+                _decode_init_png, req.init_image_b64, req.width, req.height
+            )
+        except Exception as exc:
+            raise HTTPException(422, "The starting image is invalid.") from exc
+        if role == "child":
+            try:
+                image = await asyncio.to_thread(
+                    lambda: Image.open(io.BytesIO(normalized)).convert("RGB")
+                )
+                image_decision = await asyncio.to_thread(
+                    moderate_images, [image], role="child"
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    403, "The starting image could not be safely verified."
+                ) from exc
+            if not image_decision.allowed:
+                raise HTTPException(
+                    403, "The starting image was blocked by the child safety filter."
+                )
+
+    parent_id = _new_job(
+        username=username,
+        role=role,
+        task_kind=ANIMATION,
+        summary=_animation_summary(req),
+    )
+    parent = _jobs[parent_id]
+    parent.update(
+        {
+            "project_job_id": parent_id,
+            "child_job_ids": [],
+            "total_frames": req.total_frames,
+            "completed_frames": 0,
+        }
+    )
+    created = False
+    try:
+        await asyncio.to_thread(
+            animation_store.create,
+            req,
+            owner=username,
+            role=role,
+            job_id=parent_id,
+        )
+        created = True
+        child_id = await _enqueue_animation_chunk(parent_id, 0)
+    except Exception as exc:
+        _jobs.pop(parent_id, None)
+        if created:
+            await asyncio.to_thread(
+                animation_store.delete,
+                parent_id,
+                username=username or "",
+                is_admin=True,
+            )
+        if req.source_video_upload_id:
+            await asyncio.to_thread(
+                animation_upload_store.delete,
+                req.source_video_upload_id,
+                username=username,
+                is_admin=True,
+            )
+        if "active animation" in str(exc).lower():
+            raise HTTPException(
+                409, "An active animation already exists for this user."
+            ) from exc
+        raise
+    active = _jobs[child_id]
+    return {
+        "job_id": parent_id,
+        "status": "queued",
+        "queue_position": active.get("queue_position"),
+        "queue_length": active.get("queue_length"),
+    }
+
+
+async def _create_animation(
+    req: AnimateRequest, *, username: str | None, role: str
+) -> dict:
+    admission_key = username or ":local:"
+    if admission_key in _animation_admission_reservations:
+        raise HTTPException(409, "An active animation already exists for this user.")
+    _animation_admission_reservations.add(admission_key)
+    try:
+        return await _create_animation_impl(req, username=username, role=role)
+    finally:
+        _animation_admission_reservations.discard(admission_key)
+
+
+async def _continue_animation(parent_id: str) -> None:
+    project = await asyncio.to_thread(animation_store.load, parent_id)
+    parent = _jobs.get(parent_id)
+    if parent is None or project.status in {"cancelled", "blocked", "error", "done"}:
+        return
+    parent["completed_frames"] = project.completed_frames
+    parent["progress"] = int(100 * project.completed_frames / project.total_frames)
+    if project.status == "finalizing":
+        parent["status"] = "finalizing"
+        _schedule_animation_finalizer(parent_id)
+        return
+    active_children = [
+        _jobs.get(child_id)
+        for child_id in parent.get("child_job_ids") or []
+        if (_jobs.get(child_id) or {}).get("status")
+        not in _TERMINAL_JOB_STATUSES
+    ]
+    if not active_children:
+        await _enqueue_animation_chunk(parent_id, project.next_chunk_index)
+
+
 def _enqueue_background_enrichment() -> str | None:
     """Queue one idle enrichment batch unless an equivalent task is unfinished."""
     if generation_queue is None:
@@ -1069,6 +1351,31 @@ def _sync_queue_state_to_jobs() -> None:
             "started_at": state.get("started_at"),
             "finished_at": state.get("finished_at"),
         })
+    for parent in _jobs.values():
+        if (
+            parent.get("task_kind") != ANIMATION
+            or parent.get("parent_job_id")
+            or parent.get("status") in _TERMINAL_JOB_STATUSES | {"finalizing"}
+        ):
+            continue
+        children = [
+            _jobs.get(str(child_id))
+            for child_id in parent.get("child_job_ids") or []
+        ]
+        active = next(
+            (
+                child
+                for child in reversed(children)
+                if child
+                and child.get("status")
+                not in _TERMINAL_JOB_STATUSES
+            ),
+            None,
+        )
+        if active:
+            parent["status"] = active.get("status", parent.get("status"))
+            parent["queue_position"] = active.get("queue_position")
+            parent["queue_length"] = active.get("queue_length")
 
 
 async def _broadcast_queue_state() -> None:
@@ -1154,18 +1461,36 @@ async def _validate_comfy_task_dispatch(
     ):
         return True
 
-    if not comfy_available():
-        error = (
-            "ComfyUI is unreachable; this GPU task was not submitted. "
-            "Restore ComfyUI and retry."
+    try:
+        if not comfy_available():
+            error = (
+                "ComfyUI is unreachable; this GPU task was not submitted. "
+                "Restore ComfyUI and retry."
+            )
+        elif not comfy_atomic_cancel_available():
+            error = (
+                "ComfyUI does not support required atomic cancellation; this GPU "
+                "task was not submitted. Update/reinstall ComfyUI and retry."
+            )
+        else:
+            return True
+    except Exception:
+        logger.exception("GPU dispatch capability validation failed")
+        error = "GPU task dispatch validation failed. Check server logs and retry."
+
+    if task_kind == ANIMATION:
+        parent_id = str(
+            payload.get("parent_job_id")
+            or (_jobs.get(job_id) or {}).get("parent_job_id")
+            or ""
         )
-    elif not comfy_atomic_cancel_available():
-        error = (
-            "ComfyUI does not support required atomic cancellation; this GPU "
-            "task was not submitted. Update/reinstall ComfyUI and retry."
-        )
-    else:
-        return True
+        if parent_id:
+            await _fail_animation_parent(
+                parent_id,
+                child_id=job_id,
+                public_error="Animation dispatch failed. Check server status and retry.",
+            )
+            return False
 
     job = _jobs.get(job_id)
     if job is not None:
@@ -1185,8 +1510,402 @@ async def _validate_comfy_task_dispatch(
     return False
 
 
+async def _cleanup_animation_upload(
+    project_or_id: AnimationProject | str,
+) -> bool:
+    try:
+        project = (
+            project_or_id
+            if isinstance(project_or_id, AnimationProject)
+            else await asyncio.to_thread(animation_store.load, project_or_id)
+        )
+    except Exception:
+        return False
+    upload_id = str(project.request.get("source_video_upload_id") or "")
+    if not upload_id:
+        return False
+    return await asyncio.to_thread(
+        animation_upload_store.delete,
+        upload_id,
+        username=project.owner,
+        is_admin=True,
+    )
+
+
+async def _fail_animation_parent(
+    parent_id: str,
+    *,
+    child_id: str | None = None,
+    public_error: str,
+) -> None:
+    try:
+        project = await asyncio.to_thread(animation_store.load, parent_id)
+    except Exception:
+        project = None
+    if project is not None and project.status not in {
+        "cancelled",
+        "blocked",
+        "done",
+        "error",
+    }:
+        await asyncio.to_thread(
+            animation_store.mark_status,
+            parent_id,
+            "error",
+            public_error,
+        )
+        await asyncio.to_thread(animation_store.discard_staging, parent_id)
+        await _cleanup_animation_upload(project)
+    parent = _jobs.get(parent_id)
+    if parent is not None and parent.get("status") not in {
+        "cancelled",
+        "blocked",
+        "done",
+    }:
+        parent.update(
+            {
+                "status": "error",
+                "error": public_error,
+                "result": None,
+                "queue_position": None,
+                "finished_at": time.time(),
+            }
+        )
+    child = _jobs.get(child_id or "")
+    if child is not None:
+        child.update(
+            {
+                "status": "error",
+                "error": public_error,
+                "queue_position": None,
+                "comfy_prompt_id": None,
+                "finished_at": time.time(),
+            }
+        )
+    await ws_manager.broadcast(
+        parent_id,
+        {"type": "error", "status": "error", "error": public_error},
+    )
+
+
+def _animation_frame_b64(path: Path) -> str:
+    return base64.b64encode(path.read_bytes()).decode()
+
+
+def _quarantine_animation_staging(parent_id: str) -> str | None:
+    project_dir = animation_store.project_dir(parent_id)
+    staging = project_dir / "staging"
+    if not staging.is_dir():
+        return None
+    destination = QUARANTINE_DIR / f"animation-{parent_id}"
+    destination.mkdir(parents=True, exist_ok=True)
+    first: str | None = None
+    for path in staging.iterdir():
+        if path.is_file() and not path.is_symlink():
+            target = destination / path.name
+            os.replace(path, target)
+            first = first or target.name
+    return first
+
+
+async def _run_animation_chunk(job_id: str, payload: dict) -> str | None:
+    parent_id = str(payload["parent_job_id"])
+    chunk_index = int(payload["chunk_index"])
+    child = _jobs[job_id]
+    parent = _jobs[parent_id]
+    child["status"] = "running"
+    parent["status"] = "running"
+    parent["started_at"] = parent.get("started_at") or time.time()
+    loop = asyncio.get_running_loop()
+    try:
+        project = await asyncio.to_thread(
+            animation_store.begin_chunk, parent_id, chunk_index
+        )
+        req = AnimateRequest.model_validate(project.request)
+        start, end = project.chunk_ranges[chunk_index]
+        frame_paths = await asyncio.to_thread(
+            animation_store.frame_paths, parent_id, verify=False
+        )
+        init_image = (
+            await asyncio.to_thread(_animation_frame_b64, frame_paths[-1])
+            if frame_paths
+            else (req.init_image_b64 or None)
+        )
+        reference_image = (
+            await asyncio.to_thread(_animation_frame_b64, frame_paths[0])
+            if frame_paths
+            else (req.init_image_b64 or None)
+        )
+        source_path = None
+        if req.source_video_upload_id:
+            source_path = await asyncio.to_thread(
+                animation_upload_store.resolve,
+                req.source_video_upload_id,
+                username=project.owner,
+                is_admin=project.role == "admin",
+            )
+
+        def progress_callback(current: int, total: int, *_args) -> None:
+            fraction = min(1.0, max(0.0, current / max(1, total)))
+
+            def update() -> None:
+                child["progress"] = int(fraction * 100)
+                parent["progress"] = int(
+                    100
+                    * (project.completed_frames + fraction * (end - start))
+                    / project.total_frames
+                )
+
+            loop.call_soon_threadsafe(update)
+
+        async def render():
+            from comfy_deforum import render_animation_chunk
+
+            return await loop.run_in_executor(
+                None,
+                lambda: render_animation_chunk(
+                    req,
+                    project,
+                    start=start,
+                    end=end,
+                    init_image_b64=init_image,
+                    reference_image_b64=reference_image,
+                    source_video_path=source_path,
+                    controlled_video_root=(
+                        animation_upload_store.root if source_path else None
+                    ),
+                    progress_cb=progress_callback,
+                    prompt_id_cb=_task_prompt_id_callback(job_id),
+                ),
+            )
+
+        await asyncio.to_thread(
+            write_generation_breadcrumb,
+            LOGS_DIR,
+            job_id=parent_id,
+            req={"kind": "animation"},
+            stage="animation_chunk",
+            extra={"chunk_index": chunk_index, "start": start, "end": end},
+        )
+        frames = await _run_gpu_operation_with_oom_retry(job_id, render)
+        cancelled = bool(
+            generation_queue is not None
+            and generation_queue.cancel_requested(job_id)
+        )
+        disk = await asyncio.to_thread(animation_store.load, parent_id)
+        if cancelled or disk.status == "cancelled":
+            await asyncio.to_thread(animation_store.discard_staging, parent_id)
+            if disk.status != "cancelled":
+                disk = await asyncio.to_thread(
+                    animation_store.mark_status, parent_id, "cancelled"
+                )
+            await _cleanup_animation_upload(disk)
+            child["status"] = "cancelled"
+            parent["status"] = "cancelled"
+            return None
+        staged = await asyncio.to_thread(
+            animation_store.stage_chunk, parent_id, chunk_index, frames
+        )
+        if project.role == "child":
+            def moderate_samples():
+                images = []
+                for raw in (frames[0], frames[-1]):
+                    with Image.open(io.BytesIO(raw)) as image:
+                        images.append(image.convert("RGB"))
+                return moderate_images(images, role="child")
+
+            moderation = await asyncio.to_thread(moderate_samples)
+            if not moderation.allowed:
+                quarantined = await asyncio.to_thread(
+                    _quarantine_animation_staging, parent_id
+                )
+                event_id = await save_moderation_event(
+                    username=project.owner or "local",
+                    role="child",
+                    event_type=moderation.event_type,
+                    action="block_animation_chunk",
+                    prompt="",
+                    negative_prompt="",
+                    mode="animation",
+                    scores=moderation.scores,
+                    reason=moderation.reason,
+                    job_id=parent_id,
+                    quarantined_filename=quarantined,
+                )
+                await asyncio.to_thread(
+                    animation_store.mark_status, parent_id, "blocked"
+                )
+                await _cleanup_animation_upload(project)
+                child["status"] = "blocked"
+                parent.update(
+                    {
+                        "status": "blocked",
+                        "error": "This animation was blocked by the child safety filter.",
+                        "moderation_event_id": event_id,
+                    }
+                )
+                await ws_manager.broadcast(
+                    parent_id, {"type": "blocked", "error": parent["error"]}
+                )
+                return None
+        if (
+            generation_queue is not None
+            and generation_queue.cancel_requested(job_id)
+        ):
+            await asyncio.to_thread(animation_store.discard_staging, parent_id)
+            await asyncio.to_thread(
+                animation_store.mark_status, parent_id, "cancelled"
+            )
+            await _cleanup_animation_upload(project)
+            child["status"] = "cancelled"
+            parent["status"] = "cancelled"
+            return None
+        committed = await asyncio.to_thread(
+            animation_store.commit_chunk, parent_id, chunk_index, staged
+        )
+        child["status"] = "done"
+        child["progress"] = 100
+        parent["completed_frames"] = committed.completed_frames
+        parent["progress"] = int(
+            100 * committed.completed_frames / committed.total_frames
+        )
+        parent["status"] = committed.status
+        await ws_manager.broadcast(
+            parent_id,
+            {
+                "type": "progress",
+                "status": committed.status,
+                "progress": parent["progress"],
+                "completed_frames": committed.completed_frames,
+                "total_frames": committed.total_frames,
+            },
+        )
+        return parent_id
+    except Exception:
+        logger.exception("Animation chunk failed for project %s", parent_id)
+        await _fail_animation_parent(
+            parent_id,
+            child_id=job_id,
+            public_error="Animation chunk failed. Check server logs and retry.",
+        )
+        return None
+    finally:
+        child["comfy_prompt_id"] = None
+        child["finished_at"] = time.time()
+
+
+async def _finalize_animation(parent_id: str) -> None:
+    parent = _jobs.get(parent_id)
+    if parent is None:
+        return
+    try:
+        project = await asyncio.to_thread(animation_store.load, parent_id)
+        if project.status != "finalizing":
+            return
+        frame_paths = await asyncio.to_thread(
+            animation_store.frame_paths, parent_id, verify=True
+        )
+        project_dir = await asyncio.to_thread(animation_store.project_dir, parent_id)
+        video = project_dir / "animation.mp4"
+        poster = project_dir / "preview.jpg"
+        metadata = await asyncio.to_thread(
+            finalize_mp4,
+            frame_paths,
+            video,
+            fps=int(project.request["fps"]),
+            poster_path=poster,
+        )
+        latest = await asyncio.to_thread(animation_store.load, parent_id)
+        if latest.status != "finalizing":
+            return
+        video_relative = video.relative_to(OUTPUTS_DIR).as_posix()
+        poster_relative = poster.relative_to(OUTPUTS_DIR).as_posix()
+        gallery_id = await save_media(
+            video_relative,
+            poster_filename=poster_relative,
+            duration=float(metadata["duration"]),
+            frame_count=int(metadata["frame_count"]),
+            project_job_id=parent_id,
+            owner_username=project.owner,
+            prompt=project.request["prompt_schedule"],
+            width=int(metadata["width"]),
+            height=int(metadata["height"]),
+            seed=project.seed_base,
+            metadata=metadata,
+        )
+        await asyncio.to_thread(
+            animation_store.publish_result,
+            parent_id,
+            video_path="animation.mp4",
+            poster_path="preview.jpg",
+            gallery_id=gallery_id,
+        )
+        result = AnimationResult(
+            video_url=f"/api/outputs/{video_relative}",
+            poster_url=f"/api/outputs/{poster_relative}",
+            frame_count=int(metadata["frame_count"]),
+            fps=int(metadata["fps"]),
+            duration=float(metadata["duration"]),
+            gallery_id=gallery_id,
+        ).model_dump()
+        parent.update(
+            {
+                "status": "done",
+                "progress": 100,
+                "result": result,
+                "finished_at": time.time(),
+            }
+        )
+        await _cleanup_animation_upload(project)
+        await asyncio.to_thread(
+            clear_generation_breadcrumb, LOGS_DIR, job_id=parent_id
+        )
+        await _broadcast_job_event(
+            parent_id, {"type": "done", "status": "done", "result": result}
+        )
+    except Exception:
+        logger.exception("Animation finalization failed for %s", parent_id)
+        try:
+            project = await asyncio.to_thread(animation_store.load, parent_id)
+            if project.status == "finalizing":
+                project = await asyncio.to_thread(
+                    animation_store.mark_status,
+                    parent_id,
+                    "error",
+                    "Video finalization failed; committed frames were preserved.",
+                )
+                await _cleanup_animation_upload(project)
+        except Exception:
+            logger.exception("Could not persist animation finalization failure")
+        parent["status"] = "error"
+        parent["error"] = "Video finalization failed. Frames were preserved."
+        await ws_manager.broadcast(
+            parent_id, {"type": "error", "error": parent["error"]}
+        )
+
+
+def _schedule_animation_finalizer(parent_id: str) -> None:
+    project_key = (
+        os.path.normcase(str(animation_store.state_root)),
+        parent_id,
+    )
+    if project_key in _animation_finalizer_project_ids:
+        return
+    _animation_finalizer_project_ids.add(project_key)
+    task = asyncio.create_task(_finalize_animation(parent_id))
+    setattr(task, "_animation_parent_id", parent_id)
+    _animation_finalizer_tasks.add(task)
+
+    def finished(done: asyncio.Task) -> None:
+        _animation_finalizer_tasks.discard(done)
+        _animation_finalizer_project_ids.discard(project_key)
+
+    task.add_done_callback(finished)
+
+
 async def _queued_gpu_task_handler(job_id: str, payload: dict) -> None:
     await _broadcast_queue_state()
+    animation_parent: str | None = None
     async with GPU_LEASE:
         task_kind = (_jobs.get(job_id) or {}).get("task_kind", GENERATION)
         if not await _validate_comfy_task_dispatch(
@@ -1200,6 +1919,21 @@ async def _queued_gpu_task_handler(job_id: str, payload: dict) -> None:
                 username=payload.get("username"),
                 role=payload.get("role", "user"),
             )
+        elif task_kind == ANIMATION:
+            if payload.get("operation") == "chunk":
+                animation_parent = await _run_animation_chunk(job_id, payload)
+            else:
+                parent_id = str(
+                    payload.get("parent_job_id")
+                    or (_jobs.get(job_id) or {}).get("parent_job_id")
+                    or ""
+                )
+                if parent_id:
+                    await _fail_animation_parent(
+                        parent_id,
+                        child_id=job_id,
+                        public_error="Animation dispatch failed. Check server status and retry.",
+                    )
         elif task_kind in {PROMPT_EXPAND, PROMPT_PLAN, IMAGE_DESCRIBE}:
             await _run_helper_task(job_id, payload)
         elif task_kind == MODEL_WARMUP:
@@ -1260,6 +1994,8 @@ async def _queued_gpu_task_handler(job_id: str, payload: dict) -> None:
             await _run_auxiliary_task(job_id, payload)
         else:
             raise RuntimeError(f"Unsupported GPU task kind: {task_kind}")
+    if animation_parent is not None:
+        await _continue_animation(animation_parent)
     await _broadcast_queue_state()
 
 
@@ -1318,9 +2054,102 @@ async def _broadcast_job_event(job_id: str, data: dict) -> int:
 # Startup
 # ---------------------------------------------------------------------------
 
+
+async def _recover_animation_projects() -> None:
+    loop = asyncio.get_running_loop()
+    recovery_lock = _animation_recovery_locks.setdefault(loop, asyncio.Lock())
+    async with recovery_lock:
+        await asyncio.to_thread(animation_store.reconcile_staging)
+        projects = await asyncio.to_thread(animation_store.recoverable)
+        root_key = os.path.normcase(str(animation_store.state_root))
+        recoverable_keys = {(root_key, project.job_id) for project in projects}
+        _animation_recovery_guard.intersection_update(recoverable_keys)
+        active_uploads = {
+            str(project.request.get("source_video_upload_id") or "")
+            for project in projects
+            if project.request.get("source_video_upload_id")
+        }
+        await asyncio.to_thread(animation_upload_store.cleanup, active_uploads)
+        queue_records = (
+            generation_queue.all_statuses() if generation_queue is not None else {}
+        )
+        for project in projects:
+            parent = _jobs.setdefault(
+                project.job_id, _animation_parent_from_project(project)
+            )
+            children = [
+                _jobs.get(str(child_id))
+                for child_id in parent.get("child_job_ids") or []
+            ]
+            has_active_child = any(
+                child
+                and child.get("status")
+                not in _TERMINAL_JOB_STATUSES
+                and (
+                    child.get("parent_job_id") == project.job_id
+                    or str(child.get("project_job_id") or "") == project.job_id
+                )
+                for child in children
+            ) or any(
+                record.get("status") not in _TERMINAL_JOB_STATUSES
+                and (_jobs.get(task_id) or {}).get("parent_job_id")
+                == project.job_id
+                for task_id, record in queue_records.items()
+            )
+            if project.status == "running" and not has_active_child:
+                project = await asyncio.to_thread(
+                    animation_store.prepare_recovery, project.job_id
+                )
+            parent.update(
+                {
+                    "status": project.status,
+                    "completed_frames": project.completed_frames,
+                    "total_frames": project.total_frames,
+                    "progress": int(
+                        100 * project.completed_frames / project.total_frames
+                    ),
+                }
+            )
+            if project.status == "finalizing":
+                project_key = (root_key, project.job_id)
+                if project_key not in _animation_recovery_guard:
+                    _animation_recovery_guard.add(project_key)
+                    _schedule_animation_finalizer(project.job_id)
+            elif project.status == "queued" and not has_active_child:
+                await _enqueue_animation_chunk(
+                    project.job_id, project.next_chunk_index
+                )
+                _animation_recovery_guard.add((root_key, project.job_id))
+
+
+async def _recover_animations() -> None:
+    await _recover_animation_projects()
+
+
+async def _animation_upload_cleanup_loop() -> None:
+    interval = settings.animation_upload_cleanup_interval_seconds
+    delay = interval
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            projects = await asyncio.to_thread(animation_store.recoverable)
+            active = {
+                str(project.request.get("source_video_upload_id") or "")
+                for project in projects
+                if project.request.get("source_video_upload_id")
+            }
+            await asyncio.to_thread(animation_upload_store.cleanup, active)
+            delay = interval
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Periodic animation upload cleanup failed")
+            delay = min(interval * 4, max(interval, delay * 2))
+
+
 @app.on_event("startup")
 async def startup():
-    global generation_queue
+    global generation_queue, _animation_upload_cleanup_task
     fault_path = enable_fault_logging(LOGS_DIR)
     stale = stale_generation_breadcrumbs(LOGS_DIR)
     if stale:
@@ -1347,6 +2176,14 @@ async def startup():
     if generation_queue is None:
         generation_queue = GpuTaskQueue(_queued_gpu_task_handler)
         asyncio.create_task(generation_queue.run())
+    await _recover_animations()
+    if (
+        _animation_upload_cleanup_task is None
+        or _animation_upload_cleanup_task.done()
+    ):
+        _animation_upload_cleanup_task = asyncio.create_task(
+            _animation_upload_cleanup_loop()
+        )
     try:
         import comfy_qwen_vl
         comfy_qwen_vl.set_generation_busy_probe(_active_generation_running)
@@ -1381,6 +2218,15 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    global _animation_upload_cleanup_task
+    if _animation_upload_cleanup_task is not None:
+        _animation_upload_cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _animation_upload_cleanup_task
+        _animation_upload_cleanup_task = None
+    tasks = list(_animation_finalizer_tasks)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
     disable_fault_logging()
 
 
@@ -1617,6 +2463,149 @@ async def _enforce_child_generation_inputs(
         403,
         "One or more images were blocked by the child safety filter and sent to an admin for review.",
     )
+
+
+def _append_upload_chunk(path: Path, chunk: bytes) -> None:
+    with path.open("ab") as handle:
+        handle.write(chunk)
+
+
+def _fsync_upload(path: Path) -> None:
+    with path.open("rb+") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+@app.post("/api/animate/uploads")
+async def upload_animation_source(request: Request):
+    username, role, is_role_admin = _request_user_role(request)
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+    if content_type not in ALLOWED_VIDEO_TYPES:
+        raise HTTPException(415, "Unsupported video content type.")
+    declared = request.headers.get("content-length")
+    if not declared:
+        raise HTTPException(411, "Content-Length is required for video uploads.")
+    try:
+        declared_size = int(declared)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid Content-Length.") from exc
+    if declared_size < 1 or declared_size > settings.animation_max_upload_bytes:
+        raise HTTPException(413, "Video upload exceeds the byte limit.")
+    try:
+        active_projects = await asyncio.to_thread(animation_store.recoverable)
+        active_upload_ids = {
+            str(project.request.get("source_video_upload_id") or "")
+            for project in active_projects
+            if project.request.get("source_video_upload_id")
+        }
+        upload_id, temporary = await asyncio.to_thread(
+            animation_upload_store.reserve,
+            username,
+            declared_size,
+            active_upload_ids,
+        )
+    except UploadQuotaError as exc:
+        raise HTTPException(429, "Animation upload quota reached.") from exc
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > declared_size:
+                raise HTTPException(413, "Video upload exceeds the byte limit.")
+            digest.update(chunk)
+            await asyncio.to_thread(_append_upload_chunk, temporary, chunk)
+        if size == 0:
+            raise HTTPException(400, "Video upload is empty.")
+        await asyncio.to_thread(_fsync_upload, temporary)
+        metadata = await asyncio.to_thread(
+            animation_upload_store.finalize,
+            upload_id,
+            temporary,
+            owner=username,
+            content_type=content_type,
+            size=size,
+            sha256=digest.hexdigest(),
+        )
+        if role == "child":
+            path = await asyncio.to_thread(
+                animation_upload_store.resolve,
+                upload_id,
+                username=username,
+                is_admin=is_role_admin,
+            )
+            try:
+                samples = await asyncio.to_thread(
+                    animation_upload_store.sample_images, path
+                )
+                decision = await asyncio.to_thread(
+                    moderate_images, samples, role="child"
+                )
+            except Exception as exc:
+                await asyncio.to_thread(
+                    animation_upload_store.delete,
+                    upload_id,
+                    username=username,
+                    is_admin=True,
+                )
+                raise HTTPException(
+                    403, "The video could not be safely verified."
+                ) from exc
+            if not decision.allowed:
+                await asyncio.to_thread(
+                    animation_upload_store.delete,
+                    upload_id,
+                    username=username,
+                    is_admin=True,
+                )
+                raise HTTPException(
+                    403, "The video was blocked by the child safety filter."
+                )
+        return {
+            key: metadata[key]
+            for key in (
+                "upload_id",
+                "size",
+                "sha256",
+                "frame_count",
+                "width",
+                "height",
+                "duration",
+            )
+        }
+    except HTTPException:
+        await asyncio.to_thread(
+            animation_upload_store.abort,
+            upload_id,
+            username=username,
+            is_admin=True,
+        )
+        raise
+    except ValueError as exc:
+        await asyncio.to_thread(
+            animation_upload_store.abort,
+            upload_id,
+            username=username,
+            is_admin=True,
+        )
+        raise HTTPException(422, "Video upload is invalid or exceeds limits.") from exc
+    except Exception:
+        await asyncio.to_thread(
+            animation_upload_store.abort,
+            upload_id,
+            username=username,
+            is_admin=True,
+        )
+        logger.exception("Animation upload failed")
+        raise HTTPException(500, "Video upload failed.")
+
+
+@app.post("/api/animate")
+async def animate(req: AnimateRequest, request: Request):
+    username, role, _is_admin = _request_user_role(request)
+    return await _create_animation(req, username=username, role=role)
 
 
 @app.post("/api/generate")
@@ -2405,11 +3394,17 @@ def _quarantine_output_files(filenames: list[str], job_id: str) -> str | None:
 
 
 def _safe_served_filename(filename: str) -> str | None:
-    """Validate a served output path. Allows a flat name (legacy) or one per-user
-    subfolder level (username/name). Rejects traversal and deeper nesting."""
+    """Validate legacy image paths and controlled animation media paths."""
     raw = str(filename or "").replace("\\", "/")
     parts = [p for p in raw.split("/") if p]
-    if not (1 <= len(parts) <= 2):
+    legacy = 1 <= len(parts) <= 2
+    animation = (
+        len(parts) == 4
+        and parts[1] == "animations"
+        and re.fullmatch(r"[a-f0-9-]{1,128}", parts[2]) is not None
+        and Path(parts[3]).suffix.lower() in {".mp4", ".jpg", ".jpeg", ".png"}
+    )
+    if not (legacy or animation):
         return None
     for part in parts:
         if part in (".", "..") or not SAFE_SERVED_FILENAME_RE.fullmatch(part):
@@ -2815,7 +3810,7 @@ async def job_status(job_id: str, request: Request):
     if not _job_owned_by(job, username, is_admin):
         # 404 (not 403) so foreign job ids are indistinguishable from unknown ones.
         raise HTTPException(404, "Job not found")
-    if job.get("child_job_ids"):
+    if job.get("child_job_ids") and job.get("task_kind") != ANIMATION:
         _refresh_parent_batch_job(job_id)
     if job.get("status") in _TERMINAL_JOB_STATUSES:
         job["result_delivered_at"] = job.get("result_delivered_at") or time.time()
@@ -2866,7 +3861,7 @@ async def acknowledge_job_result(job_id: str, request: Request):
     if not job.get("result_delivered_at"):
         raise HTTPException(409, "Job result has not been delivered yet.")
     acknowledged_at = time.time()
-    if job.get("child_job_ids"):
+    if job.get("child_job_ids") and job.get("task_kind") != ANIMATION:
         children = [
             _jobs.get(str(child_id))
             for child_id in job.get("child_job_ids") or []
@@ -2897,7 +3892,7 @@ async def list_jobs(request: Request, limit: int = 24):
     for jid, job in reversed(list(_jobs.items())):
         if job.get("parent_job_id"):
             continue  # represented by its parent batch job
-        if job.get("child_job_ids"):
+        if job.get("child_job_ids") and job.get("task_kind") != ANIMATION:
             _refresh_parent_batch_job(jid)
         status = job.get("status")
         mine = _job_owned_by(job, username, is_admin)
@@ -2968,6 +3963,56 @@ async def list_jobs(request: Request, limit: int = 24):
     return {"jobs": out, "admission": admission}
 
 
+async def _cancel_animation_job(job_id: str, job: dict) -> dict:
+    project = await asyncio.to_thread(animation_store.load, job_id)
+    if project.status == "finalizing":
+        raise HTTPException(409, "Animation publication has already started.")
+    if project.status in {"done", "error", "blocked", "cancelled"}:
+        return {"ok": False, "job_id": job_id, "status": project.status, "cancelled": 0}
+    await asyncio.to_thread(
+        animation_store.mark_status, job_id, "cancelled"
+    )
+    job["cancel_requested"] = True
+    job["status"] = "cancelled"
+    job["queue_position"] = None
+    cancelled = 0
+    actions: list[tuple[str, str]] = []
+    for child_id in list(job.get("child_job_ids") or []):
+        child = _jobs.get(child_id)
+        if (
+            generation_queue is None
+            or child is None
+            or child.get("status") in _TERMINAL_JOB_STATUSES
+        ):
+            continue
+        outcome = generation_queue.request_cancel(child_id)
+        if outcome != "none":
+            actions.append((child_id, outcome))
+    from comfy_client import cancel_prompt
+
+    for child_id, outcome in actions:
+        child = _jobs.get(child_id)
+        if child is None:
+            continue
+        if outcome == "interrupt" and child.get("comfy_prompt_id"):
+            await asyncio.to_thread(cancel_prompt, child["comfy_prompt_id"])
+        child["status"] = "cancelled"
+        child["queue_position"] = None
+        child["finished_at"] = time.time()
+        cancelled += 1
+        await ws_manager.broadcast(child_id, {"type": "cancelled"})
+    await asyncio.to_thread(animation_store.discard_staging, job_id)
+    await _cleanup_animation_upload(project)
+    await ws_manager.broadcast(job_id, {"type": "cancelled", "status": "cancelled"})
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": "cancelled",
+        "cancelled": cancelled,
+    }
+
+
+@app.post("/api/animate/{job_id}/cancel")
 @app.post("/api/generate/{job_id}/cancel")
 async def cancel_generation_job(job_id: str, request: Request):
     """Cancel a generation. Dequeues any not-yet-started (batch) children and, if
@@ -2979,6 +4024,8 @@ async def cancel_generation_job(job_id: str, request: Request):
     username, _role, is_admin = _request_user_role(request)
     if not _job_owned_by(job, username, is_admin):
         raise HTTPException(404, "Job not found")
+    if job.get("task_kind") == ANIMATION and not job.get("parent_job_id"):
+        return await _cancel_animation_job(job_id, job)
     targets = list(job.get("child_job_ids") or []) or [job_id]
     if job.get("child_job_ids"):
         job["cancel_requested"] = True
@@ -3198,6 +4245,19 @@ async def favorite(gallery_id: int, req: FavoriteRequest, request: Request):
 @app.delete("/api/gallery/{gallery_id}")
 async def delete_gallery_item(gallery_id: int, request: Request):
     username, _role, is_role_admin = _request_user_role(request)
+    media = await delete_media_record(
+        gallery_id, owner_username=username, is_admin=is_role_admin
+    )
+    if media is not None:
+        project_job_id = str(media.get("project_job_id") or "")
+        if project_job_id:
+            await asyncio.to_thread(
+                animation_store.delete,
+                project_job_id,
+                username=username or "",
+                is_admin=is_role_admin,
+            )
+        return {"ok": True, "filename": media["filename"]}
     filename = await delete_image(gallery_id, owner_username=username, is_admin=is_role_admin)
     if filename is None:
         raise HTTPException(404, "Not found")
@@ -3215,6 +4275,8 @@ async def output_file(filename: str, request: Request):
     username, _role, is_role_admin = _request_user_role(request)
     owner = row.get("owner_username")
     if not is_role_admin and owner != username:
+        raise HTTPException(404, "Not found")
+    if safe_name not in {row.get("filename"), row.get("poster_filename")}:
         raise HTTPException(404, "Not found")
     return await _outputs_static.get_response(safe_name, request.scope)
 
@@ -4129,6 +5191,7 @@ async def get_settings():
         configured_engine = "native_gguf"
     elif configured_engine == "int8_convrot_external":
         configured_engine = "native_int8_convrot"
+    krea_deforum = await asyncio.to_thread(krea_deforum_status, timeout=1.0)
     return {
         "hf_token": "",
         "civitai_token": "",
@@ -4165,6 +5228,21 @@ async def get_settings():
         "has_civitai_token": bool(_secret_value("CIVITAI_TOKEN", "civitai_token", env)),
         "has_ideogram_api_key": bool(_secret_value("IDEOGRAM_API_KEY", "ideogram_api_key", env)),
         "has_openrouter_api_key": bool(_secret_value("OPENROUTER_API_KEY", "openrouter_api_key", env)),
+        "krea_deforum": krea_deforum,
+        "animation": {
+            "chunk_size": settings.animation_chunk_size,
+            "max_frames": settings.animation_max_frames,
+            "max_dimension": settings.animation_max_dimension,
+            "max_upload_bytes": settings.animation_max_upload_bytes,
+            "uploads_per_user": settings.animation_uploads_per_user,
+            "upload_bytes_per_user": settings.animation_upload_bytes_per_user,
+            "uploads_global": settings.animation_uploads_global,
+            "upload_bytes_global": settings.animation_upload_bytes_global,
+            "upload_cleanup_interval_seconds": settings.animation_upload_cleanup_interval_seconds,
+            "max_source_duration_seconds": settings.animation_max_source_duration_seconds,
+            "active_per_user": settings.animation_active_per_user,
+            "upload_content_types": sorted(ALLOWED_VIDEO_TYPES),
+        },
     }
 
 
