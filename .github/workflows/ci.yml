@@ -27,7 +27,7 @@ jobs:
       - name: Install lightweight Python test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest requests pillow numpy imageio-ffmpeg pydantic pydantic-settings huggingface_hub fastapi httpx aiosqlite
+          python -m pip install pytest requests pillow numpy opencv-python-headless imageio-ffmpeg pydantic pydantic-settings huggingface_hub fastapi httpx aiosqlite
 
       - name: Run Python tests
         run: python -m pytest tests -v
