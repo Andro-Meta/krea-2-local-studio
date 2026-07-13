@@ -1,4 +1,5 @@
 import axios from 'axios'
+import animateContract from './generated/animate-contract.json' with { type: 'json' }
 
 export function publicBasePath(): string {
   if (typeof window === 'undefined') return ''
@@ -194,8 +195,93 @@ export interface GenerationRequest {
   seed_variance_cutoff_strength?: number
 }
 
+export interface AnimateRequest {
+  prompt_schedule: string
+  negative_prompt: string
+  duration_seconds: number
+  fps: number
+  render_frames: number | null
+  width: number
+  height: number
+  steps: number
+  sampler_name: string
+  scheduler: string
+  seed: number
+  seed_behavior: 'fixed' | 'iter' | 'random' | 'ladder'
+  animation_mode: '2D' | '3D' | 'Video Input' | 'None'
+  border_mode: 'replicate' | 'reflect' | 'wrap' | 'black'
+  cfg_schedule: string
+  strength_schedule: string
+  zoom_schedule: string
+  angle_schedule: string
+  translation_x_schedule: string
+  translation_y_schedule: string
+  translation_z_schedule: string
+  rotation_3d_x_schedule: string
+  rotation_3d_y_schedule: string
+  rotation_3d_z_schedule: string
+  color_coherence: 'None' | 'Match Frame 0 LAB'
+  diffusion_cadence: number
+  hybrid_strength_schedule: string
+  hybrid_mode: 'normal' | 'optical_flow'
+  init_image_b64: string
+  source_video_upload_id: string
+}
+
+export interface AnimationResult {
+  video_url: string
+  poster_url: string
+  frame_count: number
+  fps: number
+  duration: number
+  gallery_id: number
+}
+
+export interface AnimationUploadResponse {
+  upload_id: string
+  size: number
+  sha256: string
+  frame_count: number
+  width: number
+  height: number
+  duration: number
+}
+
+export interface AnimationLimits {
+  chunk_size: number
+  max_frames: number
+  max_dimension: number
+  max_upload_bytes: number
+  uploads_per_user: number
+  upload_bytes_per_user: number
+  uploads_global: number
+  upload_bytes_global: number
+  upload_cleanup_interval_seconds: number
+  max_source_duration_seconds: number
+  active_per_user: number
+  upload_content_types: string[]
+}
+
+export interface KreaDeforumStatus {
+  available: boolean
+  missing_nodes: string[]
+  incompatible_capabilities: string[]
+  variants: string[]
+  revision: string
+  external: boolean
+  license: string
+  patch_version: string
+  patched_animator_sha256?: string
+  patch_sha256?: string
+  probe_failed: boolean
+  stale: boolean
+  midas_ready: boolean
+  midas_reason: string
+}
+
 export type GpuTaskKind =
   | 'generation'
+  | 'animation'
   | 'prompt_expand'
   | 'prompt_plan'
   | 'image_describe'
@@ -235,6 +321,9 @@ export interface GpuTaskResponse<TResult = unknown> {
   pct?: number
   provider_warning?: string
   lora_warnings?: Array<{ name: string; reason?: string }>
+  completed_frames?: number
+  total_frames?: number
+  chunk_index?: number
 }
 
 export type GenerationJob = GpuTaskResponse
@@ -577,6 +666,8 @@ export interface AppSettings {
   has_civitai_token: boolean
   has_ideogram_api_key: boolean
   has_openrouter_api_key: boolean
+  krea_deforum?: unknown
+  animation: AnimationLimits
 }
 
 export interface AcceleratorStatus {
@@ -723,8 +814,34 @@ export const apiFetch = {
   generate: (req: GenerationRequest) =>
     api.post<{ job_id: string; status: GpuTaskStatus; queue_position?: number | null; queue_length?: number | null; moderation_event_id?: number; batch_id?: string; child_job_ids?: string[] }>('/api/generate', req).then(r => r.data),
 
-  jobStatus: (jobId: string) =>
-    api.get<GenerationJob>(`/api/generate/${jobId}`).then(r => r.data),
+  animate: (req: AnimateRequest) =>
+    api.post<{ job_id: string; status: 'queued'; queue_position?: number | null; queue_length?: number | null }>(
+      animateContract.endpoints.submit,
+      req,
+    ).then(r => r.data),
+
+  uploadAnimationSource: (
+    file: File,
+    onProgress?: (percent: number) => void,
+  ) => api.post<AnimationUploadResponse>(animateContract.endpoints.upload, file, {
+    headers: {
+      'Content-Type': file.type,
+    },
+    // Keep the File as the raw request body. The browser owns Content-Length
+    // (a forbidden script header) and supplies it from the File size.
+    transformRequest: data => data,
+    withCredentials: true,
+    onUploadProgress: event => {
+      const total = event.total ?? file.size
+      onProgress?.(total > 0 ? Math.min(100, Math.round(event.loaded / total * 100)) : 0)
+    },
+  }).then(r => r.data),
+
+  downloadOwnedMedia: (url: string) =>
+    api.get<Blob>(url, { responseType: 'blob', withCredentials: true }).then(r => r.data),
+
+  jobStatus: <TResult = unknown>(jobId: string) =>
+    api.get<GpuTaskResponse<TResult>>(`/api/generate/${jobId}`).then(r => r.data),
 
   jobs: (limit = 24) =>
     api.get<QueueJobsResponse>(`/api/jobs`, { params: { limit } }).then(r => r.data),

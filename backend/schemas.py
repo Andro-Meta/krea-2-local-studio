@@ -1,6 +1,12 @@
 from __future__ import annotations
 from typing import Literal, Optional, List
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class BoundingBox(BaseModel):
@@ -43,6 +49,89 @@ class CharacterEditRegion(BaseModel):
     reference_b64: str = ""
     strength: float = Field(default=1.0, ge=0.0, le=2.0)
     feather: int = Field(default=24, ge=0, le=256)
+
+
+class AnimateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_schedule: str = Field(
+        default="0: a scenic landscape, cinematic lighting",
+        max_length=32 * 1024,
+    )
+    negative_prompt: str = ""
+    duration_seconds: float = Field(default=4.0, ge=0.5, le=60.0)
+    fps: int = Field(default=12, ge=1, le=60)
+    render_frames: Optional[int] = Field(default=None, ge=1, le=720)
+    width: int = Field(default=768, ge=256, le=1536, multiple_of=16)
+    height: int = Field(default=768, ge=256, le=1536, multiple_of=16)
+    steps: int = Field(default=8, ge=3, le=52)
+    sampler_name: str = "er_sde"
+    scheduler: str = "simple"
+    seed: int = Field(default=-1, ge=-1, le=(1 << 64) - 1)
+    seed_behavior: Literal["fixed", "iter", "random", "ladder"] = "iter"
+    animation_mode: Literal["2D", "3D", "Video Input", "None"] = "2D"
+    border_mode: Literal["replicate", "reflect", "wrap", "black"] = "replicate"
+    cfg_schedule: str = Field(default="0:(1.0)", max_length=32 * 1024)
+    strength_schedule: str = Field(default="0:(0.65)", max_length=32 * 1024)
+    zoom_schedule: str = Field(default="0:(1.0)", max_length=32 * 1024)
+    angle_schedule: str = Field(default="0:(0)", max_length=32 * 1024)
+    translation_x_schedule: str = Field(default="0:(0)", max_length=32 * 1024)
+    translation_y_schedule: str = Field(default="0:(0)", max_length=32 * 1024)
+    translation_z_schedule: str = Field(default="0:(0)", max_length=32 * 1024)
+    rotation_3d_x_schedule: str = Field(default="0:(0)", max_length=32 * 1024)
+    rotation_3d_y_schedule: str = Field(default="0:(0)", max_length=32 * 1024)
+    rotation_3d_z_schedule: str = Field(default="0:(0)", max_length=32 * 1024)
+    color_coherence: Literal["None", "Match Frame 0 LAB"] = "Match Frame 0 LAB"
+    diffusion_cadence: int = Field(default=1, ge=1, le=16)
+    hybrid_strength_schedule: str = Field(default="0:(0.5)", max_length=32 * 1024)
+    hybrid_mode: Literal["normal", "optical_flow"] = "optical_flow"
+    init_image_b64: str = ""
+    source_video_upload_id: str = ""
+
+    @field_validator("width", "height")
+    @classmethod
+    def dimensions_must_be_divisible_by_16(cls, value: int) -> int:
+        if value % 16:
+            raise ValueError("dimension must be divisible by 16")
+        return value
+
+    @model_validator(mode="after")
+    def validate_animation_request(self) -> "AnimateRequest":
+        if self.total_frames < 1 or self.total_frames > 720:
+            raise ValueError("total_frames must be between 1 and 720")
+        if (
+            self.animation_mode == "Video Input"
+            and not self.source_video_upload_id.strip()
+        ):
+            raise ValueError(
+                "source_video_upload_id is required for Video Input animation"
+            )
+        return self
+
+    @property
+    def total_frames(self) -> int:
+        if self.render_frames is not None:
+            return self.render_frames
+        return round(self.duration_seconds * self.fps)
+
+
+class AnimationUploadResponse(BaseModel):
+    upload_id: str
+    size: int
+    sha256: str
+    frame_count: int
+    width: int
+    height: int
+    duration: float
+
+
+class AnimationResult(BaseModel):
+    video_url: str
+    poster_url: str
+    frame_count: int
+    fps: int
+    duration: float
+    gallery_id: int
 
 
 class GenerationRequest(BaseModel):
@@ -246,6 +335,13 @@ class GalleryItem(BaseModel):
     thumbnail_b64: Optional[str] = None
     metadata: dict = {}
     owner_username: Optional[str] = None
+    media_type: Literal["image", "video"] = "image"
+    poster_filename: Optional[str] = None
+    duration: Optional[float] = None
+    frame_count: Optional[int] = None
+    project_job_id: Optional[str] = None
+    url: Optional[str] = None
+    poster_url: Optional[str] = None
 
 
 class GalleryListResponse(BaseModel):

@@ -3,6 +3,7 @@ import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Chip
 import GpuIcon from '@mui/icons-material/Memory'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import { apiFetch, publicUrl, type AcceleratorStatus, type AppSettings, type AuthSession, type KreaServerProcess, type ModerationEvent, type ModerationStatus, type QualityAsset, type ShareUser, type SharingStatus, type SystemReport } from '../../api'
+import { normalizeKreaDeforumStatus } from '../../lib/kreaDeforumStatus'
 import { useStore } from '../../store'
 
 function GBBar({ label, used, total }: { label: string; used?: number; total?: number }) {
@@ -150,6 +151,7 @@ export default function SystemStatus() {
   const comfyAccel = accelerators?.comfyui_venv
   const comfyHasAccelerators = !!(comfyAccel?.triton || comfyAccel?.sageattention || comfyAccel?.comfy_kitchen)
   const sageActive = settingsDraft.krea_attention_backend === 'sage'
+  const kreaDeforum = normalizeKreaDeforumStatus(settings?.krea_deforum)
 
   const refresh = async () => {
     setLoading(true); setFetchError('')
@@ -277,8 +279,8 @@ export default function SystemStatus() {
   useEffect(() => {
     let presenceTimer: number | undefined
     loadAuth().then(session => {
+      loadSettings()
       if (session?.role === 'admin') {
-        loadSettings()
         loadUsers()
         loadSharing()
         loadQualityAssets()
@@ -809,6 +811,76 @@ export default function SystemStatus() {
               <Button size="small" variant="contained" onClick={() => { window.location.href = './login' }}>
                 Sign in
               </Button>
+            )}
+          </Stack>
+        </Paper>
+
+        <Paper variant="outlined" sx={{ p: 2 }}>
+          <Stack spacing={1.25}>
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              justifyContent="space-between"
+              alignItems={{ xs: 'flex-start', sm: 'center' }}
+              gap={1}
+            >
+              <Box>
+                <Typography variant="h6">KreaDeforum / Animate</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  External ComfyUI animation dependency
+                </Typography>
+              </Box>
+              <Chip
+                size="small"
+                label={kreaDeforum.available ? 'Ready' : 'Setup needed'}
+                color={kreaDeforum.available ? 'success' : 'warning'}
+              />
+            </Stack>
+            {settings ? (
+              <>
+                <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                  <Chip size="small" variant="outlined" label={`Revision ${kreaDeforum.revision.slice(0, 10)}`} />
+                  <Chip size="small" variant="outlined" label={`Patch ${kreaDeforum.patch_version}`} />
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color={kreaDeforum.incompatible_capabilities.length ? 'warning' : 'success'}
+                    label={kreaDeforum.incompatible_capabilities.length ? 'Patch incompatible' : 'Chunking capability OK'}
+                  />
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color={kreaDeforum.midas_ready ? 'success' : 'warning'}
+                    label={`MiDaS / 3D ${kreaDeforum.midas_ready ? 'ready' : 'not ready'}`}
+                  />
+                </Stack>
+                {!!kreaDeforum.missing_nodes.length && (
+                  <Alert severity="warning" sx={{ py: 0 }}>
+                    Missing nodes: {kreaDeforum.missing_nodes.join(', ')}
+                  </Alert>
+                )}
+                {!!kreaDeforum.incompatible_capabilities.length && (
+                  <Alert severity="warning" sx={{ py: 0 }}>
+                    {kreaDeforum.incompatible_capabilities.join(', ')}
+                  </Alert>
+                )}
+                {!kreaDeforum.available && (
+                  <Typography variant="body2" color="text.secondary">
+                    Run install.bat, then restart ComfyUI. There is no in-app setup action for this external dependency.
+                  </Typography>
+                )}
+                {!kreaDeforum.midas_ready && (
+                  <Typography variant="body2" color="text.secondary">
+                    3D only: {kreaDeforum.midas_reason}
+                  </Typography>
+                )}
+                <Typography variant="caption" color="text.disabled">
+                  External component · license {kreaDeforum.license}
+                  {kreaDeforum.probe_failed ? ' · readiness probe failed' : ''}
+                  {kreaDeforum.stale ? ' · showing last known status' : ''}
+                </Typography>
+              </>
+            ) : (
+              <Typography variant="body2" color="text.secondary">Checking animation dependencies…</Typography>
             )}
           </Stack>
         </Paper>

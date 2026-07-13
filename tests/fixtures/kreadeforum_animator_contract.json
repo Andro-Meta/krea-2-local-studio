@@ -1,0 +1,19 @@
+{
+  "upstream_revision": "49bb6752ab045fac25652f3e9207d4706bf5c646",
+  "patch_version": "krea2-chunking-v1",
+  "required": [
+    "model", "clip", "vae", "width", "height", "max_frames", "steps",
+    "sampler_name", "scheduler", "seed", "seed_behavior", "animation_mode",
+    "border_mode", "prompt_schedule", "negative_prompt", "cfg_schedule",
+    "strength_schedule", "zoom_schedule", "angle_schedule",
+    "translation_x_schedule", "translation_y_schedule",
+    "translation_z_schedule", "rotation_3d_x_schedule",
+    "rotation_3d_y_schedule", "rotation_3d_z_schedule", "color_coherence",
+    "diffusion_cadence"
+  ],
+  "optional": [
+    "hybrid_video_path", "hybrid_strength_schedule", "hybrid_mode",
+    "init_image", "frame_offset", "init_image_is_previous",
+    "reference_image", "seed_plan", "hybrid_video_has_context"
+  ]
+}

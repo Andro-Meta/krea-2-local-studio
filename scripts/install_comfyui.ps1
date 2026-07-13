@@ -18,6 +18,7 @@ $venvDir = Join-Path $comfyDir "venv"
 $venvPy = Join-Path $venvDir "Scripts\python.exe"
 . (Join-Path $PSScriptRoot "mrflow_layout.ps1")
 . (Join-Path $PSScriptRoot "comfy_process_validation.ps1")
+. (Join-Path $PSScriptRoot "kreadeforum_install.ps1")
 
 function Stop-Install($msg) { Write-Host "  ERROR: $msg"; exit 1 }
 
@@ -144,6 +145,60 @@ foreach ($repo in $nodes) {
     }
     $req = Join-Path $dst "requirements.txt"
     if (Test-Path $req) { & $venvPy -m pip install -r $req --quiet }
+}
+
+# -- 5a. Required Animate node: pinned external KreaDeforum -------------------
+$kreaDeforumRepo = "https://github.com/Dream-Making-Git/KreaDeforum.git"
+$kreaDeforumRevision = "49bb6752ab045fac25652f3e9207d4706bf5c646"
+$kreaDeforumPatch = Join-Path $root "patches\kreadeforum-krea2-chunking.patch"
+$kreaDeforumPatchSha256 = "2ff95c1c80c8b579600749590e14593a2cb892ec4f65351190e1b8f0a07999bc"
+$kreaDeforumPatchedSha256 = "6c6bc3ada4cea3e5778c0d04d7e9256c54f723f91759135ce6dc07538136ef65"
+$kreaDeforumDir = Join-Path $customNodes "KreaDeforum"
+$kreaDeforumRequiredClasses = @(
+    "KreaDeforumAnimator",
+    "KreaDeforumSaveVideo",
+    "KreaDeforumSchedulePreview",
+    "KreaDeforumChunkAdapterVersion"
+)
+
+Write-Host "  pinning KreaDeforum to $kreaDeforumRevision..."
+try {
+    Install-KreaDeforumCheckout `
+        -Repository $kreaDeforumRepo `
+        -Revision $kreaDeforumRevision `
+        -Destination $kreaDeforumDir `
+        -PatchPath $kreaDeforumPatch `
+        -PatchedFile "animator_node.py" `
+        -PatchedSha256 $kreaDeforumPatchedSha256 `
+        -PatchSha256 $kreaDeforumPatchSha256
+} catch {
+    Stop-Install $_.Exception.Message
+}
+
+$kreaDeforumRequirements = Join-Path $kreaDeforumDir "requirements.txt"
+if (-not (Test-Path $kreaDeforumRequirements)) {
+    Stop-Install "Pinned KreaDeforum checkout is missing requirements.txt."
+}
+$kreaDeforumLock = Join-Path $root "requirements\kreadeforum-windows-py312.txt"
+if (-not (Test-Path $kreaDeforumLock)) {
+    Stop-Install "Repository-owned KreaDeforum requirements lock is missing: $kreaDeforumLock"
+}
+& $venvPy -m pip install --require-hashes -r $kreaDeforumLock --no-deps --quiet
+if ($LASTEXITCODE -ne 0) { Stop-Install "KreaDeforum requirements install failed." }
+Write-Host "  KreaDeforum ready for Animate ($($kreaDeforumRequiredClasses -join ', '))."
+
+# 3D mode uses upstream's torch.hub MiDaS_small path. Prewarm both the model
+# and transforms in the ComfyUI venv, then publish an atomic marker only when
+# the expected cache is complete. Failure leaves 2D Animate usable.
+$midasMarker = Join-Path $comfyDir "models\midas\krea-midas-small-ready.json"
+$midasPrewarm = Join-Path $root "scripts\prewarm_midas.py"
+Write-Host "  prewarming MiDaS_small for Animate 3D..."
+& $venvPy $midasPrewarm --marker $midasMarker
+if ($LASTEXITCODE -ne 0) {
+    Remove-Item -LiteralPath $midasMarker -Force -ErrorAction SilentlyContinue
+    Write-Warning "MiDaS 3D setup warning: prewarm failed. Animate 2D remains available; re-run install.bat before using 3D."
+} else {
+    Write-Host "  MiDaS_small ready for Animate 3D."
 }
 
 # -- 5a2. Rebels Mr. Flow (staged-sampling fast upscale) ----------------------

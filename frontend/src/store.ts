@@ -182,7 +182,7 @@ export interface LightboxState {
   index: number
 }
 
-export type CreateMode = 'txt2img' | 'test_labs' | 'character_edit' | 'upscale' | 'redraw'
+export type CreateMode = 'txt2img' | 'animate' | 'test_labs' | 'character_edit' | 'upscale' | 'redraw'
 
 export const TAB = {
   CREATE: 0,

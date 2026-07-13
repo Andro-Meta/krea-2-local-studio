@@ -35,14 +35,24 @@ from typing import Any, Optional
 import requests as _rq
 from PIL import Image
 
-from comfy_client import (
-    ComfyClient,
-    PromptIdCb,
-    WS_IMAGE_NODE,
-    comfy_base_url,
-    free_comfy_vram,
-)
-from output_saver import encode_images
+if __package__:
+    from .comfy_client import (
+        ComfyClient,
+        PromptIdCb,
+        WS_IMAGE_NODE,
+        comfy_base_url,
+        free_comfy_vram,
+    )
+    from .output_saver import encode_images
+else:
+    from comfy_client import (
+        ComfyClient,
+        PromptIdCb,
+        WS_IMAGE_NODE,
+        comfy_base_url,
+        free_comfy_vram,
+    )
+    from output_saver import encode_images
 
 try:
     from generation_metadata import build_generation_metadata
@@ -446,6 +456,16 @@ def _build_character_edit_clip(g: GraphBuilder) -> list:
 
 def _build_vae(g: GraphBuilder, req: Any) -> str:
     return g.add("VAELoader", {"vae_name": _vae_name()})
+
+
+def build_krea_model_bundle(
+    graph: GraphBuilder, req: Any
+) -> tuple[list, list, list]:
+    """Build the stable Krea model/CLIP/VAE loader bundle for other adapters."""
+    model = _build_model_chain(graph, req)
+    clip = _build_clip(graph)
+    vae = _build_vae(graph, req)
+    return _link(model), clip, _link(vae)
 
 
 def _apply_model_features(g: GraphBuilder, req: Any, model: str, clip: list, vae: str):

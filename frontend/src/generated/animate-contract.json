@@ -1,0 +1,278 @@
+{
+  "endpoints": {
+    "ack": "/api/generate/{job_id}/ack",
+    "cancel": "/api/generate/{job_id}/cancel",
+    "status": "/api/generate/{job_id}",
+    "submit": "/api/animate",
+    "upload": "/api/animate/uploads",
+    "websocket": "/ws/{job_id}"
+  },
+  "request_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "angle_schedule": {
+        "default": "0:(0)",
+        "maxLength": 32768,
+        "title": "Angle Schedule",
+        "type": "string"
+      },
+      "animation_mode": {
+        "default": "2D",
+        "enum": [
+          "2D",
+          "3D",
+          "Video Input",
+          "None"
+        ],
+        "title": "Animation Mode",
+        "type": "string"
+      },
+      "border_mode": {
+        "default": "replicate",
+        "enum": [
+          "replicate",
+          "reflect",
+          "wrap",
+          "black"
+        ],
+        "title": "Border Mode",
+        "type": "string"
+      },
+      "cfg_schedule": {
+        "default": "0:(1.0)",
+        "maxLength": 32768,
+        "title": "Cfg Schedule",
+        "type": "string"
+      },
+      "color_coherence": {
+        "default": "Match Frame 0 LAB",
+        "enum": [
+          "None",
+          "Match Frame 0 LAB"
+        ],
+        "title": "Color Coherence",
+        "type": "string"
+      },
+      "diffusion_cadence": {
+        "default": 1,
+        "maximum": 16,
+        "minimum": 1,
+        "title": "Diffusion Cadence",
+        "type": "integer"
+      },
+      "duration_seconds": {
+        "default": 4.0,
+        "maximum": 60.0,
+        "minimum": 0.5,
+        "title": "Duration Seconds",
+        "type": "number"
+      },
+      "fps": {
+        "default": 12,
+        "maximum": 60,
+        "minimum": 1,
+        "title": "Fps",
+        "type": "integer"
+      },
+      "height": {
+        "default": 768,
+        "maximum": 1536,
+        "minimum": 256,
+        "multipleOf": 16,
+        "title": "Height",
+        "type": "integer"
+      },
+      "hybrid_mode": {
+        "default": "optical_flow",
+        "enum": [
+          "normal",
+          "optical_flow"
+        ],
+        "title": "Hybrid Mode",
+        "type": "string"
+      },
+      "hybrid_strength_schedule": {
+        "default": "0:(0.5)",
+        "maxLength": 32768,
+        "title": "Hybrid Strength Schedule",
+        "type": "string"
+      },
+      "init_image_b64": {
+        "default": "",
+        "title": "Init Image B64",
+        "type": "string"
+      },
+      "negative_prompt": {
+        "default": "",
+        "title": "Negative Prompt",
+        "type": "string"
+      },
+      "prompt_schedule": {
+        "default": "0: a scenic landscape, cinematic lighting",
+        "maxLength": 32768,
+        "title": "Prompt Schedule",
+        "type": "string"
+      },
+      "render_frames": {
+        "anyOf": [
+          {
+            "maximum": 720,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Render Frames"
+      },
+      "rotation_3d_x_schedule": {
+        "default": "0:(0)",
+        "maxLength": 32768,
+        "title": "Rotation 3D X Schedule",
+        "type": "string"
+      },
+      "rotation_3d_y_schedule": {
+        "default": "0:(0)",
+        "maxLength": 32768,
+        "title": "Rotation 3D Y Schedule",
+        "type": "string"
+      },
+      "rotation_3d_z_schedule": {
+        "default": "0:(0)",
+        "maxLength": 32768,
+        "title": "Rotation 3D Z Schedule",
+        "type": "string"
+      },
+      "sampler_name": {
+        "default": "er_sde",
+        "title": "Sampler Name",
+        "type": "string"
+      },
+      "scheduler": {
+        "default": "simple",
+        "title": "Scheduler",
+        "type": "string"
+      },
+      "seed": {
+        "default": -1,
+        "maximum": 18446744073709551615,
+        "minimum": -1,
+        "title": "Seed",
+        "type": "integer"
+      },
+      "seed_behavior": {
+        "default": "iter",
+        "enum": [
+          "fixed",
+          "iter",
+          "random",
+          "ladder"
+        ],
+        "title": "Seed Behavior",
+        "type": "string"
+      },
+      "source_video_upload_id": {
+        "default": "",
+        "title": "Source Video Upload Id",
+        "type": "string"
+      },
+      "steps": {
+        "default": 8,
+        "maximum": 52,
+        "minimum": 3,
+        "title": "Steps",
+        "type": "integer"
+      },
+      "strength_schedule": {
+        "default": "0:(0.65)",
+        "maxLength": 32768,
+        "title": "Strength Schedule",
+        "type": "string"
+      },
+      "translation_x_schedule": {
+        "default": "0:(0)",
+        "maxLength": 32768,
+        "title": "Translation X Schedule",
+        "type": "string"
+      },
+      "translation_y_schedule": {
+        "default": "0:(0)",
+        "maxLength": 32768,
+        "title": "Translation Y Schedule",
+        "type": "string"
+      },
+      "translation_z_schedule": {
+        "default": "0:(0)",
+        "maxLength": 32768,
+        "title": "Translation Z Schedule",
+        "type": "string"
+      },
+      "width": {
+        "default": 768,
+        "maximum": 1536,
+        "minimum": 256,
+        "multipleOf": 16,
+        "title": "Width",
+        "type": "integer"
+      },
+      "zoom_schedule": {
+        "default": "0:(1.0)",
+        "maxLength": 32768,
+        "title": "Zoom Schedule",
+        "type": "string"
+      }
+    },
+    "title": "AnimateRequest",
+    "type": "object"
+  },
+  "result_fields": [
+    "video_url",
+    "poster_url",
+    "frame_count",
+    "fps",
+    "duration",
+    "gallery_id"
+  ],
+  "result_schema": {
+    "properties": {
+      "duration": {
+        "title": "Duration",
+        "type": "number"
+      },
+      "fps": {
+        "title": "Fps",
+        "type": "integer"
+      },
+      "frame_count": {
+        "title": "Frame Count",
+        "type": "integer"
+      },
+      "gallery_id": {
+        "title": "Gallery Id",
+        "type": "integer"
+      },
+      "poster_url": {
+        "title": "Poster Url",
+        "type": "string"
+      },
+      "video_url": {
+        "title": "Video Url",
+        "type": "string"
+      }
+    },
+    "required": [
+      "video_url",
+      "poster_url",
+      "frame_count",
+      "fps",
+      "duration",
+      "gallery_id"
+    ],
+    "title": "AnimationResult",
+    "type": "object"
+  },
+  "task_kind": "animation",
+  "version": 1
+}

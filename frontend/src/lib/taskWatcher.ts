@@ -3,14 +3,14 @@ import {
   isGpuTaskTerminal,
   responseStatus,
   type GpuTaskResponse,
-} from '../api'
+} from '../api.ts'
 export {
   activeGpuTaskStorageKey,
   clearPersistedActiveTask,
   persistActiveTask,
   readPersistedActiveTask,
   type TaskStorage,
-} from './activeTaskPersistence'
+} from './activeTaskPersistence.ts'
 
 export interface TaskWatcherSocket {
   readonly readyState: number
