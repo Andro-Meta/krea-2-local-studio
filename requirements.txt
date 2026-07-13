@@ -18,7 +18,7 @@ psutil>=5.9.0
 # torch+cu128 installed separately in install.bat
 transformers==5.12.1
 safetensors>=0.4.3
-diffusers>=0.32.0
+diffusers>=0.39.0
 accelerate>=1.14.0
 
 # Quantization (optional but recommended)
