@@ -857,19 +857,24 @@ def test_delete_enforces_owner_and_admin_access(store, roots):
     store.create(request(), owner="alice", role="user", job_id=JOB_A)
     project_dir = frames_dir(roots, "alice", JOB_A).parent
 
-    assert store.delete(JOB_A, username="bob") is False
+    foreign_deleted = store.delete(JOB_A, username="bob")
+    assert foreign_deleted is False
     assert project_dir.is_dir()
     assert (roots[0] / f"{JOB_A}.json").is_file()
-    assert store.delete(JOB_A, username="alice") is True
+    owner_deleted = store.delete(JOB_A, username="alice")
+    assert owner_deleted is True
     assert not project_dir.exists()
     assert not (roots[0] / f"{JOB_A}.json").exists()
 
     store.create(request(), owner="alice", role="user", job_id=JOB_B)
-    assert store.delete(JOB_B, username="root", is_admin=True) is True
+    admin_deleted = store.delete(JOB_B, username="root", is_admin=True)
+    assert admin_deleted is True
     assert not frames_dir(roots, "alice", JOB_B).parent.exists()
 
-    assert store.delete(JOB_A, username="alice") is False
-    assert store.delete(JOB_A, username="mallory") is False
+    missing_owner_deleted = store.delete(JOB_A, username="alice")
+    missing_foreign_deleted = store.delete(JOB_A, username="mallory")
+    assert missing_owner_deleted is False
+    assert missing_foreign_deleted is False
 
 
 def test_delete_does_not_follow_external_directory_links(store, roots, tmp_path):
@@ -881,7 +886,8 @@ def test_delete_does_not_follow_external_directory_links(store, roots, tmp_path)
     sentinel.write_text("keep", encoding="utf-8")
     make_directory_link(project_dir / "staging" / "external", outside)
 
-    assert store.delete(JOB_A, username="alice") is True
+    deleted = store.delete(JOB_A, username="alice")
+    assert deleted is True
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert not project_dir.exists()
 
@@ -898,7 +904,8 @@ def test_delete_project_junction_cannot_delete_another_project(
     sentinel.write_text("keep", encoding="utf-8")
     make_windows_junction(project_a, project_b)
 
-    assert store.delete(JOB_A, username="alice") is True
+    deleted = store.delete(JOB_A, username="alice")
+    assert deleted is True
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert store.load(JOB_B).job_id == JOB_B
 
@@ -929,8 +936,10 @@ def test_delete_tombstones_before_best_effort_cleanup(
         return original_remove(path)
 
     monkeypatch.setattr(store, "_remove_without_following", locked_cleanup)
-    assert store.delete(JOB_A, username="alice") is True
-    assert store.delete(JOB_A, username="alice") is True
+    first_delete = store.delete(JOB_A, username="alice")
+    second_delete = store.delete(JOB_A, username="alice")
+    assert first_delete is True
+    assert second_delete is True
     with pytest.raises(FileNotFoundError):
         store.load(JOB_A)
     assert any(path.name.startswith(".trash-") for path in roots[1].rglob("*"))
@@ -962,7 +971,8 @@ def test_deleted_project_journal_is_reconciled_without_touching_other_job(
     journal = next(roots[0].glob(f".frame-{JOB_A}-*.journal.json"))
     unrelated = roots[0] / f".frame-{JOB_B}-unrelated.journal.json"
     unrelated.write_text("not a controlled journal", encoding="utf-8")
-    assert store.delete(JOB_A, username="alice") is True
+    deleted = store.delete(JOB_A, username="alice")
+    assert deleted is True
     assert journal.exists()
 
     monkeypatch.setattr(Path, "unlink", real_unlink)
@@ -1001,7 +1011,8 @@ def test_delete_matches_embedded_journal_job_not_filename_prefix(
     assert set(journals) == {short_id, prefixed_id}
 
     monkeypatch.setattr(Path, "unlink", real_unlink)
-    assert store.delete(short_id, username="alice") is True
+    deleted = store.delete(short_id, username="alice")
+    assert deleted is True
 
     assert not journals[short_id].exists()
     assert journals[prefixed_id].exists()
