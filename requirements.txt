@@ -10,7 +10,7 @@ requests>=2.31.0
 pillow>=10.4.0
 imageio-ffmpeg>=0.6.0
 numpy>=1.26.0
-einops>=0.7.0
+einops>=0.8.2
 huggingface_hub>=0.26.0
 psutil>=5.9.0
 
