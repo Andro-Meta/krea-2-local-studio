@@ -102,7 +102,7 @@ def test_animate_request_rejects_caps(field, value):
 
 @pytest.mark.parametrize(("field", "value"), [("width", 770), ("height", 769)])
 def test_animate_request_requires_dimensions_divisible_by_16(field, value):
-    with pytest.raises(ValidationError, match="divisible by 16"):
+    with pytest.raises(ValidationError, match=r"(?:divisible by|multiple of) 16"):
         AnimateRequest(**{field: value})
 
 
