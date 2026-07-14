@@ -1,4 +1,5 @@
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -9,8 +10,11 @@ import {
 } from '@mui/material'
 import CasinoOutlinedIcon from '@mui/icons-material/CasinoOutlined'
 import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined'
+import type { PromptRow } from '../../lib/promptTimeline'
+import { estimatedQueueTurns } from '../../lib/promptTimeline'
 import type { AnimatePresetId } from './presets'
 import { calculateRenderedFrames } from './presets'
+import PromptTimelineEditor from './PromptTimelineEditor'
 import type { AnimateControlProps } from './types'
 
 interface BasicControlsProps extends AnimateControlProps {
@@ -18,6 +22,10 @@ interface BasicControlsProps extends AnimateControlProps {
   onPreset: (preset: AnimatePresetId) => void
   initPreview: string
   onInitImage: (file: File | null) => void
+  promptRows: PromptRow[]
+  onPromptRows: (rows: PromptRow[]) => void
+  onAddPromptRow: () => void
+  chunkSize?: number
 }
 
 export default function BasicControls({
@@ -29,8 +37,13 @@ export default function BasicControls({
   onPreset,
   initPreview,
   onInitImage,
+  promptRows,
+  onPromptRows,
+  onAddPromptRow,
+  chunkSize = 8,
 }: BasicControlsProps) {
   const work = calculateRenderedFrames(value)
+  const turns = estimatedQueueTurns(work.frames, chunkSize)
   return (
     <Stack spacing={2}>
       <Box>
@@ -53,18 +66,17 @@ export default function BasicControls({
         </Typography>
       </Box>
 
-      <TextField
-        id="animate-prompt-schedule"
-        label="Prompt timeline"
-        value={value.prompt_schedule}
-        onChange={event => update('prompt_schedule', event.target.value)}
-        multiline
-        minRows={4}
-        fullWidth
+      <PromptTimelineEditor
+        rows={promptRows}
+        fps={value.fps}
+        totalFrames={Math.max(1, work.frames)}
+        durationSeconds={value.duration_seconds}
         disabled={disabled}
-        error={!!errors.prompt_schedule}
-        helperText={errors.prompt_schedule || 'One keyframe per line: frame: prompt. Your text is sent exactly as written.'}
+        error={errors.prompt_schedule}
+        onChange={onPromptRows}
+        onAdd={onAddPromptRow}
       />
+
       <TextField
         label="Negative prompt (optional)"
         value={value.negative_prompt}
@@ -97,13 +109,14 @@ export default function BasicControls({
           onChange={event => update('fps', Number(event.target.value))}
           inputProps={{ min: 1, max: 60, step: 1 }}
           error={!!errors.fps}
-          helperText={errors.fps || '1–60 FPS'}
+          helperText={errors.fps || '1–60 FPS · prompt times stay in seconds'}
           disabled={disabled}
           fullWidth
         />
       </Stack>
       <Typography variant="body2" color={work.error ? 'error' : 'text.secondary'} aria-live="polite">
         {work.frames} rendered frames · about {work.diffusionFrames} diffusion calls at cadence {value.diffusion_cadence}
+        · ~{turns} queue turn{turns === 1 ? '' : 's'}
         {work.error ? ` · ${work.error}` : ''}
       </Typography>
 

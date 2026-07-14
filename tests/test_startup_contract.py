@@ -29,7 +29,7 @@ class StartupContractTests(unittest.TestCase):
 
         self.assertIn("https://github.com/Dream-Making-Git/KreaDeforum", readme)
         self.assertIn("49bb6752ab045fac25652f3e9207d4706bf5c646", readme)
-        self.assertIn("krea2-chunking-v1", readme)
+        self.assertIn("krea2-chunking-v2", readme)
         self.assertIn("60 FPS controls playback/interpolation", readme)
         self.assertIn("Animate", example)
         self.assertIn("owner-scoped animation frames", example)

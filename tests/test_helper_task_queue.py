@@ -186,6 +186,45 @@ class HelperWorkerTests(unittest.IsolatedAsyncioTestCase):
         free.assert_called_once_with(unload_models=True, free_memory=True)
         self.assertEqual(jobs["helper"]["status"], "done")
 
+    async def test_successful_comfy_image_description_queues_krea_rewarm(self):
+        jobs = {
+            "describe": {
+                "status": "queued",
+                "task_kind": IMAGE_DESCRIBE,
+                "result": None,
+                "role": "user",
+            }
+        }
+        queue = Mock()
+        queue.cancel_requested.return_value = False
+        queue.begin_finalizing.return_value = True
+        queue.all_statuses.return_value = {}
+        result = {"prompt": "literal description", "backend": "comfy"}
+
+        with (
+            patch.object(main, "_jobs", jobs),
+            patch.object(main, "generation_queue", queue),
+            patch.object(main, "describe_image_local", return_value=result),
+            patch.object(main, "_enqueue_model_warmup") as rewarm,
+            patch.object(
+                main.ws_manager,
+                "broadcast",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            await main._run_helper_task(
+                "describe",
+                {
+                    "backend": "local",
+                    "image_b64": _png_b64(),
+                    "mode": "recreate",
+                    "guidance": "",
+                },
+            )
+
+        self.assertEqual(jobs["describe"]["status"], "done")
+        rewarm.assert_called_once_with(force=True)
+
     async def test_settings_api_persists_canonical_comfy_quant_key(self):
         persisted = {}
         with (
@@ -488,17 +527,70 @@ class QueueAndModelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inputs["quantization"], "8-bit (Balanced)")
         self.assertFalse(inputs["keep_model_loaded"])
 
+    def test_comfy_vision_defaults_to_4b_8bit(self):
+        captured = {}
+
+        def run(graph, *_args, **_kwargs):
+            captured.update(graph)
+            return "literal description"
+
+        with (
+            patch.object(comfy_qwen_vl, "_ensure_nodes"),
+            patch.object(
+                comfy_qwen_vl,
+                "_b64_to_png_bytes",
+                return_value=b"png",
+            ),
+            patch.object(comfy_qwen_vl, "_upload_png", return_value="vision.png"),
+            patch.object(
+                comfy_qwen_vl,
+                "_run_graph_for_text",
+                side_effect=run,
+            ),
+            patch.object(
+                settings_module.settings,
+                "comfy_qwen_vision_model",
+                "4b",
+                create=True,
+            ),
+            patch.object(
+                settings_module.settings,
+                "comfy_qwen_vision_quant",
+                "8bit",
+                create=True,
+            ),
+        ):
+            comfy_qwen_vl.describe_image_comfy(
+                _png_b64(),
+                "Describe literally.",
+                keep_model_loaded=False,
+            )
+
+        inputs = captured["qwen"]["inputs"]
+        self.assertEqual(inputs["model_name"], comfy_qwen_vl.MODEL_4B_ABLITERATED)
+        self.assertEqual(inputs["quantization"], comfy_qwen_vl.QUANT_8BIT)
+        self.assertFalse(inputs["keep_model_loaded"])
+
     def test_persisted_comfy_quant_survives_restart_and_maps_to_node_label(self):
         with tempfile.TemporaryDirectory() as tmp:
             env_file = Path(tmp) / ".env"
-            env_file.write_text("COMFY_QWEN_QUANT=4bit\n", encoding="utf-8")
+            env_file.write_text(
+                "COMFY_QWEN_QUANT=4bit\n"
+                "COMFY_QWEN_VISION_MODEL=4b\n"
+                "COMFY_QWEN_VISION_QUANT=8bit\n",
+                encoding="utf-8",
+            )
             restarted = settings_module.AppSettings(_env_file=env_file)
 
         with patch.object(settings_module, "settings", restarted):
             resolved = comfy_qwen_vl.resolve_comfy_qwen_quant()
+            vision_model = comfy_qwen_vl.resolve_comfy_qwen_vision_model()
+            vision_quant = comfy_qwen_vl.resolve_comfy_qwen_vision_quant()
 
         self.assertEqual(restarted.comfy_qwen_quant, "4bit")
         self.assertEqual(resolved, "4-bit (VRAM-friendly)")
+        self.assertEqual(vision_model, comfy_qwen_vl.MODEL_4B_ABLITERATED)
+        self.assertEqual(vision_quant, comfy_qwen_vl.QUANT_8BIT)
 
     def test_comfy_planner_failure_does_not_load_transformers(self):
         with (

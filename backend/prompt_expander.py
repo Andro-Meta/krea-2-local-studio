@@ -337,10 +337,15 @@ def expand_prompt_local(
 #    subject (moodboard-style transfer via the local abliterated Qwen3-VL).
 DESCRIBE_PROMPTS = {
     "recreate": (
-        "Write one vivid text-to-image prompt that could recreate this image. "
-        "Return one paragraph only. Include subject, setting, composition, medium, "
-        "lighting, color palette, texture, camera/art details, and mood. Do not "
-        "mention that you are looking at an image."
+        "Write one literal, visually faithful text-to-image prompt that could "
+        "recreate this image. Preserve exactly what is visibly present, including "
+        "distress, injury, horror, harsh or unflattering lighting, facial expression, "
+        "age, imperfections, unsettling composition, and disturbing mood when they "
+        "appear. Do not beautify, glamorize, romanticize, euphemize, soften, or omit "
+        "visible content. Do not sanitize disturbing details. Return one paragraph "
+        "only. Include subject, setting, composition, medium, lighting, color palette, "
+        "texture, camera/art details, and mood. Do not mention that you are looking "
+        "at an image."
     ),
     "style": (
         "Describe ONLY the visual style of this image so it can be applied to a "
@@ -378,7 +383,10 @@ def _describe_prompt(mode: str, guidance: str = "") -> str:
         "the user mentions, and apply any change they request (for example a different time of "
         "day, lighting, style, colour, setting, mood, or added/removed elements) even when it "
         "differs from the image. Keep everything the user did NOT mention consistent with the "
-        "image. Include subject, composition, medium, lighting, colour, texture, and mood. "
+        "image literally. Do not beautify, sanitize, euphemize, soften, or omit visible "
+        "distress, injury, horror, imperfections, or disturbing details unless the user "
+        "explicitly asks for that change. Include subject, composition, medium, lighting, "
+        "colour, texture, and mood. "
         "Do not add commentary or preamble, and do not mention that you are looking at an image."
     )
 

@@ -119,13 +119,28 @@ class CivitaiInstallTests(unittest.TestCase):
                 "meta": {sha: civitai_loras._normalize_version(_version_payload())},
             }
         )
-        browse_payload = {"items": [{"id": 123, "name": "Lenovo Krea2", "type": "LORA", "modelVersions": [_version_payload()]}]}
+        browse_payload = {
+            "items": [{"id": 123, "name": "Lenovo Krea2", "type": "LORA", "modelVersions": [_version_payload()]}],
+            "metadata": {"nextCursor": "abc|1|2", "currentPage": 1},
+        }
 
-        with patch.object(civitai_loras.requests, "get", return_value=_Response(payload=browse_payload)):
+        with patch.object(civitai_loras.requests, "get", return_value=_Response(payload=browse_payload)) as get:
             result = civitai_loras.civitai_browse()
 
         self.assertTrue(result["items"][0]["installed"])
         self.assertEqual(result["items"][0]["installed_filename"], existing.name)
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["next_cursor"], "abc|1|2")
+        self.assertNotIn("cursor", get.call_args.kwargs["params"])
+
+    def test_browse_passes_cursor_not_page_for_load_more(self) -> None:
+        browse_payload = {"items": [], "metadata": {"nextCursor": "next-one"}}
+        with patch.object(civitai_loras.requests, "get", return_value=_Response(payload=browse_payload)) as get:
+            result = civitai_loras.civitai_browse(cursor="prev-cursor")
+
+        self.assertEqual(get.call_args.kwargs["params"]["cursor"], "prev-cursor")
+        self.assertNotIn("page", get.call_args.kwargs["params"])
+        self.assertEqual(result["next_cursor"], "next-one")
 
 
 if __name__ == "__main__":

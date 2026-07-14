@@ -1,6 +1,6 @@
 {
   "upstream_revision": "49bb6752ab045fac25652f3e9207d4706bf5c646",
-  "patch_version": "krea2-chunking-v1",
+  "patch_version": "krea2-chunking-v2",
   "required": [
     "model", "clip", "vae", "width", "height", "max_frames", "steps",
     "sampler_name", "scheduler", "seed", "seed_behavior", "animation_mode",
@@ -14,6 +14,7 @@
   "optional": [
     "hybrid_video_path", "hybrid_strength_schedule", "hybrid_mode",
     "init_image", "frame_offset", "init_image_is_previous",
-    "reference_image", "seed_plan", "hybrid_video_has_context"
+    "reference_image", "seed_plan", "hybrid_video_has_context",
+    "prompt_blend_frames"
   ]
 }

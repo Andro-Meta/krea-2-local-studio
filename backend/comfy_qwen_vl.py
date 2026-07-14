@@ -111,6 +111,30 @@ def resolve_comfy_qwen_quant(override: str = "") -> str:
     return _QUANT_ALIASES.get(raw.lower().replace("_", "").replace(" ", ""), QUANT_8BIT)
 
 
+def resolve_comfy_qwen_vision_model(override: str = "") -> str:
+    """Resolve the higher-capacity model reserved for image understanding."""
+    from settings import settings
+
+    raw = str(
+        override
+        or getattr(settings, "comfy_qwen_vision_model", "")
+        or "4b"
+    ).strip()
+    return resolve_comfy_qwen_model(raw)
+
+
+def resolve_comfy_qwen_vision_quant(override: str = "") -> str:
+    """Resolve vision quantization independently from text Magic Wand."""
+    from settings import settings
+
+    raw = str(
+        override
+        or getattr(settings, "comfy_qwen_vision_quant", "")
+        or "8bit"
+    ).strip()
+    return resolve_comfy_qwen_quant(raw)
+
+
 def comfy_qwen_vl_available(timeout: float = 5.0) -> bool:
     if not comfy_available(timeout=timeout):
         return False
@@ -262,8 +286,8 @@ def describe_image_comfy(
         "qwen": {
             "class_type": QWEN_VL_NODE,
             "inputs": {
-                "model_name": resolve_comfy_qwen_model(),
-                "quantization": resolve_comfy_qwen_quant(),
+                "model_name": resolve_comfy_qwen_vision_model(),
+                "quantization": resolve_comfy_qwen_vision_quant(),
                 "attention_mode": "sdpa",
                 "use_torch_compile": False,
                 "device": "auto",
@@ -307,8 +331,8 @@ def enrich_images_comfy(
         load_ids.append(lid)
 
     qwen_inputs: dict[str, Any] = {
-        "model_name": resolve_comfy_qwen_model(),
-        "quantization": resolve_comfy_qwen_quant(),
+        "model_name": resolve_comfy_qwen_vision_model(),
+        "quantization": resolve_comfy_qwen_vision_quant(),
         "attention_mode": "sdpa",
         "use_torch_compile": False,
         "device": "auto",

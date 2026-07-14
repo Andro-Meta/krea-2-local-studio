@@ -14,7 +14,7 @@ HELPER = ROOT / "scripts" / "kreadeforum_install.ps1"
 INSTALLER = ROOT / "scripts" / "install_comfyui.ps1"
 CHUNK_PATCH = ROOT / "patches" / "kreadeforum-krea2-chunking.patch"
 PATCHED_ANIMATOR_SHA256 = (
-    "6c6bc3ada4cea3e5778c0d04d7e9256c54f723f91759135ce6dc07538136ef65"
+    "2dd533428c84809c5768951d414b7edac451c4c9ba09e1ab6ced132f713f4461"
 )
 REPOSITORY_GIT_ENV_VARS = (
     "GIT_DIR",

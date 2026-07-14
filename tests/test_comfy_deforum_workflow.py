@@ -187,7 +187,7 @@ def test_builds_exact_animator_and_websocket_graph():
         "translation_z_schedule", "rotation_3d_x_schedule",
         "rotation_3d_y_schedule", "rotation_3d_z_schedule", "color_coherence",
         "diffusion_cadence", "frame_offset", "init_image_is_previous",
-        "seed_plan",
+        "seed_plan", "prompt_blend_frames",
     }
     assert inputs["model"][1] == inputs["clip"][1] == inputs["vae"][1] == 0
     assert graph["save_ws"] == {
@@ -220,6 +220,7 @@ def test_graph_inputs_match_pinned_patched_api_contract():
         "frame_offset",
         "init_image_is_previous",
         "seed_plan",
+        "prompt_blend_frames",
     }
 
 
@@ -843,7 +844,7 @@ def test_video_mutation_during_copy_is_rejected(tmp_path, monkeypatch):
         )
 
 
-def test_remote_multi_chunk_chunk_zero_fails_runtime_preflight(monkeypatch):
+def test_remote_multi_chunk_chunk_zero_passes_runtime_preflight(monkeypatch):
     req = make_request(frames=10)
     project = make_project(req)
     monkeypatch.setattr(
@@ -852,8 +853,8 @@ def test_remote_multi_chunk_chunk_zero_fails_runtime_preflight(monkeypatch):
         lambda: "https://comfy.example.test",
     )
 
-    with pytest.raises(ValueError, match="multi-chunk.*managed local ComfyUI"):
-        comfy_deforum.validate_animation_runtime(project, req)
+    loader = comfy_deforum.validate_animation_runtime(project, req)
+    assert loader is not None
 
 
 def test_non_video_rejects_unrelated_source_path(tmp_path):
@@ -1099,7 +1100,7 @@ def test_owned_upload_cleanup_failure_is_best_effort(tmp_path, monkeypatch):
     lease.close()
 
 
-def test_external_comfy_rejects_later_init_dependency(monkeypatch):
+def test_external_comfy_allows_later_init_via_http_upload(monkeypatch, upload):
     req = make_request()
     project = make_project(req, active=1)
     monkeypatch.setattr(
@@ -1107,15 +1108,32 @@ def test_external_comfy_rejects_later_init_dependency(monkeypatch):
         "comfy_base_url",
         lambda: "https://comfy.example.test",
     )
-    with pytest.raises(ValueError, match="managed local ComfyUI"):
-        build(
-            req,
-            project,
-            start=8,
-            end=10,
-            init_image_b64=base64.b64encode(png()).decode(),
-            reference_image_b64=base64.b64encode(png()).decode(),
-        )
+    graph, _ = build(
+        req,
+        project,
+        start=8,
+        end=10,
+        init_image_b64=base64.b64encode(png()).decode(),
+        reference_image_b64=base64.b64encode(png()).decode(),
+    )
+    assert "init_image" in graph
+    assert animator(graph)["inputs"]["prompt_blend_frames"] == 0
+
+
+def test_prompt_strength_boost_is_applied_to_chunk_strength_schedule(upload):
+    req = make_request(
+        frames=8,
+        prompt_schedule="0: dawn\n4: dusk",
+        strength_schedule="0:(0.5)",
+        prompt_strength_boost=0.2,
+        prompt_strength_boost_frames=1,
+        prompt_blend_frames=3,
+    )
+    graph, _ = build(req, make_project(req))
+    strength = animator(graph)["inputs"]["strength_schedule"]
+    assert "0:(0.5)" in strength
+    assert "4:(0.7)" in strength
+    assert animator(graph)["inputs"]["prompt_blend_frames"] == 3
 
 
 def test_init_upload_validates_base64_type_and_dimensions(upload):

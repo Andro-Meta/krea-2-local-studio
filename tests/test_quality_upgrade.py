@@ -20,6 +20,30 @@ if str(BACKEND) not in sys.path:
 
 
 class QualityUpgradeTests(unittest.TestCase):
+    def test_default_1k_t2i_uses_core_tiled_vae_decode(self) -> None:
+        from comfy_workflows import build_graph
+        from schemas import GenerationRequest
+
+        graph, _ = build_graph(
+            GenerationRequest(prompt="speed test", width=1024, height=1024)
+        )
+        node_types = [node["class_type"] for node in graph.values()]
+
+        self.assertIn("VAEDecodeTiled", node_types)
+        self.assertNotIn("VAEDecode", node_types)
+
+    def test_sub_1k_t2i_keeps_single_pass_vae_decode(self) -> None:
+        from comfy_workflows import build_graph
+        from schemas import GenerationRequest
+
+        graph, _ = build_graph(
+            GenerationRequest(prompt="quality test", width=768, height=768)
+        )
+        node_types = [node["class_type"] for node in graph.values()]
+
+        self.assertIn("VAEDecode", node_types)
+        self.assertNotIn("VAEDecodeTiled", node_types)
+
     def test_negative_lora_strength_does_not_inject_positive_trigger_words(self) -> None:
         import lora_manager
 
@@ -458,12 +482,20 @@ class QualityUpgradeTests(unittest.TestCase):
         import quality_assets
 
         mock_atomic_cancel_capability(main)
+        written_env = {}
+
         def fake_installed(spec):
             return True
 
         with (
             patch.object(quality_assets, "asset_installed", side_effect=fake_installed),
             patch.object(main.settings, "diffusion_engine", "native_int8_convrot"),
+            patch.object(main, "_read_env", return_value={}),
+            patch.object(
+                main,
+                "_write_env",
+                side_effect=lambda values: written_env.update(values),
+            ),
             TestClient(main.app) as client,
         ):
             response = client.post("/api/xperiment/setup")
@@ -481,8 +513,17 @@ class QualityUpgradeTests(unittest.TestCase):
             self.assertEqual(loras["krea2filterbypass3"]["strength"], 4.0)
         self.assertFalse(data["use_prompt_expander"])
         self.assertEqual(data["prompt_expander_backend"], "local")
-        self.assertEqual(data["local_llm_backend"], "transformers")
-        self.assertEqual(data["local_qwen_model_id"], "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated")
+        self.assertEqual(data["local_llm_backend"], "comfy")
+        self.assertEqual(data["comfy_qwen_model"], "2b")
+        self.assertEqual(data["comfy_qwen_quant"], "8bit")
+        self.assertEqual(data["comfy_qwen_vision_model"], "4b")
+        self.assertEqual(data["comfy_qwen_vision_quant"], "8bit")
+        self.assertEqual(written_env["LOCAL_LLM_BACKEND"], "comfy")
+        self.assertEqual(written_env["COMFY_QWEN_MODEL"], "2b")
+        self.assertEqual(written_env["COMFY_QWEN_QUANT"], "8bit")
+        self.assertEqual(written_env["COMFY_QWEN_VISION_MODEL"], "4b")
+        self.assertEqual(written_env["COMFY_QWEN_VISION_QUANT"], "8bit")
+        self.assertNotIn("LOCAL_QWEN_MODEL_ID", written_env)
         self.assertIn("8 steps", data["benchmark_note"])
         self.assertIn("CFG 1", data["benchmark_note"])
 

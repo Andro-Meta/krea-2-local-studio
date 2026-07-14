@@ -151,8 +151,8 @@ foreach ($repo in $nodes) {
 $kreaDeforumRepo = "https://github.com/Dream-Making-Git/KreaDeforum.git"
 $kreaDeforumRevision = "49bb6752ab045fac25652f3e9207d4706bf5c646"
 $kreaDeforumPatch = Join-Path $root "patches\kreadeforum-krea2-chunking.patch"
-$kreaDeforumPatchSha256 = "2ff95c1c80c8b579600749590e14593a2cb892ec4f65351190e1b8f0a07999bc"
-$kreaDeforumPatchedSha256 = "6c6bc3ada4cea3e5778c0d04d7e9256c54f723f91759135ce6dc07538136ef65"
+$kreaDeforumPatchSha256 = "2ef30ed45db588cad4472ac8edffce00f9a89bf249b9c4460e19e213df7f0978"
+$kreaDeforumPatchedSha256 = "2dd533428c84809c5768951d414b7edac451c4c9ba09e1ab6ced132f713f4461"
 $kreaDeforumDir = Join-Path $customNodes "KreaDeforum"
 $kreaDeforumRequiredClasses = @(
     "KreaDeforumAnimator",

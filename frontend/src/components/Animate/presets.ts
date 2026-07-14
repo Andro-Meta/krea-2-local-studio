@@ -46,6 +46,9 @@ export const ANIMATE_DEFAULTS: AnimateRequest = {
   rotation_3d_z_schedule: contractDefault('rotation_3d_z_schedule'),
   color_coherence: contractDefault('color_coherence'),
   diffusion_cadence: contractDefault('diffusion_cadence'),
+  prompt_blend_frames: contractDefault('prompt_blend_frames'),
+  prompt_strength_boost: contractDefault('prompt_strength_boost'),
+  prompt_strength_boost_frames: contractDefault('prompt_strength_boost_frames'),
   hybrid_strength_schedule: contractDefault('hybrid_strength_schedule'),
   hybrid_mode: contractDefault('hybrid_mode'),
   init_image_b64: contractDefault('init_image_b64'),
@@ -270,6 +273,15 @@ export function validateAnimateRequest(
   }
   if (!Number.isInteger(request.diffusion_cadence) || request.diffusion_cadence < contractMinimum('diffusion_cadence', 1) || request.diffusion_cadence > contractMaximum('diffusion_cadence', 16)) {
     errors.diffusion_cadence = 'Diffusion cadence must be a whole number from 1–16.'
+  }
+  if (!Number.isInteger(request.prompt_blend_frames) || request.prompt_blend_frames < contractMinimum('prompt_blend_frames', 0) || request.prompt_blend_frames > contractMaximum('prompt_blend_frames', 12)) {
+    errors.prompt_blend_frames = 'Prompt blend frames must be a whole number from 0–12.'
+  }
+  if (!Number.isFinite(request.prompt_strength_boost) || request.prompt_strength_boost < contractMinimum('prompt_strength_boost', 0) || request.prompt_strength_boost > contractMaximum('prompt_strength_boost', 0.35)) {
+    errors.prompt_strength_boost = 'Strength boost must be from 0–0.35.'
+  }
+  if (!Number.isInteger(request.prompt_strength_boost_frames) || request.prompt_strength_boost_frames < contractMinimum('prompt_strength_boost_frames', 0) || request.prompt_strength_boost_frames > contractMaximum('prompt_strength_boost_frames', 16)) {
+    errors.prompt_strength_boost_frames = 'Boost window must be a whole number from 0–16.'
   }
   if (request.animation_mode === 'Video Input' && !request.source_video_upload_id.trim()) {
     errors.source_video_upload_id = 'Upload a source video before queueing.'

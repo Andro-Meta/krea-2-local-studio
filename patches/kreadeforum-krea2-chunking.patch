@@ -1,7 +1,8 @@
 diff --git a/animator_node.py b/animator_node.py
+index fa4ac5f..49e6b2b 100644
 --- a/animator_node.py
 +++ b/animator_node.py
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,7 @@ exactly the same way it works with SD1.5/SDXL/Flux ΓÇö the node never
  assumes a specific latent shape, conditioning format, or sampler list.
  """
  
@@ -9,7 +10,7 @@ diff --git a/animator_node.py b/animator_node.py
  import os
  import time
  import numpy as np
-@@ -88,6 +89,11 @@
+@@ -88,6 +89,12 @@ class KreaDeforumAnimator:
                  "hybrid_strength_schedule": ("STRING", {"default": "0:(0.5)"}),
                  "hybrid_mode": (["normal", "optical_flow"], {"default": "optical_flow"}),
                  "init_image": ("IMAGE",),
@@ -18,21 +19,86 @@ diff --git a/animator_node.py b/animator_node.py
 +                "reference_image": ("IMAGE",),
 +                "seed_plan": ("STRING", {"default": "", "multiline": False}),
 +                "hybrid_video_has_context": ("BOOLEAN", {"default": False}),
++                "prompt_blend_frames": ("INT", {"default": 0, "min": 0, "max": 12}),
              },
          }
  
-@@ -125,7 +131,9 @@
+@@ -115,6 +122,62 @@ class KreaDeforumAnimator:
+             return min(1.0, adjusted)
+         return min(1.0, max(0.0, requested))
+ 
++    @staticmethod
++    def _use_tiled_vae(width, height):
++        return max(int(width), int(height)) >= 1024
++
++    def _encode_pixels(self, vae, image_bhwc, width, height):
++        pixels = image_bhwc[:, :, :, :3]
++        if self._use_tiled_vae(width, height) and hasattr(vae, "encode_tiled"):
++            return vae.encode_tiled(pixels)
++        return vae.encode(pixels)
++
++    def _decode_latents(self, vae, samples, width, height):
++        if self._use_tiled_vae(width, height) and hasattr(vae, "decode_tiled"):
++            return vae.decode_tiled(samples)
++        return vae.decode(samples)
++
++    @staticmethod
++    def _lerp_conditioning(cond_a, cond_b, alpha):
++        alpha = float(min(1.0, max(0.0, alpha)))
++        if alpha <= 0.0:
++            return cond_a
++        if alpha >= 1.0:
++            return cond_b
++        tensor_a, meta_a = cond_a[0]
++        tensor_b, meta_b = cond_b[0]
++        mixed = tensor_a * (1.0 - alpha) + tensor_b * alpha
++        meta = dict(meta_a)
++        pooled_a = meta_a.get("pooled_output")
++        pooled_b = meta_b.get("pooled_output")
++        if pooled_a is not None and pooled_b is not None:
++            meta["pooled_output"] = pooled_a * (1.0 - alpha) + pooled_b * alpha
++        return [[mixed, meta]]
++
++    def _positive_conditioning(self, clip, prompts, frame_index, blend_frames, cache):
++        current = prompts[frame_index]
++        if blend_frames <= 0:
++            if current not in cache:
++                cache[current] = encode_text(clip, current)
++            return cache[current]
++
++        prev_change = 0
++        for index in range(1, frame_index + 1):
++            if prompts[index] != prompts[index - 1]:
++                prev_change = index
++        previous = prompts[prev_change - 1] if prev_change > 0 else current
++        if current not in cache:
++            cache[current] = encode_text(clip, current)
++        if previous not in cache:
++            cache[previous] = encode_text(clip, previous)
++        if prev_change == 0 or previous == current:
++            return cache[current]
++        # Blend across [change, change + blend_frames): alpha goes 1/N .. 1.0
++        if frame_index < prev_change or frame_index >= prev_change + blend_frames:
++            return cache[current]
++        alpha = (frame_index - prev_change + 1) / float(blend_frames)
++        return self._lerp_conditioning(cache[previous], cache[current], alpha)
++
+     # ---- main entry point ---------------------------------------------------
+ 
+     def animate(self, model, clip, vae, width, height, max_frames, steps,
+@@ -125,7 +188,9 @@ class KreaDeforumAnimator:
                  rotation_3d_x_schedule, rotation_3d_y_schedule, rotation_3d_z_schedule,
                  color_coherence, diffusion_cadence,
                  hybrid_video_path="", hybrid_strength_schedule="0:(0.5)",
 -                hybrid_mode="optical_flow", init_image=None):
 +                hybrid_mode="optical_flow", init_image=None, frame_offset=0,
 +                init_image_is_previous=False, reference_image=None, seed_plan="",
-+                hybrid_video_has_context=False):
++                hybrid_video_has_context=False, prompt_blend_frames=0):
  
          rng = np.random.default_rng(seed if seed else 0)
  
-@@ -156,33 +163,62 @@
+@@ -156,39 +221,79 @@ class KreaDeforumAnimator:
+ 
          hybrid_frames = None
          if animation_mode == "Video Input" or (hybrid_video_path and hybrid_video_path.strip()):
 -            hybrid_frames = load_video_frames(hybrid_video_path.strip(), max_frames=max_frames,
@@ -43,6 +109,8 @@ diff --git a/animator_node.py b/animator_node.py
  
 -        prev_frame_np = None
 -        reference_frame_np = None
+-        last_prompt_text = None
+-        positive_cond = None
 +        exact_seeds = None
 +        if seed_plan and seed_plan.strip():
 +            try:
@@ -76,8 +144,8 @@ diff --git a/animator_node.py b/animator_node.py
 +            image_to_numpy(reference_image, "reference_image")
 +            if reference_image is not None else None
 +        )
-         last_prompt_text = None
-         positive_cond = None
++        prompt_cache = {}
++        blend_frames = max(0, int(prompt_blend_frames))
          output_frames = []
          warnings = []
  
@@ -86,9 +154,12 @@ diff --git a/animator_node.py b/animator_node.py
 +            global_i = frame_offset + i
 +            frame_seed = exact_seeds[i] if exact_seeds is not None else self._next_seed(seed, global_i, seed_behavior, rng)
  
-             if prompts[i] != last_prompt_text or positive_cond is None:
-                 positive_cond = encode_text(clip, prompts[i])
-                 last_prompt_text = prompts[i]
+-            if prompts[i] != last_prompt_text or positive_cond is None:
+-                positive_cond = encode_text(clip, prompts[i])
+-                last_prompt_text = prompts[i]
++            positive_cond = self._positive_conditioning(
++                clip, prompts, i, blend_frames, prompt_cache
++            )
  
              cfg = max(0.0, float(cfg_vals[i]))
 -            run_diffusion_this_frame = (i == 0) or (diffusion_cadence <= 1) or (i % diffusion_cadence == 0)
@@ -102,11 +173,31 @@ diff --git a/animator_node.py b/animator_node.py
 -                        import cv2
 -                        base_np = cv2.resize(base_np, (width, height), interpolation=cv2.INTER_LANCZOS4)
 -                    validate_frame(base_np, "resized init_image")
+-                    latent = vae.encode(numpy_to_tensor(base_np)[:, :, :, :3])
+-                    latent = {"samples": latent}
 +                    base_np = image_to_numpy(init_image, "resized init_image")
-                     latent = vae.encode(numpy_to_tensor(base_np)[:, :, :, :3])
-                     latent = {"samples": latent}
++                    latent = {
++                        "samples": self._encode_pixels(
++                            vae, numpy_to_tensor(base_np), width, height
++                        )
++                    }
                      denoise = self._resolve_denoise(float(strength_vals[0]), steps)
-@@ -205,16 +242,17 @@
+                 else:
+-                    latent = make_grounded_init_latent(vae, width, height)
++                    if self._use_tiled_vae(width, height):
++                        gray = torch.full(
++                            (1, height, width, 3), 0.5, dtype=torch.float32
++                        )
++                        latent = {
++                            "samples": self._encode_pixels(vae, gray, width, height)
++                        }
++                    else:
++                        latent = make_grounded_init_latent(vae, width, height)
+                     denoise = 1.0  # first frame: full txt2img generation
+             else:
+                 warped = prev_frame_np
+@@ -204,39 +309,43 @@ class KreaDeforumAnimator:
+                                       rotation_3d_z=float(rz_vals[i]), border_mode=border_mode)
                  # "Video Input" and "None" modes: no geometric warp, hybrid compositing (below) drives change
  
 -                if hybrid_frames is not None and i < len(hybrid_frames):
@@ -129,13 +220,27 @@ diff --git a/animator_node.py b/animator_node.py
  
                  if not run_diffusion_this_frame:
                      output_frames.append(warped)
-@@ -230,13 +264,13 @@
+                     prev_frame_np = warped
+                     continue
+ 
+-                latent = vae.encode(numpy_to_tensor(warped)[:, :, :, :3])
+-                latent = {"samples": latent}
++                latent = {
++                    "samples": self._encode_pixels(
++                        vae, numpy_to_tensor(warped), width, height
++                    )
++                }
+                 denoise = self._resolve_denoise(float(strength_vals[i]), steps)
+ 
+             sampled = run_ksampler(
+                 model, frame_seed, steps, cfg, sampler_name, scheduler,
                  positive_cond, negative_cond, latent, denoise,
              )
-             decoded = vae.decode(sampled["samples"])
+-            decoded = vae.decode(sampled["samples"])
 -            if i == 0:
++            decoded = self._decode_latents(vae, sampled["samples"], width, height)
 +            if global_i == 0:
-                 print(f"[KreaDeforum] Diagnostic — raw VAE decode output shape: {tuple(decoded.shape)}, "
+                 print(f"[KreaDeforum] Diagnostic ΓÇö raw VAE decode output shape: {tuple(decoded.shape)}, "
                        f"dtype: {decoded.dtype}")
              frame_np = tensor_to_numpy(decoded)
 -            validate_frame(frame_np, f"frame {i} after VAE decode")
@@ -146,7 +251,13 @@ diff --git a/animator_node.py b/animator_node.py
                  reference_frame_np = frame_np
  
              output_frames.append(frame_np)
-@@ -251,5 +286,28 @@
+@@ -246,9 +355,33 @@ class KreaDeforumAnimator:
+         out_tensor = torch.from_numpy(batch)
+ 
+         info = (f"KreaDeforum: {max_frames} frames, mode={animation_mode}, "
+-                f"steps={steps}, cadence={diffusion_cadence}, seed_behavior={seed_behavior}")
++                f"steps={steps}, cadence={diffusion_cadence}, seed_behavior={seed_behavior}, "
++                f"blend={blend_frames}, tiled_vae={self._use_tiled_vae(width, height)}")
          return (out_tensor, info)
  
  
@@ -157,8 +268,8 @@ diff --git a/animator_node.py b/animator_node.py
 +        return {
 +            "required": {
 +                "version": (
-+                    ["krea2-chunking-v1"],
-+                    {"default": "krea2-chunking-v1"},
++                    ["krea2-chunking-v2"],
++                    {"default": "krea2-chunking-v2"},
 +                ),
 +            },
 +        }

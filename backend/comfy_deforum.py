@@ -26,6 +26,7 @@ if __package__:
     from . import comfy_client
     from .animation_plan import (
         DEFAULT_ANIMATION_CHUNK_SIZE,
+        apply_prompt_strength_boost,
         build_chunk_ranges,
         build_seed_plan,
         evaluate_schedule,
@@ -40,6 +41,7 @@ else:
     import comfy_client
     from animation_plan import (
         DEFAULT_ANIMATION_CHUNK_SIZE,
+        apply_prompt_strength_boost,
         build_chunk_ranges,
         build_seed_plan,
         evaluate_schedule,
@@ -57,12 +59,12 @@ logger = logging.getLogger("krea2.comfy.deforum")
 class ComfyDeforumError(RuntimeError):
     """Sanitized adapter failure safe for persistence and API responses."""
 KREADEFORUM_REVISION = "49bb6752ab045fac25652f3e9207d4706bf5c646"
-KREADEFORUM_PATCH_VERSION = "krea2-chunking-v1"
+KREADEFORUM_PATCH_VERSION = "krea2-chunking-v2"
 KREADEFORUM_PATCHED_ANIMATOR_SHA256 = (
-    "6c6bc3ada4cea3e5778c0d04d7e9256c54f723f91759135ce6dc07538136ef65"
+    "2dd533428c84809c5768951d414b7edac451c4c9ba09e1ab6ced132f713f4461"
 )
 KREADEFORUM_PATCH_SHA256 = (
-    "2ff95c1c80c8b579600749590e14593a2cb892ec4f65351190e1b8f0a07999bc"
+    "2ef30ed45db588cad4472ac8edffce00f9a89bf249b9c4460e19e213df7f0978"
 )
 MIDAS_READINESS_MARKER = (
     Path(__file__).resolve().parent.parent
@@ -84,6 +86,7 @@ _PATCHED_ANIMATOR_INPUTS = frozenset(
         "reference_image",
         "seed_plan",
         "hybrid_video_has_context",
+        "prompt_blend_frames",
     }
 )
 _STATUS_LOCK = threading.Lock()
@@ -684,10 +687,8 @@ def validate_animation_runtime(
             "Video Input cannot use remote ComfyUI; managed local source "
             "sharing is required"
         )
-    if len(canonical) > 1 and not managed:
-        raise ValueError(
-            "multi-chunk animation requires managed local ComfyUI"
-        )
+    # Multi-chunk init/ref frames use Comfy's HTTP /upload/image API, so remote
+    # Comfy is allowed. Video Input still needs a local filesystem slice above.
     if capability_status is not None and not capability_status.get(
         "available", False
     ):
@@ -802,10 +803,6 @@ def _build_animation_chunk_graph(
         raise ValueError(
             "later LAB-coherent chunks require reference_image_b64"
         )
-    if (init_image_b64 or reference_image_b64) and not lease.managed:
-        raise ValueError(
-            "image-dependent animation requires managed local ComfyUI"
-        )
     if req.animation_mode == "Video Input":
         if source_video_path is None or controlled_video_root is None:
             raise ValueError(
@@ -831,6 +828,16 @@ def _build_animation_chunk_graph(
     seed, seed_behavior, seed_warnings = _seed_adapter(req, project, start, end)
     schedules = _numeric_schedules(req, start, end)
     prompt_values = parse_prompt_schedule(req.prompt_schedule, req.total_frames)
+    strength_values = apply_prompt_strength_boost(
+        evaluate_schedule(req.strength_schedule, req.total_frames),
+        prompt_values,
+        boost=float(req.prompt_strength_boost),
+        window=int(req.prompt_strength_boost_frames),
+    )
+    schedules["strength_schedule"] = numeric_chunk_schedule(
+        strength_values, start, end
+    )
+    _validate_numeric_chunk_schedule(schedules["strength_schedule"])
     prompt_schedule = prompt_chunk_schedule(prompt_values, start, end)
 
     graph = GraphBuilder()
@@ -868,6 +875,7 @@ def _build_animation_chunk_graph(
         "rotation_3d_z_schedule": schedules["rotation_3d_z_schedule"],
         "color_coherence": req.color_coherence,
         "diffusion_cadence": req.diffusion_cadence,
+        "prompt_blend_frames": int(req.prompt_blend_frames),
     }
     cleanup_metadata: dict[str, str] = {}
     if video is not None:

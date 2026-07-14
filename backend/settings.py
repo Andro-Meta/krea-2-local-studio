@@ -27,7 +27,9 @@ class AppSettings(BaseSettings):
     local_llm_backend: str = "comfy"  # comfy | transformers | gguf_server
     comfy_qwen_model: str = "2b"  # 2b | 4b | exact ComfyUI-QwenVL model_name (helpers only)
     comfy_qwen_quant: str = "8bit"  # 4bit | 8bit | fp16
-    krea_comfy_warmup: bool = False  # opt-in low-priority Krea model warmup
+    comfy_qwen_vision_model: str = "4b"  # richer image understanding
+    comfy_qwen_vision_quant: str = "8bit"  # 4bit | 8bit | fp16
+    krea_comfy_warmup: bool = True  # low-priority, preemptible 1K Krea warmup
     local_qwen_model_id: str = ""  # optional Transformers repo/path override for local prompt expansion
     local_qwen_device: str = "auto"  # auto | cuda | cpu; auto avoids CUDA when VRAM is tight
     gguf_helper_base_url: str = "http://127.0.0.1:1234/v1"

@@ -197,12 +197,12 @@ const defaultParams: GenerateParams = {
   mode: 'txt2img',
   model_profile: 'krea_turbo',
   // Default recipe: "Xperiment fast (beta57)" on Turbo Int8 - er_sde/beta57 @6
-  // steps, CFG 1 with CFG-Zero* on. Fastest sweep winner (~3.4s) and a user pick.
+  // steps, CFG 1 with CFG-Zero* on. Six steps was the fastest sweep winner.
   diffusion_engine: 'native_int8_convrot',
   checkpoint: 'turbo',
   quantization: 'int8',
   turbo_int8_variant: 'redcraft',
-  steps: 8,
+  steps: 6,
   cfg: 1.0,
   mu: 1.15,
   y1: 0.5,

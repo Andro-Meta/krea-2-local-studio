@@ -36,6 +36,13 @@ import {
 } from '../../lib/animateTaskState'
 import { createTaskWatcher, type TaskWatcher } from '../../lib/taskWatcher'
 import { normalizeKreaDeforumStatus } from '../../lib/kreaDeforumStatus'
+import {
+  newPromptRowId,
+  parsePromptScheduleToRows,
+  rescalePromptRows,
+  serializePromptRows,
+  type PromptRow,
+} from '../../lib/promptTimeline'
 import { TAB, useStore } from '../../store'
 import AdvancedControls from './AdvancedControls'
 import AnimationProgress from './AnimationProgress'
@@ -105,6 +112,15 @@ async function imageFileToPng(file: File, width: number, height: number): Promis
 
 export default function AnimatePanel() {
   const [form, setForm] = useState<AnimateRequest>({ ...ANIMATE_DEFAULTS })
+  const [promptRows, setPromptRows] = useState<PromptRow[]>(() =>
+    parsePromptScheduleToRows(
+      ANIMATE_DEFAULTS.prompt_schedule,
+      ANIMATE_DEFAULTS.fps,
+      calculateRenderedFrames(ANIMATE_DEFAULTS).frames,
+    ),
+  )
+  const promptRowsRef = useRef(promptRows)
+  promptRowsRef.current = promptRows
   const [preset, setPreset] = useState<AnimatePresetId>('custom')
   const [section, setSection] = useState<Section>('basic')
   const [settings, setSettings] = useState<AppSettings | null>(null)
@@ -288,22 +304,82 @@ export default function AnimatePanel() {
         setUpload(null)
         return { ...current, [key]: value, source_video_upload_id: '' }
       }
-      return { ...current, [key]: value }
+      const next = { ...current, [key]: value }
+      if (key === 'fps' || key === 'duration_seconds' || key === 'render_frames') {
+        const duration = key === 'duration_seconds' ? Number(value) : next.duration_seconds
+        const fps = key === 'fps' ? Number(value) : next.fps
+        const renderFrames = key === 'render_frames'
+          ? (value as number | null)
+          : next.render_frames
+        const scaled = rescalePromptRows(promptRowsRef.current, duration)
+        const frames = Math.max(1, calculateRenderedFrames({
+          duration_seconds: duration,
+          fps,
+          render_frames: renderFrames,
+        }).frames)
+        promptRowsRef.current = scaled
+        setPromptRows(scaled)
+        next.prompt_schedule = serializePromptRows(scaled, fps, frames)
+      }
+      return next
     })
   }, [])
+
+  const applyPromptRows = useCallback((rows: PromptRow[]) => {
+    formRevisionRef.current += 1
+    setPreset('custom')
+    promptRowsRef.current = rows
+    setPromptRows(rows)
+    setForm(current => {
+      const frames = Math.max(1, calculateRenderedFrames(current).frames)
+      return {
+        ...current,
+        prompt_schedule: serializePromptRows(rows, current.fps, frames),
+      }
+    })
+  }, [])
+
+  const addPromptRow = useCallback(() => {
+    applyPromptRows([
+      ...promptRowsRef.current,
+      {
+        id: newPromptRowId(),
+        seconds: Math.min(
+          form.duration_seconds,
+          promptRowsRef.current.length
+            ? promptRowsRef.current[promptRowsRef.current.length - 1].seconds + 1
+            : 0,
+        ),
+        prompt: '',
+      },
+    ])
+  }, [applyPromptRows, form.duration_seconds])
 
   const applyPreset = (next: AnimatePresetId) => {
     formRevisionRef.current += 1
     setPreset(next)
     if (next === 'custom') return
-    setForm(current => ({
-      ...ANIMATE_PRESETS[next],
-      prompt_schedule: current.prompt_schedule,
-      negative_prompt: current.negative_prompt,
-      init_image_b64: current.init_image_b64,
-      source_video_upload_id: current.animation_mode === 'Video Input' ? current.source_video_upload_id : '',
-      animation_mode: current.animation_mode,
-    }))
+    setForm(current => {
+      const merged: AnimateRequest = {
+        ...ANIMATE_PRESETS[next],
+        prompt_schedule: current.prompt_schedule,
+        negative_prompt: current.negative_prompt,
+        init_image_b64: current.init_image_b64,
+        source_video_upload_id: current.animation_mode === 'Video Input' ? current.source_video_upload_id : '',
+        animation_mode: current.animation_mode,
+        prompt_blend_frames: current.prompt_blend_frames,
+        prompt_strength_boost: current.prompt_strength_boost,
+        prompt_strength_boost_frames: current.prompt_strength_boost_frames,
+      }
+      const scaled = rescalePromptRows(promptRowsRef.current, merged.duration_seconds)
+      const frames = Math.max(1, calculateRenderedFrames(merged).frames)
+      promptRowsRef.current = scaled
+      setPromptRows(scaled)
+      return {
+        ...merged,
+        prompt_schedule: serializePromptRows(scaled, merged.fps, frames),
+      }
+    })
   }
 
   const applyMotion = (next: MotionPresetId) => {
@@ -538,6 +614,10 @@ export default function AnimatePanel() {
                 value={form} errors={errors} update={update} disabled={submitting}
                 preset={preset} onPreset={applyPreset}
                 initPreview={initPreview} onInitImage={chooseInitImage}
+                promptRows={promptRows}
+                onPromptRows={applyPromptRows}
+                onAddPromptRow={addPromptRow}
+                chunkSize={limits?.chunk_size ?? 8}
               />
             )}
             {section === 'motion' && (

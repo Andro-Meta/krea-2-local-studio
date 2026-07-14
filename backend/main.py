@@ -327,6 +327,8 @@ def _requires_admin(path: str, method: str) -> bool:
     # must not be triggerable by shared (non-admin) users.
     if path == "/api/civitai/install":
         return True
+    if path == "/api/huggingface/install":
+        return True
     if path in {"/api/xperiment/setup", "/api/gguf/setup-low-vram", "/api/int8/setup-native"}:
         return True
     if path.startswith("/api/quality-assets/") and method != "GET":
@@ -1139,13 +1141,21 @@ def _enqueue_background_enrichment() -> str | None:
     return job_id
 
 
-def _enqueue_model_warmup() -> str | None:
+def _enqueue_model_warmup(*, force: bool = False) -> str | None:
     """Queue the single opt-in startup warmup at background priority."""
     global _model_warmup_job_id
     if not getattr(settings, "krea_comfy_warmup", False) or generation_queue is None:
         return None
     if _model_warmup_job_id is not None:
-        return None
+        existing = _jobs.get(_model_warmup_job_id) or {}
+        try:
+            queue_status = generation_queue.status(_model_warmup_job_id)
+        except Exception:
+            queue_status = {}
+        state = queue_status.get("status") or existing.get("status")
+        if not force or state not in _TERMINAL_JOB_STATUSES:
+            return None
+        _model_warmup_job_id = None
     job_id = _new_job(
         role="admin",
         task_kind=MODEL_WARMUP,
@@ -1406,17 +1416,26 @@ async def _execute_model_warmup(prompt_id_cb) -> None:
         resolve_unet,
     )
 
+    engine = str(getattr(settings, "diffusion_engine", "native_int8_convrot"))
+    quantization = str(getattr(settings, "krea2_auto_quant", "int8"))
+    if engine == "native_int8_convrot":
+        quantization = "int8"
+    elif engine == "native_gguf":
+        quantization = "gguf"
+
     req = GenerationRequest(
         prompt="A neutral gray sphere on a plain background.",
-        width=64,
-        height=64,
+        width=1024,
+        height=1024,
         steps=1,
         cfg=0.0,
         seed=1,
         checkpoint="turbo",
-        quantization="int8",
-        diffusion_engine="native_int8_convrot",
+        quantization=quantization,
+        diffusion_engine=engine,
         use_rebalance=False,
+        seed_variance_preset="off",
+        vae_degrid=False,
     )
     unet, _dtype, _is_gguf, gguf_name = resolve_unet(req)
     signature = {
@@ -2940,6 +2959,18 @@ async def _run_helper_task(job_id: str, payload: dict) -> None:
             job_id,
             {"type": "done", "task_kind": task_kind, "result": result},
         )
+        if task_kind == IMAGE_DESCRIBE and result.get("backend") == "comfy":
+            try:
+                rewarm_id = _enqueue_model_warmup(force=True)
+                if rewarm_id:
+                    logger.info(
+                        "Queued Krea rewarm after image description: %s",
+                        rewarm_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "Post-description Krea rewarm enqueue failed"
+                )
     except Exception as exc:
         cancelled_error = any(
             marker in str(exc).lower()
@@ -4609,13 +4640,27 @@ async def loras_civitai_scan_status():
 
 
 @app.get("/api/civitai/loras")
-async def civitai_browse_loras(query: str = "", page: int = 1, sort: str = "Most Downloaded", nsfw: bool = False):
-    """Browse Krea 2 LoRA + LoKr (LoCon) models on Civitai."""
+async def civitai_browse_loras(
+    query: str = "",
+    page: int = 1,
+    sort: str = "Most Downloaded",
+    nsfw: bool = False,
+    cursor: str | None = None,
+):
+    """Browse Krea 2 LoRA + LoKr (LoCon) models on Civitai (cursor pagination)."""
     from civitai_loras import civitai_browse
     loop = asyncio.get_event_loop()
     try:
         return await loop.run_in_executor(
-            None, lambda: civitai_browse(query=query, page=page, sort=sort, nsfw=nsfw, token=_secret_value("CIVITAI_TOKEN", "civitai_token") or None)
+            None,
+            lambda: civitai_browse(
+                query=query,
+                page=page,
+                sort=sort,
+                nsfw=nsfw,
+                cursor=cursor,
+                token=_secret_value("CIVITAI_TOKEN", "civitai_token") or None,
+            ),
         )
     except Exception as exc:
         logger.exception("Civitai browse failed")
@@ -4639,6 +4684,66 @@ async def civitai_install_lora(req: dict):
     except Exception as exc:
         logger.exception("Civitai install failed")
         raise HTTPException(502, f"Civitai install failed: {exc}")
+    return result
+
+
+@app.get("/api/huggingface/loras")
+async def huggingface_browse_loras(
+    query: str = "",
+    sort: str = "downloads",
+    cursor: str | None = None,
+    limit: int = 48,
+):
+    """Browse Krea 2 LoRAs on Hugging Face."""
+    from huggingface_loras import huggingface_browse
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(
+            None,
+            lambda: huggingface_browse(
+                query=query,
+                sort=sort,
+                cursor=cursor,
+                limit=limit,
+                token=_secret_value("HF_TOKEN", "hf_token") or None,
+            ),
+        )
+    except PermissionError as exc:
+        raise HTTPException(401, str(exc))
+    except Exception as exc:
+        logger.exception("Hugging Face browse failed")
+        raise HTTPException(502, f"Hugging Face browse failed: {exc}")
+
+
+@app.post("/api/huggingface/install")
+async def huggingface_install_lora(req: dict):
+    """Install a Hugging Face LoRA into models/loras by repo_id."""
+    repo_id = (req.get("repo_id") or "").strip()
+    if not repo_id:
+        raise HTTPException(400, "repo_id is required.")
+    from huggingface_loras import MultiFileRequired, huggingface_install
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: huggingface_install(
+                repo_id,
+                filename=req.get("filename"),
+                token=_secret_value("HF_TOKEN", "hf_token") or None,
+            ),
+        )
+    except MultiFileRequired as exc:
+        raise HTTPException(
+            409,
+            detail={"message": str(exc), "repo_id": exc.repo_id, "files": exc.files},
+        )
+    except PermissionError as exc:
+        raise HTTPException(401, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        logger.exception("Hugging Face install failed")
+        raise HTTPException(502, f"Hugging Face install failed: {exc}")
     return result
 
 
@@ -5055,17 +5160,18 @@ async def xperiment_setup_endpoint():
     env = _read_env()
     env["KREA2_VAE_PATH"] = str(wan_vae)
     env["PROMPT_EXPANDER_BACKEND"] = "local"
-    env["LOCAL_LLM_BACKEND"] = "transformers"
-    try:
-        from support_models import support_model_path
-        xperiment_qwen = str(support_model_path("qwen3_vl_abliterated"))
-    except Exception:
-        xperiment_qwen = "huihui-ai/Huihui-Qwen3-VL-4B-Instruct-abliterated"
-    env["LOCAL_QWEN_MODEL_ID"] = xperiment_qwen
+    env["LOCAL_LLM_BACKEND"] = "comfy"
+    env["COMFY_QWEN_MODEL"] = "2b"
+    env["COMFY_QWEN_QUANT"] = "8bit"
+    env["COMFY_QWEN_VISION_MODEL"] = "4b"
+    env["COMFY_QWEN_VISION_QUANT"] = "8bit"
     settings.krea2_vae_path = str(wan_vae)
     settings.prompt_expander_backend = "local"
-    settings.local_llm_backend = "transformers"
-    settings.local_qwen_model_id = xperiment_qwen
+    settings.local_llm_backend = "comfy"
+    settings.comfy_qwen_model = "2b"
+    settings.comfy_qwen_quant = "8bit"
+    settings.comfy_qwen_vision_model = "4b"
+    settings.comfy_qwen_vision_quant = "8bit"
     _write_env(env)
     bypass_spec = asset_by_id("krea2_filter_bypass")
     bypass = asset_status(bypass_spec, has_hf_token=bool(token))
@@ -5106,8 +5212,11 @@ async def xperiment_setup_endpoint():
         "res4lyf": {"sampler_name": "exponential/ddim", "eta": 0.5, "bongmath": False},
         "use_prompt_expander": False,
         "prompt_expander_backend": "local",
-        "local_llm_backend": "transformers",
-        "local_qwen_model_id": xperiment_qwen,
+        "local_llm_backend": "comfy",
+        "comfy_qwen_model": "2b",
+        "comfy_qwen_quant": "8bit",
+        "comfy_qwen_vision_model": "4b",
+        "comfy_qwen_vision_quant": "8bit",
         "benchmark_note": "Uncensored Krea-2 Turbo recipe: abliterated Qwen3-VL encoder + filter-bypass diff @4 + Realism LoKr @0.6, ClownsharKSampler_Beta exponential/ddim + beta57, 8 steps, CFG 1, eta 0.5.",
         "manual_only": [bypass],
         "warnings": warnings,
@@ -5204,6 +5313,12 @@ async def get_settings():
         "local_llm_backend": env.get("LOCAL_LLM_BACKEND", settings.local_llm_backend),
         "comfy_qwen_model": env.get("COMFY_QWEN_MODEL", settings.comfy_qwen_model),
         "comfy_qwen_quant": env.get("COMFY_QWEN_QUANT", settings.comfy_qwen_quant),
+        "comfy_qwen_vision_model": env.get(
+            "COMFY_QWEN_VISION_MODEL", settings.comfy_qwen_vision_model
+        ),
+        "comfy_qwen_vision_quant": env.get(
+            "COMFY_QWEN_VISION_QUANT", settings.comfy_qwen_vision_quant
+        ),
         "krea_comfy_warmup": env.get(
             "KREA_COMFY_WARMUP", str(settings.krea_comfy_warmup)
         ).lower() in {"1", "true", "yes", "on"},
@@ -5283,6 +5398,12 @@ async def update_settings(req: SettingsUpdate):
     if req.comfy_qwen_quant is not None:
         env["COMFY_QWEN_QUANT"] = req.comfy_qwen_quant
         settings.comfy_qwen_quant = req.comfy_qwen_quant
+    if req.comfy_qwen_vision_model is not None:
+        env["COMFY_QWEN_VISION_MODEL"] = req.comfy_qwen_vision_model
+        settings.comfy_qwen_vision_model = req.comfy_qwen_vision_model
+    if req.comfy_qwen_vision_quant is not None:
+        env["COMFY_QWEN_VISION_QUANT"] = req.comfy_qwen_vision_quant
+        settings.comfy_qwen_vision_quant = req.comfy_qwen_vision_quant
     if req.krea_comfy_warmup is not None:
         env["KREA_COMFY_WARMUP"] = (
             "true" if req.krea_comfy_warmup else "false"

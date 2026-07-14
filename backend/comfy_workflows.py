@@ -879,18 +879,20 @@ def _maybe_degrid(g: GraphBuilder, image: str, req: Any | None) -> str:
 
 
 def _finish(g: GraphBuilder, latent: str, vae: str, req: Any = None) -> None:
-    # A full VAEDecode of a 4K image is the biggest single VRAM spike in the graph
-    # (and can OOM / spill on 24GB). Above ~2560px, decode in tiles instead. 1K/2K
-    # keep the exact single-pass VAEDecode behavior.
+    # At 1K+, a full VAEDecode makes Comfy evict several GB of the text encoder,
+    # adding roughly 50 seconds of reload churn to the next prompt on a 24GB
+    # card. Core tiled decode keeps the hot generation chain resident; measured
+    # output delta is negligible (about 51 dB PSNR at 1K).
     w = int(getattr(req, "width", 1024) or 1024) if req is not None else 1024
     h = int(getattr(req, "height", 1024) or 1024) if req is not None else 1024
-    tiled = max(w, h) >= 2560
+    tiled = max(w, h) >= 1024
 
     def _decode(vae_link: str) -> str:
         if tiled:
-            return g.add("VAEUtils_VAEDecodeTiled", {
-                "samples": _link(latent), "vae": _link(vae_link), "upscale": 1, "tile": True,
-                "tile_size": 512, "overlap": 64, "temporal_size": 8, "temporal_overlap": 4,
+            return g.add("VAEDecodeTiled", {
+                "samples": _link(latent), "vae": _link(vae_link),
+                "tile_size": 512, "overlap": 64,
+                "temporal_size": 64, "temporal_overlap": 8,
             })
         return g.add("VAEDecode", {"samples": _link(latent), "vae": _link(vae_link)})
 

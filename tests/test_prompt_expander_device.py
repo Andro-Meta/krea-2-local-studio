@@ -45,6 +45,22 @@ def _fake_transformers_module() -> ModuleType:
 
 
 class PromptExpanderDeviceTests(unittest.TestCase):
+    def test_recreate_prompt_requires_literal_unbeautified_fidelity(self) -> None:
+        import prompt_expander
+
+        prompt = prompt_expander.DESCRIBE_PROMPTS["recreate"].lower()
+        for required in (
+            "literal",
+            "distress",
+            "injury",
+            "horror",
+            "imperfections",
+            "do not beautify",
+            "do not sanitize",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, prompt)
+
     def test_auto_fails_fast_when_vram_is_tight(self) -> None:
         import prompt_expander
         from settings import settings

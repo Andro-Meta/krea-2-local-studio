@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.animation_plan import (
+    apply_prompt_strength_boost,
     build_chunk_ranges,
     build_seed_plan,
     evaluate_schedule,
@@ -429,3 +430,30 @@ def test_chunk_serializers_reject_timelines_above_frame_limit():
 def test_numeric_chunk_schedule_rejects_nonfinite_and_boolean_values(value):
     with pytest.raises(ValueError, match=r".+"):
         numeric_chunk_schedule([value], 0, 1)
+
+def test_apply_prompt_strength_boost_raises_near_prompt_changes():
+    strengths = [0.5] * 10
+    prompts = ["a"] * 5 + ["b"] * 5
+    out = apply_prompt_strength_boost(strengths, prompts, boost=0.2, window=2)
+    # Prompt changes at frame 5 → boost frames 3..7 inclusive.
+    assert out[2] == pytest.approx(0.5)
+    assert out[3] == pytest.approx(0.7)
+    assert out[5] == pytest.approx(0.7)
+    assert out[7] == pytest.approx(0.7)
+    assert out[8] == pytest.approx(0.5)
+
+
+def test_apply_prompt_strength_boost_clamps_to_one_and_noop_when_zero():
+    strengths = [0.9, 0.9, 0.9]
+    prompts = ["a", "b", "b"]
+    assert apply_prompt_strength_boost(strengths, prompts, boost=0.0, window=2) == strengths
+    out = apply_prompt_strength_boost(strengths, prompts, boost=0.35, window=1)
+    assert out[0] == pytest.approx(1.0)
+    assert out[1] == pytest.approx(1.0)
+
+
+def test_animate_request_includes_soft_handoff_defaults():
+    request = AnimateRequest()
+    assert request.prompt_blend_frames == 0
+    assert request.prompt_strength_boost == 0.0
+    assert request.prompt_strength_boost_frames == 4

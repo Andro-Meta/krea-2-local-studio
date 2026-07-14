@@ -319,6 +319,43 @@ def numeric_chunk_schedule(
     return ", ".join(entries)
 
 
+def apply_prompt_strength_boost(
+    strengths: Sequence[float],
+    prompts: Sequence[str],
+    *,
+    boost: float,
+    window: int,
+) -> list[float]:
+    """Raise denoise near prompt changes; clamp to [0, 1]. No-op when boost is 0."""
+    if len(strengths) != len(prompts):
+        raise ValueError("strengths and prompts must be the same length")
+    if not strengths:
+        return []
+    if (
+        isinstance(boost, bool)
+        or not isinstance(boost, (int, float))
+        or not math.isfinite(boost)
+        or boost < 0
+    ):
+        raise ValueError("boost must be a non-negative finite number")
+    if isinstance(window, bool) or not isinstance(window, int) or window < 0:
+        raise ValueError("window must be a non-negative integer")
+    result = [_checked_number(value) for value in strengths]
+    if boost == 0:
+        return result
+    change_frames = [
+        index
+        for index in range(1, len(prompts))
+        if prompts[index] != prompts[index - 1]
+    ]
+    for change in change_frames:
+        lo = max(0, change - window)
+        hi = min(len(result) - 1, change + window)
+        for index in range(lo, hi + 1):
+            result[index] = min(1.0, result[index] + float(boost))
+    return result
+
+
 def prompt_chunk_schedule(
     values: Sequence[str], start: int, end: int
 ) -> str:

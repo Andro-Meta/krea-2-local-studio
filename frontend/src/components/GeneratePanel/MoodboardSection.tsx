@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Alert, Box, Button, Chip, CircularProgress, Collapse, IconButton, Slider, Stack, TextField, Tooltip, Typography,
 } from '@mui/material'
@@ -62,6 +62,9 @@ export default function MoodboardSection({
   const [catalogMessage, setCatalogMessage] = useState('')
   const [open, setOpen] = useState(true)
   const fileRef = useRef<HTMLInputElement>(null)
+  const catalogScrollRef = useRef<HTMLDivElement>(null)
+  const catalogSentinelRef = useRef<HTMLDivElement>(null)
+  const catalogLoadingRef = useRef(false)
 
   useEffect(() => { apiFetch.moods().then(setMoods).catch(() => {}) }, [])
 
@@ -94,11 +97,27 @@ export default function MoodboardSection({
 
   const CATALOG_PAGE_SIZE = 60
 
-  const searchCatalog = async (query = catalogQuery, src = catalogSource, page = 1, append = false) => {
+  const catalogQueryRef = useRef(catalogQuery)
+  catalogQueryRef.current = catalogQuery
+  const catalogSourceRef = useRef(catalogSource)
+  catalogSourceRef.current = catalogSource
+  const catalogPageRef = useRef(catalogPage)
+  catalogPageRef.current = catalogPage
+  const catalogTotalRef = useRef(catalogTotal)
+  catalogTotalRef.current = catalogTotal
+  const catalogResultsLenRef = useRef(catalogResults.length)
+  catalogResultsLenRef.current = catalogResults.length
+
+  const searchCatalog = useCallback(async (query = catalogQueryRef.current, src = catalogSourceRef.current, page = 1, append = false) => {
     if (src === 'suggested') {
       setCatalogMessage(moodboardSuggestions.length ? '' : 'Use Magic Wand to suggest moodboards for your prompt.')
       return
     }
+    if (append) {
+      if (catalogLoadingRef.current) return
+      if (catalogResultsLenRef.current >= catalogTotalRef.current) return
+    }
+    catalogLoadingRef.current = true
     setCatalogLoading(true)
     if (!append) setCatalogMessage('')
     try {
@@ -107,7 +126,11 @@ export default function MoodboardSection({
       if (src === 'favorites') opts.favorites = true
       else opts.source = src
       const data = await apiFetch.moodboards(opts)
-      setCatalogResults(prev => append ? [...prev, ...data.items] : data.items)
+      setCatalogResults(prev => {
+        if (!append) return data.items
+        const seen = new Set(prev.map(item => item.id))
+        return [...prev, ...data.items.filter(item => !seen.has(item.id))]
+      })
       setCatalogTotal(data.total)
       setCatalogPage(page)
       if (!data.total) {
@@ -120,13 +143,14 @@ export default function MoodboardSection({
     } catch (e: any) {
       setCatalogMessage(moodboardErrorMessage(e, 'Could not search moodboards.'))
     } finally {
+      catalogLoadingRef.current = false
       setCatalogLoading(false)
     }
-  }
+  }, [moodboardSuggestions.length])
 
   const selectSource = (src: CatalogSource) => {
     setCatalogSource(src)
-    searchCatalog(catalogQuery, src, 1, false)
+    void searchCatalog(catalogQuery, src, 1, false)
   }
 
   useEffect(() => {
@@ -153,10 +177,32 @@ export default function MoodboardSection({
 
   useEffect(() => {
     if (!open || catalogResults.length) return
-    searchCatalog('', catalogSource)
+    void searchCatalog('', catalogSource)
     // Only auto-load a small browse set when the section is first opened.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
+
+  // Infinite scroll inside the catalog list panel.
+  useEffect(() => {
+    if (catalogSource === 'suggested') return
+    const root = catalogScrollRef.current
+    const sentinel = catalogSentinelRef.current
+    if (!root || !sentinel) return
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some(entry => entry.isIntersecting)) return
+      if (catalogLoadingRef.current) return
+      if (catalogResultsLenRef.current <= 0) return
+      if (catalogResultsLenRef.current >= catalogTotalRef.current) return
+      void searchCatalog(
+        catalogQueryRef.current,
+        catalogSourceRef.current,
+        catalogPageRef.current + 1,
+        true,
+      )
+    }, { root, rootMargin: '240px', threshold: 0 })
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [catalogSource, catalogResults.length, catalogTotal, catalogLoading, searchCatalog])
 
   const addCatalogMoodboard = async (moodboard: MoodboardItem) => {
     setCatalogLoading(true)
@@ -385,7 +431,8 @@ export default function MoodboardSection({
               </Typography>
             )}
             {((catalogSource === 'suggested' ? moodboardSuggestions : catalogResults).length > 0) && (
-              <Stack spacing={0.75} sx={{ mt: 1, maxHeight: 460, overflowY: 'auto' }}>
+              <Box ref={catalogScrollRef} sx={{ mt: 1, maxHeight: 460, overflowY: 'auto' }}>
+                <Stack spacing={0.75}>
                 {(catalogSource === 'suggested' ? moodboardSuggestions : catalogResults).map(result => {
                   const isSuggested = catalogSource === 'suggested'
                   const previews = isSuggested ? ((result as MoodboardSuggestion).preview_image_urls ?? []) : moodboardPreviews(result as MoodboardItem)
@@ -456,19 +503,31 @@ export default function MoodboardSection({
                     </Box>
                   )
                 })}
-              </Stack>
-            )}
-            {catalogSource !== 'suggested' && catalogTotal > 0 && (
-              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 0.75 }}>
-                <Typography variant="caption" sx={{ color: 'text.disabled' }}>
-                  Showing {catalogResults.length} of {catalogTotal}
-                </Typography>
-                {catalogResults.length < catalogTotal && (
-                  <Button size="small" onClick={() => searchCatalog(catalogQuery, catalogSource, catalogPage + 1, true)} disabled={catalogLoading}>
-                    {catalogLoading ? <CircularProgress size={14} /> : 'Load more'}
-                  </Button>
+                </Stack>
+                {catalogSource !== 'suggested' && catalogTotal > 0 && (
+                  <Stack
+                    ref={catalogSentinelRef}
+                    direction="row"
+                    alignItems="center"
+                    justifyContent="space-between"
+                    sx={{ mt: 1, pb: 0.5, pt: 0.5 }}
+                  >
+                    <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                      Showing {catalogResults.length} of {catalogTotal}
+                      {catalogResults.length < catalogTotal ? ' · scroll for more' : ''}
+                    </Typography>
+                    {catalogResults.length < catalogTotal && (
+                      <Button
+                        size="small"
+                        onClick={() => void searchCatalog(catalogQuery, catalogSource, catalogPage + 1, true)}
+                        disabled={catalogLoading}
+                      >
+                        {catalogLoading ? <CircularProgress size={14} /> : 'Load more'}
+                      </Button>
+                    )}
+                  </Stack>
                 )}
-              </Stack>
+              </Box>
             )}
           </Box>
 

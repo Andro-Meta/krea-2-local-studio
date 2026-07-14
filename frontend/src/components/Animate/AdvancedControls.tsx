@@ -55,18 +55,54 @@ export default function AdvancedControls({
         </TextField>
       </Stack>
 
-      <TextField
-        label="Negative prompt"
-        value={value.negative_prompt}
-        onChange={event => update('negative_prompt', event.target.value)}
-        multiline minRows={3} disabled={disabled} fullWidth
-      />
+      <Typography variant="subtitle2">Soft prompt handoff</Typography>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+        <TextField
+          id="animate-prompt-blend-frames"
+          label="Prompt blend frames"
+          type="number"
+          value={value.prompt_blend_frames}
+          onChange={event => update('prompt_blend_frames', Number(event.target.value))}
+          inputProps={{ min: 0, max: 12, step: 1 }}
+          error={!!errors.prompt_blend_frames}
+          helperText={errors.prompt_blend_frames || '0 = hard cut; blends CLIP conditioning across changes'}
+          disabled={disabled}
+          fullWidth
+        />
+        <TextField
+          id="animate-prompt-strength-boost"
+          label="Strength boost"
+          type="number"
+          value={value.prompt_strength_boost}
+          onChange={event => update('prompt_strength_boost', Number(event.target.value))}
+          inputProps={{ min: 0, max: 0.35, step: 0.05 }}
+          error={!!errors.prompt_strength_boost}
+          helperText={errors.prompt_strength_boost || 'Extra denoise near prompt changes (0–0.35)'}
+          disabled={disabled}
+          fullWidth
+        />
+        <TextField
+          id="animate-prompt-strength-boost-frames"
+          label="Boost window"
+          type="number"
+          value={value.prompt_strength_boost_frames}
+          onChange={event => update('prompt_strength_boost_frames', Number(event.target.value))}
+          inputProps={{ min: 0, max: 16, step: 1 }}
+          error={!!errors.prompt_strength_boost_frames}
+          helperText={errors.prompt_strength_boost_frames || 'Frames either side of a prompt change'}
+          disabled={disabled}
+          fullWidth
+        />
+      </Stack>
 
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
         <TextField
           select label="Seed behavior" value={value.seed_behavior}
           onChange={event => update('seed_behavior', event.target.value as typeof value.seed_behavior)}
           disabled={disabled} fullWidth
+          helperText={value.seed_behavior === 'random'
+            ? 'Random picks a seed plan once and keeps it across chunks.'
+            : undefined}
         >
           {['fixed', 'iter', 'random', 'ladder'].map(item => <MenuItem key={item} value={item}>{item}</MenuItem>)}
         </TextField>
@@ -97,6 +133,11 @@ export default function AdvancedControls({
           <MenuItem value="None">None</MenuItem>
         </TextField>
       </Stack>
+      {value.diffusion_cadence > 1 && (
+        <Alert severity="info" sx={{ py: 0 }}>
+          Cadence {value.diffusion_cadence} warps frames without re-diffusing between samples — faster motion, but can smear or ghost. Use 1 for sharpest prompt changes.
+        </Alert>
+      )}
 
       <Alert severity={runtime?.available ? 'success' : 'warning'}>
         <Typography variant="subtitle2">
@@ -108,6 +149,9 @@ export default function AdvancedControls({
         </Typography>
         <Typography variant="caption" display="block">
           3D / MiDaS: {runtime?.midas_ready ? 'ready' : runtime?.midas_reason || 'not reported'}
+        </Typography>
+        <Typography variant="caption" display="block">
+          Schedule expressions are evaluated safely on the server; chunks receive numeric literals only.
         </Typography>
         {!!runtime?.missing_nodes.length && (
           <Typography variant="caption" display="block">Missing nodes: {runtime.missing_nodes.join(', ')}</Typography>

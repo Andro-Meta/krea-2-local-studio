@@ -106,7 +106,14 @@ export default function MotionControls({
         ))}
       </TextField>
       {value.animation_mode === '3D' && !runtime.midas_ready && (
-        <Alert severity="warning" sx={{ py: 0 }}>{runtime.midas_reason} Restart ComfyUI after setup.</Alert>
+        <Alert severity="warning" sx={{ py: 0 }}>
+          {runtime.midas_reason} Open System → KreaDeforum / Animate to finish MiDaS setup, then restart ComfyUI.
+        </Alert>
+      )}
+      {!runtime.midas_ready && value.animation_mode !== '3D' && (
+        <Alert severity="info" sx={{ py: 0 }}>
+          2D is ready. 3D stays gated until MiDaS is set up under System → KreaDeforum / Animate.
+        </Alert>
       )}
 
       <Box>

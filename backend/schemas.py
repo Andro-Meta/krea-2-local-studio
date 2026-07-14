@@ -83,6 +83,9 @@ class AnimateRequest(BaseModel):
     rotation_3d_z_schedule: str = Field(default="0:(0)", max_length=32 * 1024)
     color_coherence: Literal["None", "Match Frame 0 LAB"] = "Match Frame 0 LAB"
     diffusion_cadence: int = Field(default=1, ge=1, le=16)
+    prompt_blend_frames: int = Field(default=0, ge=0, le=12)
+    prompt_strength_boost: float = Field(default=0.0, ge=0.0, le=0.35)
+    prompt_strength_boost_frames: int = Field(default=4, ge=0, le=16)
     hybrid_strength_schedule: str = Field(default="0:(0.5)", max_length=32 * 1024)
     hybrid_mode: Literal["normal", "optical_flow"] = "optical_flow"
     init_image_b64: str = ""
@@ -632,6 +635,8 @@ class SettingsUpdate(BaseModel):
     local_llm_backend: Optional[Literal["comfy", "transformers", "gguf_server"]] = None
     comfy_qwen_model: Optional[str] = None
     comfy_qwen_quant: Optional[str] = None
+    comfy_qwen_vision_model: Optional[str] = None
+    comfy_qwen_vision_quant: Optional[str] = None
     krea_comfy_warmup: Optional[bool] = None
     local_qwen_model_id: Optional[str] = None
     local_qwen_device: Optional[Literal["auto", "cuda", "cpu"]] = None

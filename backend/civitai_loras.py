@@ -324,15 +324,25 @@ def scan_all(loras_provider, token: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 def civitai_browse(query: str = "", page: int = 1, sort: str = "Most Downloaded",
-                   nsfw: bool = False, token: str | None = None) -> dict:
-    params = {
+                   nsfw: bool = False, token: str | None = None,
+                   cursor: str | None = None) -> dict:
+    """Browse Civitai Krea 2 LoRAs.
+
+    Civitai's models API is cursor-based: ``page=2`` returns the same items as
+    ``page=1``. Pass ``cursor`` from the previous response's ``next_cursor``.
+    """
+    params: dict[str, Any] = {
         "types": ["LORA", "LoCon"],
         "baseModels": [KREA2_BASE_MODEL],
-        "limit": 24,
-        "page": max(1, int(page or 1)),
+        "limit": 48,
         "sort": sort or "Most Downloaded",
         "nsfw": "true" if nsfw else "false",
     }
+    if cursor:
+        params["cursor"] = cursor
+    else:
+        # First page only — page numbers alone no longer advance results.
+        params["page"] = 1
     if query:
         params["query"] = query
     headers = dict(_UA)
@@ -352,7 +362,18 @@ def civitai_browse(query: str = "", page: int = 1, sort: str = "Most Downloaded"
         # Drop explicit / NSFW-flagged models entirely from the SFW browse
         # (Civitai's model.nsfw is unreliable, so we also check the name).
         items = [it for it in items if not it["nsfw"]]
-    return {"items": items, "metadata": data.get("metadata", {})}
+    meta = data.get("metadata") or {}
+    next_cursor = meta.get("nextCursor") or meta.get("next_cursor") or None
+    if isinstance(next_cursor, str):
+        next_cursor = next_cursor.strip() or None
+    else:
+        next_cursor = None
+    return {
+        "items": items,
+        "metadata": meta,
+        "next_cursor": next_cursor,
+        "has_more": bool(next_cursor),
+    }
 
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")

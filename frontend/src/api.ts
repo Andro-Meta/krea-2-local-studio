@@ -222,6 +222,9 @@ export interface AnimateRequest {
   rotation_3d_z_schedule: string
   color_coherence: 'None' | 'Match Frame 0 LAB'
   diffusion_cadence: number
+  prompt_blend_frames: number
+  prompt_strength_boost: number
+  prompt_strength_boost_frames: number
   hybrid_strength_schedule: string
   hybrid_mode: 'normal' | 'optical_flow'
   init_image_b64: string
@@ -556,6 +559,22 @@ export interface CivitaiLoraItem {
 
 export interface CivitaiScanStatus { scanning: boolean; total: number; done: number; updated: number }
 
+export interface HuggingFaceLoraItem {
+  repo_id: string
+  name: string
+  creator: string
+  base_model: string
+  tags?: string[]
+  downloads?: number
+  likes?: number
+  preview_url: string
+  hf_url: string
+  pipeline_tag?: string
+  installed?: boolean
+  installed_filename?: string
+  weight_files?: { filename: string; size?: number }[]
+}
+
 export interface SystemReport {
   gpu_name?: string
   vram_total_gb?: number
@@ -644,6 +663,8 @@ export interface AppSettings {
   local_llm_backend: 'comfy' | 'transformers' | 'gguf_server'
   comfy_qwen_model: string
   comfy_qwen_quant: string
+  comfy_qwen_vision_model: string
+  comfy_qwen_vision_quant: string
   krea_comfy_warmup: boolean
   local_qwen_model_id: string
   local_qwen_device: 'auto' | 'cuda' | 'cpu'
@@ -707,6 +728,9 @@ export interface XperimentSetupResult {
   prompt_expander_backend?: 'local' | 'openrouter' | 'ideogram-json'
   local_llm_backend?: 'comfy' | 'transformers' | 'gguf_server'
   comfy_qwen_model?: string
+  comfy_qwen_quant?: string
+  comfy_qwen_vision_model?: string
+  comfy_qwen_vision_quant?: string
   local_qwen_model_id?: string
   benchmark_note?: string
   manual_only: QualityAsset[]
@@ -892,12 +916,36 @@ export const apiFetch = {
 
   lorasCivitaiScan: () => api.post<CivitaiScanStatus>('/api/loras/civitai-scan').then(r => r.data),
   lorasCivitaiScanStatus: () => api.get<CivitaiScanStatus>('/api/loras/civitai-scan/status').then(r => r.data),
-  civitaiLoras: (params: { query?: string; page?: number; sort?: string; nsfw?: boolean } = {}) =>
-    api.get<{ items: CivitaiLoraItem[]; metadata: any }>('/api/civitai/loras', { params }).then(r => r.data),
+  civitaiLoras: (params: { query?: string; page?: number; cursor?: string; sort?: string; nsfw?: boolean } = {}) =>
+    api.get<{
+      items: CivitaiLoraItem[]
+      metadata: Record<string, unknown>
+      next_cursor?: string | null
+      has_more?: boolean
+    }>('/api/civitai/loras', { params }).then(r => r.data),
   civitaiInstall: (versionId: number, filename?: string) =>
     api.post<{ ok: boolean; filename: string; path: string; trigger_words?: string[] }>(
       '/api/civitai/install', { version_id: versionId, filename }
     ).then(r => r.data),
+
+  huggingfaceLoras: (params: { query?: string; sort?: string; cursor?: string; limit?: number } = {}) =>
+    api.get<{
+      items: HuggingFaceLoraItem[]
+      next_cursor: string | null
+      has_more: boolean
+      metadata: Record<string, unknown>
+    }>('/api/huggingface/loras', { params }).then(r => r.data),
+
+  huggingfaceInstall: (repoId: string, filename?: string) =>
+    api.post<{
+      ok: boolean
+      filename: string
+      path: string
+      repo_id: string
+      compatible?: boolean | null
+      match_info?: string
+      already_installed?: boolean
+    }>('/api/huggingface/install', { repo_id: repoId, filename }).then(r => r.data),
 
   moods: () => api.get<Mood[]>('/api/moods').then(r => r.data),
 

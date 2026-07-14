@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Box, Button, Chip, CircularProgress, Collapse, Dialog, DialogContent, DialogTitle,
-  IconButton, InputAdornment, LinearProgress, MenuItem, Slider, Stack, TextField,
+  Alert, Box, Button, Chip, CircularProgress, Collapse, Dialog, DialogActions, DialogContent, DialogTitle,
+  IconButton, InputAdornment, LinearProgress, MenuItem, Slider, Stack, Tab, Tabs, TextField,
   ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material'
 import DownloadIcon from '@mui/icons-material/Download'
@@ -14,7 +14,7 @@ import CloseIcon from '@mui/icons-material/Close'
 import SearchIcon from '@mui/icons-material/Search'
 import VpnKeyIcon from '@mui/icons-material/VpnKey'
 import { useStore } from '../../store'
-import { apiFetch, type CivitaiLoraItem, type LoraInfo } from '../../api'
+import { apiFetch, type CivitaiLoraItem, type HuggingFaceLoraItem, type LoraInfo } from '../../api'
 
 const BLOCK_FILTERS = ['all', 'style_safe', 'early', 'middle', 'late'] as const
 
@@ -26,68 +26,246 @@ function loraGradient(seed: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Civitai browse + install dialog (Krea 2 LoRA / LoKr only)
+// Browse + install dialog (Civitai | Hugging Face) with infinite scroll
 // ---------------------------------------------------------------------------
 
-function CivitaiBrowseDialog({ open, onClose, onInstalled }: {
+type BrowseSource = 'civitai' | 'huggingface'
+
+function LoraBrowseDialog({ open, onClose, onInstalled }: {
   open: boolean; onClose: () => void; onInstalled: () => void
 }) {
+  const [source, setSource] = useState<BrowseSource>('civitai')
   const [q, setQ] = useState('')
-  const [sort, setSort] = useState('Most Downloaded')
-  const [items, setItems] = useState<CivitaiLoraItem[]>([])
+  const [civitaiSort, setCivitaiSort] = useState('Most Downloaded')
+  const [hfSort, setHfSort] = useState('downloads')
+  const [civitaiItems, setCivitaiItems] = useState<CivitaiLoraItem[]>([])
+  const [hfItems, setHfItems] = useState<HuggingFaceLoraItem[]>([])
+  const [civitaiCursor, setCivitaiCursor] = useState<string | null>(null)
+  const [hfCursor, setHfCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [installing, setInstalling] = useState<number | null>(null)
-  const [installed, setInstalled] = useState<Record<number, boolean>>({})
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [installing, setInstalling] = useState<string | number | null>(null)
+  const [installedCivitai, setInstalledCivitai] = useState<Record<number, boolean>>({})
+  const [installedHf, setInstalledHf] = useState<Record<string, boolean>>({})
   const [error, setError] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [hasKey, setHasKey] = useState(false)
+  const [hasCivitaiKey, setHasCivitaiKey] = useState(false)
+  const [hasHfKey, setHasHfKey] = useState(false)
   const [savingKey, setSavingKey] = useState(false)
   const [showKey, setShowKey] = useState(false)
+  const [filePick, setFilePick] = useState<{ repoId: string; files: { filename: string; size?: number }[] } | null>(null)
 
-  const search = async () => {
-    setLoading(true); setError('')
-    try { setItems((await apiFetch.civitaiLoras({ query: q.trim(), sort })).items) }
-    catch { setError('Civitai search failed. Check your connection.') }
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  const loadingMoreRef = useRef(false)
+  const qRef = useRef(q)
+  qRef.current = q
+  const civitaiSortRef = useRef(civitaiSort)
+  civitaiSortRef.current = civitaiSort
+  const hfSortRef = useRef(hfSort)
+  hfSortRef.current = hfSort
+  const civitaiCursorRef = useRef(civitaiCursor)
+  civitaiCursorRef.current = civitaiCursor
+  const hfCursorRef = useRef(hfCursor)
+  hfCursorRef.current = hfCursor
+  const hasMoreRef = useRef(hasMore)
+  hasMoreRef.current = hasMore
+  const sourceRef = useRef(source)
+  sourceRef.current = source
+
+  const searchCivitai = useCallback(async (cursor: string | null = null, append = false) => {
+    if (append) {
+      if (loadingMoreRef.current || !cursor) return
+      loadingMoreRef.current = true
+      setLoadingMore(true)
+    } else setLoading(true)
+    setError('')
+    try {
+      const result = await apiFetch.civitaiLoras({
+        query: qRef.current.trim(),
+        sort: civitaiSortRef.current,
+        cursor: cursor || undefined,
+      })
+      const batch = result.items || []
+      let added = batch.length
+      setCivitaiItems(prev => {
+        if (!append) return batch
+        const seen = new Set(prev.map(item => item.version_id || item.model_id))
+        const fresh = batch.filter(item => !seen.has(item.version_id || item.model_id))
+        added = fresh.length
+        return [...prev, ...fresh]
+      })
+      const next = (result.next_cursor
+        ?? (typeof result.metadata?.nextCursor === 'string' ? result.metadata.nextCursor : null)
+        ?? null)
+      setCivitaiCursor(next)
+      setHasMore(Boolean(result.has_more ?? next))
+      if (append && added === 0) {
+        setError('Load more returned no new models. Hard-refresh the page; if it keeps happening, restart the Studio server.')
+        setHasMore(false)
+      }
+    } catch {
+      setError('Civitai search failed. Check your connection.')
+      if (!append) {
+        setCivitaiItems([])
+        setCivitaiCursor(null)
+        setHasMore(false)
+      }
+    }
     setLoading(false)
-  }
-  useEffect(() => { if (open) search() }, [open, sort])
+    setLoadingMore(false)
+    loadingMoreRef.current = false
+  }, [])
+
+  const searchHf = useCallback(async (cursor: string | null = null, append = false) => {
+    if (append) {
+      if (loadingMoreRef.current || !cursor) return
+      loadingMoreRef.current = true
+      setLoadingMore(true)
+    } else setLoading(true)
+    setError('')
+    try {
+      const result = await apiFetch.huggingfaceLoras({
+        query: qRef.current.trim(),
+        sort: hfSortRef.current,
+        cursor: cursor || undefined,
+      })
+      const batch = result.items || []
+      setHfItems(prev => {
+        if (!append) return batch
+        const seen = new Set(prev.map(item => item.repo_id))
+        return [...prev, ...batch.filter(item => !seen.has(item.repo_id))]
+      })
+      setHfCursor(result.next_cursor)
+      setHasMore(!!result.has_more && !!result.next_cursor)
+    } catch (e: any) {
+      const status = e?.response?.status
+      if (status === 401) {
+        setShowKey(true)
+        setError('Hugging Face needs a token for this request. Add HF_TOKEN below or in Settings.')
+      } else {
+        setError('Hugging Face search failed. Check your connection.')
+      }
+      if (!append) {
+        setHfItems([])
+        setHasMore(false)
+        setHfCursor(null)
+      }
+    }
+    setLoading(false)
+    setLoadingMore(false)
+    loadingMoreRef.current = false
+  }, [])
+
+  const search = useCallback((append = false) => {
+    if (sourceRef.current === 'civitai') {
+      void searchCivitai(append ? civitaiCursorRef.current : null, append)
+    } else {
+      void searchHf(append ? hfCursorRef.current : null, append)
+    }
+  }, [searchCivitai, searchHf])
+
   useEffect(() => {
     if (!open) return
-    apiFetch.settings().then(s => setHasKey(!!s.has_civitai_token)).catch(() => {})
+    setHasMore(false)
+    if (source === 'civitai') {
+      setCivitaiCursor(null)
+      void searchCivitai(null, false)
+    } else {
+      setHfCursor(null)
+      void searchHf(null, false)
+    }
+  }, [open, source, civitaiSort, hfSort, searchCivitai, searchHf])
+
+  useEffect(() => {
+    if (!open) return
+    apiFetch.settings().then(s => {
+      setHasCivitaiKey(!!s.has_civitai_token)
+      setHasHfKey(!!s.has_hf_token)
+    }).catch(() => {})
   }, [open])
+
+  // Infinite scroll: load next page when the bottom sentinel enters the scroll viewport.
+  useEffect(() => {
+    if (!open || loading) return
+    const root = scrollRef.current
+    const target = sentinelRef.current
+    if (!root || !target) return
+    const io = new IntersectionObserver((entries) => {
+      if (!entries[0]?.isIntersecting) return
+      if (!hasMoreRef.current || loadingMoreRef.current) return
+      search(true)
+    }, { root, rootMargin: '200px', threshold: 0 })
+    io.observe(target)
+    return () => io.disconnect()
+  }, [open, source, loading, hasMore, civitaiItems.length, hfItems.length, search])
 
   const saveKey = async () => {
     setSavingKey(true); setError('')
     try {
-      await apiFetch.updateSettings({ civitai_token: apiKey.trim() })
-      setHasKey(!!apiKey.trim())
+      if (source === 'civitai') {
+        await apiFetch.updateSettings({ civitai_token: apiKey.trim() })
+        setHasCivitaiKey(!!apiKey.trim())
+      } else {
+        await apiFetch.updateSettings({ hf_token: apiKey.trim() })
+        setHasHfKey(!!apiKey.trim())
+      }
       setApiKey(''); setShowKey(false)
-      await search()
-    } catch { setError('Could not save the Civitai API key.') }
+      search(false)
+    } catch { setError(source === 'civitai' ? 'Could not save the Civitai API key.' : 'Could not save the Hugging Face token.') }
     setSavingKey(false)
   }
 
-  const install = async (it: CivitaiLoraItem) => {
+  const installCivitai = async (it: CivitaiLoraItem) => {
     setInstalling(it.version_id); setError('')
     try {
       await apiFetch.civitaiInstall(it.version_id, it.file_name || undefined)
-      setInstalled(m => ({ ...m, [it.version_id]: true }))
+      setInstalledCivitai(m => ({ ...m, [it.version_id]: true }))
       onInstalled()
     } catch (e: any) {
       const status = e?.response?.status
-      if (status === 401 || status === 403) {
+      if (status === 401 || status === 403 || status === 402) {
         setShowKey(true)
         setError('This model requires a (free) Civitai API key. Paste one below and Save, then try again.')
       } else {
-        setError(e?.response?.data?.detail ?? 'Install failed. Check your connection.')
+        setError(typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : 'Install failed. Check your connection.')
       }
     }
     setInstalling(null)
   }
 
+  const installHf = async (repoId: string, filename?: string) => {
+    setInstalling(repoId); setError('')
+    try {
+      const result = await apiFetch.huggingfaceInstall(repoId, filename)
+      setInstalledHf(m => ({ ...m, [repoId]: true }))
+      setFilePick(null)
+      onInstalled()
+      if (result.compatible === false) {
+        setError(`Installed as ${result.filename}, but ${result.match_info || 'compatibility check failed'}.`)
+      }
+    } catch (e: any) {
+      const status = e?.response?.status
+      const detail = e?.response?.data?.detail
+      if (status === 409 && detail?.files?.length) {
+        setFilePick({ repoId, files: detail.files })
+      } else if (status === 401) {
+        setShowKey(true)
+        setError('This model needs a Hugging Face token. Paste HF_TOKEN below and Save, then try again.')
+      } else {
+        setError(typeof detail === 'string' ? detail : (detail?.message || 'Install failed. Check your connection.'))
+      }
+    }
+    setInstalling(null)
+  }
+
+  const itemsCount = source === 'civitai' ? civitaiItems.length : hfItems.length
+  const hasKey = source === 'civitai' ? hasCivitaiKey : hasHfKey
+
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3, bgcolor: '#17181d' } }}>
-      <DialogTitle sx={{ pb: 1 }}>
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3, bgcolor: '#17181d', height: 'min(88vh, 900px)' } }}>
+      <DialogTitle sx={{ pb: 0.5 }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Stack direction="row" spacing={1} alignItems="center">
             <TravelExploreIcon sx={{ color: 'primary.main' }} />
@@ -96,24 +274,46 @@ function CivitaiBrowseDialog({ open, onClose, onInstalled }: {
           <IconButton size="small" onClick={onClose}><CloseIcon fontSize="small" /></IconButton>
         </Stack>
       </DialogTitle>
-      <DialogContent>
+      <DialogContent sx={{ display: 'flex', flexDirection: 'column', pt: 1, overflow: 'hidden' }}>
+        <Tabs
+          value={source}
+          onChange={(_, v: BrowseSource) => { setQ(''); setError(''); setSource(v) }}
+          sx={{ mb: 1, minHeight: 36, '& .MuiTab-root': { minHeight: 36, textTransform: 'none' } }}
+        >
+          <Tab value="civitai" label="Civitai" />
+          <Tab value="huggingface" label="Hugging Face" />
+        </Tabs>
         <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
           <TextField
-            size="small" fullWidth autoFocus placeholder="Search Krea 2 LoRA / LoKr models…"
-            value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()}
+            size="small" fullWidth autoFocus
+            placeholder={source === 'civitai' ? 'Search Krea 2 LoRA / LoKr models…' : 'Search Krea 2 LoRAs on Hugging Face…'}
+            value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && search(false)}
             InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
           />
-          <TextField select size="small" value={sort} onChange={e => setSort(e.target.value)} sx={{ minWidth: 160 }}>
-            {['Most Downloaded', 'Highest Rated', 'Newest'].map(s => <MenuItem key={s} value={s}>{s}</MenuItem>)}
-          </TextField>
+          <Button variant="outlined" size="small" onClick={() => search(false)} disabled={loading} sx={{ minWidth: 88 }}>
+            Search
+          </Button>
+          {source === 'civitai' ? (
+            <TextField select size="small" value={civitaiSort} onChange={e => setCivitaiSort(e.target.value)} sx={{ minWidth: 160 }}>
+              {['Most Downloaded', 'Highest Rated', 'Newest'].map(s => <MenuItem key={s} value={s}>{s}</MenuItem>)}
+            </TextField>
+          ) : (
+            <TextField select size="small" value={hfSort} onChange={e => setHfSort(e.target.value)} sx={{ minWidth: 160 }}>
+              <MenuItem value="downloads">Most Downloaded</MenuItem>
+              <MenuItem value="likes">Most Liked</MenuItem>
+              <MenuItem value="lastModified">Newest</MenuItem>
+            </TextField>
+          )}
         </Stack>
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
           <Typography variant="caption" sx={{ color: 'text.disabled' }}>
-            Base model “Krea 2” · LoRA + LoKr. Some downloads need a free Civitai API key.
+            {source === 'civitai'
+              ? 'Base model “Krea 2” · LoRA + LoKr. Some downloads need a free Civitai API key.'
+              : 'Filtered to Krea base LoRAs on the Hub. Gated repos need HF_TOKEN.'}
           </Typography>
           <Button size="small" startIcon={<VpnKeyIcon sx={{ fontSize: 15 }} />} onClick={() => setShowKey(v => !v)}
             sx={{ textTransform: 'none', color: hasKey ? 'success.main' : 'text.secondary', flexShrink: 0 }}>
-            {hasKey ? 'API key saved' : 'Add API key'}
+            {hasKey ? (source === 'civitai' ? 'API key saved' : 'HF token set') : (source === 'civitai' ? 'Add API key' : 'Add HF token')}
           </Button>
         </Stack>
         <Collapse in={showKey}>
@@ -121,8 +321,12 @@ function CivitaiBrowseDialog({ open, onClose, onInstalled }: {
             <TextField
               size="small" fullWidth type="password" value={apiKey}
               onChange={e => setApiKey(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveKey()}
-              placeholder={hasKey ? 'Key available. Paste a new key to replace it for this session.' : 'Paste your Civitai API key...'}
-              helperText={<>Free: create one at <a href="https://civitai.com/user/account" target="_blank" rel="noreferrer" style={{ color: '#9ecbff' }}>civitai.com - Account - API Keys</a>. Session keys apply immediately; persistent CIVITAI_TOKEN values in .env are preserved.</>}
+              placeholder={source === 'civitai'
+                ? (hasCivitaiKey ? 'Key available. Paste a new key to replace it for this session.' : 'Paste your Civitai API key...')
+                : (hasHfKey ? 'Token available. Paste a new token to replace it for this session.' : 'Paste your Hugging Face token (hf_…)…')}
+              helperText={source === 'civitai'
+                ? <>Free: create one at <a href="https://civitai.com/user/account" target="_blank" rel="noreferrer" style={{ color: '#9ecbff' }}>civitai.com - Account - API Keys</a>.</>
+                : <>Create a token at <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer" style={{ color: '#9ecbff' }}>huggingface.co/settings/tokens</a>.</>}
               InputProps={{ startAdornment: <InputAdornment position="start"><VpnKeyIcon fontSize="small" /></InputAdornment> }}
             />
             <Button variant="contained" size="small" onClick={saveKey} disabled={savingKey} sx={{ mt: 0.25 }}
@@ -132,59 +336,146 @@ function CivitaiBrowseDialog({ open, onClose, onInstalled }: {
           </Stack>
         </Collapse>
         {error && <Typography variant="caption" sx={{ color: 'warning.main', mb: 1, display: 'block' }}>{error}</Typography>}
-        {loading ? (
-          <Stack alignItems="center" sx={{ py: 5 }}><CircularProgress /></Stack>
-        ) : (
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(3, 1fr)' }, gap: 1.25 }}>
-            {items.map(it => {
-              const isInstalled = !!(it.installed || installed[it.version_id])
-              return (
-                <Box key={it.version_id} sx={{ borderRadius: 2, overflow: 'hidden', border: '1px solid', borderColor: 'divider', bgcolor: 'rgba(255,255,255,0.02)' }}>
-                  <Box sx={{ position: 'relative', pt: '100%', background: loraGradient(it.name) }}>
-                    {it.preview_url && (
-                      <Box component="img" src={it.preview_url} alt=""
-                        sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-                        onError={(e: any) => { e.target.style.display = 'none' }} />
-                    )}
-                    <Box sx={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 55%)' }} />
-                    {it.nsfw && <Chip label="NSFW" size="small" color="error" sx={{ position: 'absolute', top: 6, left: 6, height: 18, fontSize: 10 }} />}
-                    <Typography variant="caption" sx={{ position: 'absolute', bottom: 6, left: 8, right: 8, color: '#fff', fontWeight: 700, lineHeight: 1.15, textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
-                      {it.name}
-                    </Typography>
-                  </Box>
-                  <Box sx={{ p: 1 }}>
-                    <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block' }} noWrap>
-                      {it.creator || 'unknown'} · {(it.downloads ?? 0).toLocaleString()} downloads
-                    </Typography>
-                    {it.trigger_words?.length > 0 && (
-                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.25 }} noWrap title={it.trigger_words.join(', ')}>
-                        Trigger: {it.trigger_words.join(', ')}
+        <Box ref={scrollRef} sx={{ flex: 1, overflow: 'auto', minHeight: 0, pr: 0.5 }}>
+          {loading ? (
+            <Stack alignItems="center" sx={{ py: 5 }}><CircularProgress /></Stack>
+          ) : source === 'civitai' ? (
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(3, 1fr)' }, gap: 1.25 }}>
+              {civitaiItems.map(it => {
+                const isInstalled = !!(it.installed || installedCivitai[it.version_id])
+                return (
+                  <Box key={it.version_id} sx={{ borderRadius: 2, overflow: 'hidden', border: '1px solid', borderColor: 'divider', bgcolor: 'rgba(255,255,255,0.02)' }}>
+                    <Box sx={{ position: 'relative', pt: '100%', background: loraGradient(it.name) }}>
+                      {it.preview_url && (
+                        <Box component="img" src={it.preview_url} alt=""
+                          sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+                          onError={(e: any) => { e.target.style.display = 'none' }} />
+                      )}
+                      <Box sx={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 55%)' }} />
+                      {it.nsfw && <Chip label="NSFW" size="small" color="error" sx={{ position: 'absolute', top: 6, left: 6, height: 18, fontSize: 10 }} />}
+                      <Typography variant="caption" sx={{ position: 'absolute', bottom: 6, left: 8, right: 8, color: '#fff', fontWeight: 700, lineHeight: 1.15, textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
+                        {it.name}
                       </Typography>
-                    )}
-                    {isInstalled && it.installed_filename && (
-                      <Typography variant="caption" sx={{ color: 'success.main', display: 'block', mt: 0.25 }} noWrap title={it.installed_filename}>
-                        Installed as {it.installed_filename}
+                    </Box>
+                    <Box sx={{ p: 1 }}>
+                      <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block' }} noWrap>
+                        {it.creator || 'unknown'} · {(it.downloads ?? 0).toLocaleString()} downloads
                       </Typography>
-                    )}
-                    <Stack direction="row" spacing={0.5} sx={{ mt: 0.75 }} alignItems="center">
-                      <Button fullWidth size="small" variant="contained"
-                        disabled={installing === it.version_id || isInstalled}
-                        onClick={() => install(it)}
-                        startIcon={installing === it.version_id ? <CircularProgress size={12} /> : (isInstalled ? <CheckIcon sx={{ fontSize: 15 }} /> : <DownloadIcon sx={{ fontSize: 15 }} />)}>
-                        {isInstalled ? 'Installed' : 'Install'}
-                      </Button>
-                      <Tooltip title="Open on Civitai" arrow>
-                        <IconButton size="small" component="a" href={it.civitai_url} target="_blank" rel="noreferrer"><OpenInNewIcon sx={{ fontSize: 15 }} /></IconButton>
-                      </Tooltip>
-                    </Stack>
+                      {it.trigger_words?.length > 0 && (
+                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.25 }} noWrap title={it.trigger_words.join(', ')}>
+                          Trigger: {it.trigger_words.join(', ')}
+                        </Typography>
+                      )}
+                      {isInstalled && it.installed_filename && (
+                        <Typography variant="caption" sx={{ color: 'success.main', display: 'block', mt: 0.25 }} noWrap title={it.installed_filename}>
+                          Installed as {it.installed_filename}
+                        </Typography>
+                      )}
+                      <Stack direction="row" spacing={0.5} sx={{ mt: 0.75 }} alignItems="center">
+                        <Button fullWidth size="small" variant="contained"
+                          disabled={installing === it.version_id || isInstalled}
+                          onClick={() => installCivitai(it)}
+                          startIcon={installing === it.version_id ? <CircularProgress size={12} /> : (isInstalled ? <CheckIcon sx={{ fontSize: 15 }} /> : <DownloadIcon sx={{ fontSize: 15 }} />)}>
+                          {isInstalled ? 'Installed' : 'Install'}
+                        </Button>
+                        <Tooltip title="Open on Civitai" arrow>
+                          <IconButton size="small" component="a" href={it.civitai_url} target="_blank" rel="noreferrer"><OpenInNewIcon sx={{ fontSize: 15 }} /></IconButton>
+                        </Tooltip>
+                      </Stack>
+                    </Box>
                   </Box>
-                </Box>
-              )
-            })}
-            {!items.length && <Typography variant="caption" sx={{ color: 'text.disabled', gridColumn: '1 / -1' }}>No Krea 2 LoRAs matched.</Typography>}
-          </Box>
-        )}
+                )
+              })}
+              {!civitaiItems.length && <Typography variant="caption" sx={{ color: 'text.disabled', gridColumn: '1 / -1' }}>No Krea 2 LoRAs matched.</Typography>}
+            </Box>
+          ) : (
+            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(3, 1fr)' }, gap: 1.25 }}>
+              {hfItems.map(it => {
+                const isInstalled = !!(it.installed || installedHf[it.repo_id])
+                return (
+                  <Box key={it.repo_id} sx={{ borderRadius: 2, overflow: 'hidden', border: '1px solid', borderColor: 'divider', bgcolor: 'rgba(255,255,255,0.02)' }}>
+                    <Box sx={{ position: 'relative', pt: '100%', background: loraGradient(it.repo_id) }}>
+                      {it.preview_url && (
+                        <Box component="img" src={it.preview_url} alt=""
+                          sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+                          onError={(e: any) => { e.target.style.display = 'none' }} />
+                      )}
+                      <Box sx={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 55%)' }} />
+                      <Typography variant="caption" sx={{ position: 'absolute', bottom: 6, left: 8, right: 8, color: '#fff', fontWeight: 700, lineHeight: 1.15, textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}>
+                        {it.name}
+                      </Typography>
+                    </Box>
+                    <Box sx={{ p: 1 }}>
+                      <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block' }} noWrap title={it.repo_id}>
+                        {it.creator || 'unknown'} · {(it.downloads ?? 0).toLocaleString()} downloads
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.25 }} noWrap>
+                        {it.base_model}
+                      </Typography>
+                      {isInstalled && it.installed_filename && (
+                        <Typography variant="caption" sx={{ color: 'success.main', display: 'block', mt: 0.25 }} noWrap title={it.installed_filename}>
+                          Installed as {it.installed_filename}
+                        </Typography>
+                      )}
+                      <Stack direction="row" spacing={0.5} sx={{ mt: 0.75 }} alignItems="center">
+                        <Button fullWidth size="small" variant="contained"
+                          disabled={installing === it.repo_id || isInstalled}
+                          onClick={() => installHf(it.repo_id)}
+                          startIcon={installing === it.repo_id ? <CircularProgress size={12} /> : (isInstalled ? <CheckIcon sx={{ fontSize: 15 }} /> : <DownloadIcon sx={{ fontSize: 15 }} />)}>
+                          {isInstalled ? 'Installed' : 'Install'}
+                        </Button>
+                        <Tooltip title="Open on Hugging Face" arrow>
+                          <IconButton size="small" component="a" href={it.hf_url} target="_blank" rel="noreferrer"><OpenInNewIcon sx={{ fontSize: 15 }} /></IconButton>
+                        </Tooltip>
+                      </Stack>
+                    </Box>
+                  </Box>
+                )
+              })}
+              {!hfItems.length && <Typography variant="caption" sx={{ color: 'text.disabled', gridColumn: '1 / -1' }}>No Krea 2 LoRAs matched on Hugging Face.</Typography>}
+            </Box>
+          )}
+          {!loading && itemsCount > 0 && (
+            <Stack alignItems="center" spacing={1} sx={{ mt: 2, pb: 2 }} ref={sentinelRef}>
+              <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+                Showing {itemsCount} model{itemsCount === 1 ? '' : 's'}
+                {hasMore ? ' · more available' : ' · end of results'}
+              </Typography>
+              {hasMore && (
+                <Button
+                  variant="outlined"
+                  onClick={() => search(true)}
+                  disabled={loadingMore}
+                  startIcon={loadingMore ? <CircularProgress size={14} color="inherit" /> : undefined}
+                  sx={{ minHeight: 44, minWidth: 180 }}
+                >
+                  {loadingMore ? 'Loading…' : 'Load more'}
+                </Button>
+              )}
+            </Stack>
+          )}
+        </Box>
       </DialogContent>
+
+      <Dialog open={!!filePick} onClose={() => setFilePick(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Choose a file</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1, color: 'text.secondary' }}>
+            {filePick?.repoId} has multiple weight files.
+          </Typography>
+          <Stack spacing={0.75}>
+            {filePick?.files.map(f => (
+              <Button key={f.filename} variant="outlined" onClick={() => installHf(filePick.repoId, f.filename)}
+                disabled={installing === filePick.repoId} sx={{ justifyContent: 'flex-start', textTransform: 'none' }}>
+                {f.filename}{f.size ? ` · ${(f.size / (1024 * 1024)).toFixed(1)} MB` : ''}
+              </Button>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFilePick(null)}>Cancel</Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   )
 }
@@ -382,7 +673,7 @@ export default function LoraSection() {
           <Tooltip title="Match installed LoRAs to Civitai (names, triggers, previews)" arrow>
             <Button size="small" startIcon={syncing ? <CircularProgress size={12} /> : <SyncIcon sx={{ fontSize: 16 }} />} onClick={syncCivitai} disabled={syncing}>Sync</Button>
           </Tooltip>
-          <Button size="small" variant="contained" startIcon={<TravelExploreIcon sx={{ fontSize: 16 }} />} onClick={() => setBrowseOpen(true)}>Browse Civitai</Button>
+          <Button size="small" variant="contained" startIcon={<TravelExploreIcon sx={{ fontSize: 16 }} />} onClick={() => setBrowseOpen(true)}>Browse</Button>
         </Stack>
       </Stack>
       {syncing && <LinearProgress sx={{ mb: 0.75, borderRadius: 1 }} />}
@@ -413,7 +704,7 @@ export default function LoraSection() {
       </Box>
       {!installedLoras.length && (
         <Typography variant="caption" sx={{ color: 'text.disabled' }}>
-          {needle || filter !== 'all' ? 'No LoRAs match this filter.' : 'No LoRAs installed yet — use Browse Civitai.'}
+          {needle || filter !== 'all' ? 'No LoRAs match this filter.' : 'No LoRAs installed yet — use Browse.'}
         </Typography>
       )}
 
@@ -464,7 +755,7 @@ export default function LoraSection() {
         />
       </Collapse>
 
-      <CivitaiBrowseDialog open={browseOpen} onClose={() => setBrowseOpen(false)} onInstalled={refresh} />
+      <LoraBrowseDialog open={browseOpen} onClose={() => setBrowseOpen(false)} onInstalled={refresh} />
     </Box>
   )
 }

@@ -17,8 +17,7 @@ def test_patch_extends_only_pinned_animator_contract():
         "init_image_is_previous",
         "reference_image",
         "seed_plan",
-        "hybrid_video_has_context",
-        "global_i",
+        "prompt_blend_frames",
         "KreaDeforumChunkAdapterVersion",
     ):
         assert name in text
@@ -32,4 +31,6 @@ def test_patch_validates_exact_seed_plan_and_continues_previous_frame():
     assert "exact_seeds[i]" in text
     assert "if i == 0 and not init_image_is_previous:" in text
     assert "reference_frame_np is None" in text
-    assert '"krea2-chunking-v1"' in text
+    assert '"krea2-chunking-v2"' in text
+    assert "encode_tiled" in text
+    assert "_lerp_conditioning" in text

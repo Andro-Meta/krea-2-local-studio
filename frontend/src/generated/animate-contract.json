@@ -107,11 +107,32 @@
         "title": "Negative Prompt",
         "type": "string"
       },
+      "prompt_blend_frames": {
+        "default": 0,
+        "maximum": 12,
+        "minimum": 0,
+        "title": "Prompt Blend Frames",
+        "type": "integer"
+      },
       "prompt_schedule": {
         "default": "0: a scenic landscape, cinematic lighting",
         "maxLength": 32768,
         "title": "Prompt Schedule",
         "type": "string"
+      },
+      "prompt_strength_boost": {
+        "default": 0.0,
+        "maximum": 0.35,
+        "minimum": 0.0,
+        "title": "Prompt Strength Boost",
+        "type": "number"
+      },
+      "prompt_strength_boost_frames": {
+        "default": 4,
+        "maximum": 16,
+        "minimum": 0,
+        "title": "Prompt Strength Boost Frames",
+        "type": "integer"
       },
       "render_frames": {
         "anyOf": [

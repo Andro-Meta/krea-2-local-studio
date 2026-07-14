@@ -32,6 +32,7 @@ def patched_object_info(comfy_deforum):
                     "reference_image",
                     "seed_plan",
                     "hybrid_video_has_context",
+                    "prompt_blend_frames",
                 )
             },
         }
@@ -40,8 +41,8 @@ def patched_object_info(comfy_deforum):
         "input": {
             "required": {
                 "version": [
-                    ["krea2-chunking-v1"],
-                    {"default": "krea2-chunking-v1"},
+                    ["krea2-chunking-v2"],
+                    {"default": "krea2-chunking-v2"},
                 ]
             }
         }
@@ -133,9 +134,9 @@ class KreaDeforumStatusTests(unittest.TestCase):
                 "revision": "49bb6752ab045fac25652f3e9207d4706bf5c646",
                 "external": True,
                 "license": "unspecified",
-                "patch_version": "krea2-chunking-v1",
-                "patched_animator_sha256": "6c6bc3ada4cea3e5778c0d04d7e9256c54f723f91759135ce6dc07538136ef65",
-                "patch_sha256": "2ff95c1c80c8b579600749590e14593a2cb892ec4f65351190e1b8f0a07999bc",
+                "patch_version": "krea2-chunking-v2",
+                "patched_animator_sha256": "2dd533428c84809c5768951d414b7edac451c4c9ba09e1ab6ced132f713f4461",
+                "patch_sha256": "2ef30ed45db588cad4472ac8edffce00f9a89bf249b9c4460e19e213df7f0978",
                 "probe_failed": False,
                 "stale": False,
                 "incompatible_capabilities": [],

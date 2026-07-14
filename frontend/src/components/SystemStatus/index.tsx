@@ -89,6 +89,9 @@ export default function SystemStatus() {
     seedvr2_model: '3b' as '3b' | '7b',
     local_llm_backend: 'comfy' as 'comfy' | 'transformers' | 'gguf_server',
     comfy_qwen_model: '2b',
+    comfy_qwen_quant: '8bit',
+    comfy_qwen_vision_model: '4b',
+    comfy_qwen_vision_quant: '8bit',
     local_qwen_model_id: '',
     local_qwen_device: 'auto' as 'auto' | 'cuda' | 'cpu',
     gguf_helper_base_url: 'http://127.0.0.1:1234/v1',
@@ -140,6 +143,9 @@ export default function SystemStatus() {
   const comfyQwenChoice = /4b|Huihui-Qwen3-VL-4B/i.test(settingsDraft.comfy_qwen_model || '')
     ? '4b'
     : '2b'
+  const comfyVisionChoice = /2b|Huihui-Qwen3-VL-2B/i.test(settingsDraft.comfy_qwen_vision_model || '')
+    ? '2b'
+    : '4b'
   const requiredSupportModels = report?.support_models?.filter(model => !model.optional) ?? []
   const supportReady = requiredSupportModels.length > 0 && requiredSupportModels.every(model => model.installed)
   const supportCachedOnly = !supportReady && requiredSupportModels.some(model => !model.installed && model.legacy_cache_installed)
@@ -200,6 +206,9 @@ export default function SystemStatus() {
         seedvr2_model: (s.seedvr2_model === '7b' ? '7b' : '3b'),
         local_llm_backend: s.local_llm_backend ?? 'comfy',
         comfy_qwen_model: s.comfy_qwen_model ?? '2b',
+        comfy_qwen_quant: s.comfy_qwen_quant ?? '8bit',
+        comfy_qwen_vision_model: s.comfy_qwen_vision_model ?? '4b',
+        comfy_qwen_vision_quant: s.comfy_qwen_vision_quant ?? '8bit',
         local_qwen_model_id: s.local_qwen_model_id ?? '',
         local_qwen_device: s.local_qwen_device ?? 'auto',
         gguf_helper_base_url: s.gguf_helper_base_url ?? 'http://127.0.0.1:1234/v1',
@@ -354,6 +363,9 @@ export default function SystemStatus() {
         prompt_expander_backend: settingsDraft.prompt_expander_backend,
         local_llm_backend: settingsDraft.local_llm_backend,
         comfy_qwen_model: settingsDraft.comfy_qwen_model,
+        comfy_qwen_quant: settingsDraft.comfy_qwen_quant,
+        comfy_qwen_vision_model: settingsDraft.comfy_qwen_vision_model,
+        comfy_qwen_vision_quant: settingsDraft.comfy_qwen_vision_quant,
         local_qwen_model_id: settingsDraft.local_qwen_model_id,
         local_qwen_device: settingsDraft.local_qwen_device,
         gguf_helper_base_url: settingsDraft.gguf_helper_base_url,
@@ -1403,7 +1415,7 @@ export default function SystemStatus() {
         >
           <Stack spacing={1.5}>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              ComfyUI QwenVL is the default helper for prompt expansion, image-to-prompt, and moodboard enrich. Default model is Huihui 2B abliterated (faster); switch to 4B for richer prose. Transformers remains a Studio fallback. GGUF helper is text-only. OpenRouter and Ideogram remain optional hosted helpers.
+              ComfyUI QwenVL uses separate profiles: fast abliterated 2B for text Magic Wand and richer abliterated 4B for image description. Transformers remains a Studio fallback. GGUF helper is text-only. OpenRouter and Ideogram remain optional hosted helpers.
             </Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {(['comfy', 'transformers', 'gguf_server'] as const).map(b => (
@@ -1418,8 +1430,8 @@ export default function SystemStatus() {
               ))}
             </Stack>
             {settingsDraft.local_llm_backend === 'comfy' && (
-              <Stack spacing={0.75}>
-                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Comfy helper model</Typography>
+              <Stack spacing={1.25}>
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Text Magic Wand model</Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   {([
                     { id: '2b', label: '2B abliterated (default)' },
@@ -1432,6 +1444,46 @@ export default function SystemStatus() {
                       variant={comfyQwenChoice === opt.id ? 'filled' : 'outlined'}
                       color={comfyQwenChoice === opt.id ? 'secondary' : 'default'}
                       onClick={() => setSettingsDraft(d => ({ ...d, comfy_qwen_model: opt.id }))}
+                    />
+                  ))}
+                </Stack>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {(['4bit', '8bit', 'fp16'] as const).map(quant => (
+                    <Chip
+                      key={quant}
+                      label={`Text ${quant}`}
+                      clickable
+                      variant={settingsDraft.comfy_qwen_quant === quant ? 'filled' : 'outlined'}
+                      color={settingsDraft.comfy_qwen_quant === quant ? 'secondary' : 'default'}
+                      onClick={() => setSettingsDraft(d => ({ ...d, comfy_qwen_quant: quant }))}
+                    />
+                  ))}
+                </Stack>
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>Image description model</Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {([
+                    { id: '2b', label: 'Vision 2B abliterated' },
+                    { id: '4b', label: 'Vision 4B abliterated (default)' },
+                  ] as const).map(opt => (
+                    <Chip
+                      key={opt.id}
+                      label={opt.label}
+                      clickable
+                      variant={comfyVisionChoice === opt.id ? 'filled' : 'outlined'}
+                      color={comfyVisionChoice === opt.id ? 'secondary' : 'default'}
+                      onClick={() => setSettingsDraft(d => ({ ...d, comfy_qwen_vision_model: opt.id }))}
+                    />
+                  ))}
+                </Stack>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {(['4bit', '8bit', 'fp16'] as const).map(quant => (
+                    <Chip
+                      key={quant}
+                      label={`Vision ${quant}`}
+                      clickable
+                      variant={settingsDraft.comfy_qwen_vision_quant === quant ? 'filled' : 'outlined'}
+                      color={settingsDraft.comfy_qwen_vision_quant === quant ? 'secondary' : 'default'}
+                      onClick={() => setSettingsDraft(d => ({ ...d, comfy_qwen_vision_quant: quant }))}
                     />
                   ))}
                 </Stack>

@@ -790,6 +790,23 @@ class WarmupContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.queue.status(first)["priority_class"], "background")
         self.assertEqual(self.queue.status(first)["task_kind"], MODEL_WARMUP)
 
+    def test_forced_rewarm_replaces_terminal_warmup_only(self):
+        with (
+            patch.object(main, "_jobs", self.jobs),
+            patch.object(main, "generation_queue", self.queue),
+            patch.object(main, "_model_warmup_job_id", None),
+            patch.object(main.settings, "krea_comfy_warmup", True),
+        ):
+            first = main._enqueue_model_warmup()
+            self.queue.cancel(first)
+            second = main._enqueue_model_warmup(force=True)
+            duplicate = main._enqueue_model_warmup(force=True)
+
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first, second)
+        self.assertIsNone(duplicate)
+        self.assertEqual(self.queue.status(second)["status"], "queued")
+
     async def test_system_status_exposes_sanitized_warmup_diagnostics(self):
         jobs = {
             "warm": {
@@ -1170,13 +1187,18 @@ class WarmupContractTests(unittest.IsolatedAsyncioTestCase):
             captured.update(kwargs)
             return (["transient"], 1, ["must-discard.png"], [], [{}])
 
-        with patch("comfy_workflows.comfy_generate", side_effect=generate):
+        with (
+            patch("comfy_workflows.comfy_generate", side_effect=generate),
+            patch.object(main.settings, "diffusion_engine", "native_gguf"),
+            patch.object(main.settings, "krea2_auto_quant", "gguf"),
+        ):
             await main._execute_model_warmup(lambda _prompt_id: None)
 
         self.assertFalse(captured["save_outputs"])
         self.assertEqual(captured["req"].steps, 1)
-        self.assertEqual((captured["req"].width, captured["req"].height), (64, 64))
-        self.assertEqual(captured["req"].quantization, "int8")
+        self.assertEqual((captured["req"].width, captured["req"].height), (1024, 1024))
+        self.assertEqual(captured["req"].diffusion_engine, "native_gguf")
+        self.assertEqual(captured["req"].quantization, "gguf")
 
 
 if __name__ == "__main__":
